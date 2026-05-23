@@ -16,3 +16,11 @@ references/implementations/evincarofautumn-janus/
 !references/implementations/jana/CLONE-INFO.md
 !references/implementations/janus-vesta/CLONE-INFO.md
 !references/implementations/evincarofautumn-janus/CLONE-INFO.md
+
+# Playwright session artifacts (from acquisition sessions)
+.playwright/
+.playwright-cli/
+
+# Lean4-skills plugin scaffolding (SessionStart hook)
+.claude/docs/
+.claude/tools/
