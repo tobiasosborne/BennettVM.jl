@@ -3,3 +3,16 @@
 .dolt/
 *.db
 .beads-credential-key
+
+# Implementation source clones (large; tracked only via CLONE-INFO.md)
+references/implementations/RC3/
+references/implementations/TOPPS-janus/
+references/implementations/jana/
+references/implementations/janus-vesta/
+references/implementations/evincarofautumn-janus/
+# Keep CLONE-INFO.md files tracked
+!references/implementations/RC3/CLONE-INFO.md
+!references/implementations/TOPPS-janus/CLONE-INFO.md
+!references/implementations/jana/CLONE-INFO.md
+!references/implementations/janus-vesta/CLONE-INFO.md
+!references/implementations/evincarofautumn-janus/CLONE-INFO.md

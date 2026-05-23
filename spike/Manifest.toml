@@ -1,0 +1,10 @@
+# This file is machine-generated - editing it directly is not advised
+
+julia_version = "1.12.3"
+manifest_format = "2.0"
+project_hash = "c14f3b5f5c4a06f77ba122fc019cf613ec8615c2"
+
+[[deps.BennettVMSpike]]
+path = "."
+uuid = "d487ed96-27cc-4bf7-8bc1-5fa1396f29a1"
+version = "0.0.1-spike"

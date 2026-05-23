@@ -1,0 +1,21 @@
+name = "BennettVMSpike"
+uuid = "d487ed96-27cc-4bf7-8bc1-5fa1396f29a1"
+authors = ["BennettVM.jl Phase-0 spike"]
+version = "0.0.1-spike"
+private = true
+
+# THIS IS A THROWAWAY PACKAGE. PRD v3 §1.4, CLAUDE.md P0.7.
+# Spike artifact only — not for registration, not for downstream consumption.
+# Will be archived read-only at Phase-0 close.
+
+[deps]
+
+[compat]
+julia = "1.10"
+
+[extras]
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Random", "Test"]
