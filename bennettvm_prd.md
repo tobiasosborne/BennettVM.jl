@@ -346,9 +346,10 @@ are building):
    has already rejected dynamic-`Dict` and dynamic-`Array` allocation
    (`Bennett.jl/README.md:247`), narrowing the problem.
 
-2. **Floating-point reversibility scheme.** v3 §3.6 listed three options
-   (residual tape, posit-with-sticky, opaque snapshots). The literature does
-   not adjudicate. Deferred to v5 per §8.
+2. ~~**Floating-point reversibility scheme.**~~ **Resolved in v4.1.**
+   Bennett.jl's SoftFloat dispatch (`Bennett.jl/src/softfloat_dispatch.jl` +
+   `Bennett.jl/src/softfloat/`) is bit-exact IEEE 754 binary64 reversibility,
+   inherited wholesale by BennettVM. See §3.6.
 
 3. **Divergent-program handling.** All reversible-simulation results assume
    the simulated machine halts. BennettVM must handle divergence gracefully
@@ -526,17 +527,135 @@ data is the design model.
 
 ### 3.6 Numeric types
 
-Phase 2 supports, in order of priority:
+Phase 2 inherits Bennett.jl's numeric universe. The full supported set:
 
-1. `Bool`, fixed-width signed and unsigned integers (`Int8…Int64`, `UInt8…UInt64`).
-   These are the Bennett.jl-supported set at pin `5731cec` (`Bennett.jl/src/ir_types.jl`
-   argument widths).
-2. Fixed-point Q m.n reals. As a wrapper over fixed-width integers; reversibility
-   is inherited.
-3. **Floating point is OUT OF SCOPE for the initial Phase-2 milestone.** v3
-   §3.6 listed three candidate schemes; v5 will pick one. Phase 2 emits a
-   clear "FP not supported" error if a Bennett.jl `ParsedIR` carries an
-   `IRBinOp` on an FP operand. See §8.
+1. `Bool`, fixed-width signed and unsigned integers (`Int8…Int64`,
+   `UInt8…UInt64`). Direct ingestion from `ParsedIR`.
+2. Fixed-point Q m.n reals. Wrapper over fixed-width integers; reversibility
+   inherited.
+3. **`Float64` — via Bennett.jl's SoftFloat dispatch.** This corrects v3
+   §3.6 and the initial v4 draft (which incorrectly listed FP as out of
+   scope). Bennett.jl ships a complete, production-quality, bit-exact IEEE
+   754 binary64 reversibility mechanism at `Bennett.jl/src/softfloat_dispatch.jl`
+   and `Bennett.jl/src/softfloat/` (~30 files implementing `soft_fadd`,
+   `soft_fmul`, `soft_fdiv`, `soft_fma`, `soft_fsqrt`, the 14 non-trivial
+   `fcmp` predicates, `soft_exp`/`log`/`pow`/`sin`/`cos`/`tan`/`tanh` and
+   inverses, `soft_floor`/`ceil`/`trunc`/`round`, `soft_fpext`/`soft_fptrunc`,
+   `soft_fptosi`/`soft_fptoui`/`soft_sitofp`/`soft_uitofp`,
+   `soft_fmin`/`soft_fmax`). Mechanism: `reversible_compile(f, Float64)`
+   wraps the user function in a UInt64-typed lambda so Float64 values are
+   carried as `UInt64` bit patterns through LLVM IR; every Float64 arithmetic
+   op becomes a registered-callee `IRCall` with integer operand widths in
+   `ParsedIR`. **BennettVM inherits this mechanism wholesale** — no
+   FP-reversibility code is written in BennettVM; the integer-only Phase-2
+   RSSA representation handles SoftFloat-dispatched Float64 transparently.
+4. `Float32` — deferred to Phase-2.x, tracking upstream `Bennett-3rph`.
+   Bennett.jl currently widens Float32 → Float64 via `soft_fpext`/`soft_fptrunc`
+   (not bit-exact); BennettVM inherits the same widening until upstream lands
+   a Float32-direct path.
+
+**v3 → v4 change rationale on FP.** v3 §3.6 listed three candidate schemes
+(residual tape, posit-with-sticky, opaque snapshots). Between v3 and v4
+author confirmation, Bennett.jl shipped a fourth scheme — bit-exact
+SoftFloat dispatch — that obviates the choice. BennettVM reuses it under
+Law 2.
+
+### 3.6.1 Maximum LLVM opcode coverage (north-star)
+
+**Phase 2 SHALL handle every LLVM opcode and intrinsic Bennett.jl's
+`_convert_instruction` (`Bennett.jl/src/extract/instructions.jl`, ~2516
+LOC) accepts.** This is the north-star: a Julia function that compiles for
+`target=:circuit` in Bennett.jl MUST also compile for
+`target=:reversible_vm` in BennettVM, modulo the four motivating-case
+constraints in §3.6.2.
+
+Coverage matrix at pin `5731cec`:
+
+| LLVM opcode family | Bennett.jl status | Phase 2 inheritance | BennettVM-distinct work |
+|---|---|---|---|
+| Integer binary (13 ops: `add/sub/mul/and/or/xor/shl/lshr/ashr/udiv/sdiv/urem/srem`) | ✅ | inherit | — |
+| Integer compare (10 preds: `eq/ne/ult/ule/ugt/uge/slt/sle/sgt/sge`) | ✅ | inherit | — |
+| Integer cast (`sext/zext/trunc`) | ✅ | inherit | — |
+| Pointer/value cast (`bitcast/fptosi/fptoui/sitofp/uitofp`) | ✅ via direct dispatch | inherit | — |
+| Float compare (14 non-trivial `fcmp` preds) | ✅ | inherit | — |
+| Float arithmetic (via SoftFloat dispatch as integer calls) | ✅ | inherit | — |
+| Float math intrinsics (~30 functions, `llvm.sqrt/exp/log/pow/sin/cos/tan/tanh/...`) | ✅ via SoftFloat | inherit | — |
+| Memory (`alloca/load/store`, static `n_elems`) | ✅ | inherit (with `IRLoad/IRStore` → `Exchange` pre-RSSA normalization, §3.7) | — |
+| Aggregate (`extractvalue/insertvalue`) | ✅ | inherit | — |
+| GEP constant + variable index | ✅ | inherit | — |
+| Control flow (`br/switch/phi/ret`) | ✅ | inherit | — |
+| Memcpy/memset intrinsics | ✅ | inherit | — |
+| Bit intrinsics (`ctpop/ctlz/cttz/bitreverse/bswap/fshl/fshr`) | ✅ | inherit | — |
+| Min/max intrinsics (`umax/umin/smax/smin/abs/...`) | ✅ | inherit | — |
+| **Memory (alloca with dynamic `n_elems`)** | ❌ rejected (`:auto` path) / ✅ via `:persistent` | **distinct** | §3.6.2 case A |
+| **Dict / hash-table mutation** | ❌ rejected (Bennett-800b) | **distinct** | §3.6.2 case B |
+| **Nested loops at LLVM level** | ❌ rejected (Bennett-httg, `cfg.jl:111`) | **distinct** | §3.6.2 case C |
+| **Unbounded `while` (no `max_loop_iterations`)** | ❌ rejected (`driver.jl:80–83`) | **distinct** | §3.6.2 case D |
+| FP ext/trunc opcodes (`fpext/fptrunc`) | ⚠️ gap (`soft_*` exist, dispatch missing in `_convert_instruction`) | gap | wire missing dispatch in BennettVM ingest (or upstream fix) |
+| `frem` opcode | ⚠️ gap | gap | wire missing dispatch |
+| Vector ops (`extractelement/insertelement/shufflevector`) | ❌ rejected | deferred | Phase-2.x |
+| Exception handling (`invoke/landingpad/...`) | ❌ rejected | NEVER | — |
+| Atomics (`atomicrmw/cmpxchg/fence`) | ❌ rejected | NEVER | atomics require nondeterminism the VM is built to avoid |
+| Overflow intrinsics (`smul.with.overflow/...`) | ❌ rejected (struct returns) | deferred | requires `{iN,i1}` struct returns |
+| Float32 direct | ❌ rejected (`Bennett-3rph`) | deferred | tracked upstream |
+
+The "BennettVM-distinct work" column is the actual Phase-2 implementation
+backlog beyond inheriting Bennett.jl.
+
+### 3.6.2 Why BennettVM is the desirable target for Bennett.jl
+
+The four motivating cases — what makes a Julia user *choose*
+`target=:reversible_vm` over `target=:circuit`:
+
+**Case A. Dynamic-size memory.** `Vector{T}(undef, n)`, `push!`-grown
+collections where the final size is data-dependent, `IRAlloca` whose
+`n_elems` operand is `SSAOperand` rather than `ConstOperand`. Bennett.jl's
+circuit target rejects these at extract (`Bennett.jl/src/extract/heap.jl`)
+or at lower (`Bennett.jl/src/lowering/memory.jl:182–184`: "dynamic n_elems
+alloca encountered under mem=:auto"). Bennett.jl's `:persistent_tree`
+strategy partially handles dynamic-N allocas under `mem=:persistent`;
+`target=:reversible_vm` MUST handle dynamic-size memory in full generality,
+reusing the `:persistent_tree` mechanism where applicable and extending it
+otherwise.
+
+**Case B. `Dict{K,V}` and other hash-table mutations.** Bennett.jl rejects
+these (`Bennett-800b` — "hash-table mutation is irreversible by
+construction") at `Bennett.jl/src/extract/heap.jl:313–320`. **This rejection
+is false in the VM model**: a `Dict` with a history of `setindex!`/`delete!`
+operations IS reversible if the history is preserved. Implementation
+pattern: every `setindex!(d, k, v)` captures `(k, old_v_or_missing)` to
+delta history (§3.3); every `delete!(d, k)` captures `(k, old_v)`;
+`unstep!` reverses by restoring or re-inserting. This is the Bennett-1973
+history-tape mechanism applied to heap mutation, not to control flow.
+Canonical motivating program (currently rejected by Bennett.jl, MUST
+succeed under BennettVM):
+```julia
+fdict(k::Int8, v::Int8) = let d = Dict{Int8,Int8}(); d[k] = v; d[k] end
+```
+
+**Case C. Nested loops at the LLVM level.** Bennett.jl's `lower_loop!` at
+`Bennett.jl/src/lowering/cfg.jl:111` rejects: "nested loop header inside
+body — nested loops not supported (Bennett-httg / U05 scope)". The VM
+target lifts each nested loop body into its own basic block with its own
+continuation; no syntactic unrolling is required. Canonical motivating
+program:
+```julia
+matrix_sum(n::Int8) = (s = Int8(0); for i in 1:n, j in 1:n; s += Int8(1); end; s)
+```
+
+**Case D. Unbounded `while` loops.** Bennett.jl requires
+`max_loop_iterations=N` (`Bennett.jl/src/lowering/driver.jl:80–83`); the
+circuit target unrolls each loop N times. The VM target runs loops
+dynamically — `while n != 1; ...; end` simply runs as many times as the
+input demands. Canonical motivating program:
+```julia
+collatz_steps(n::Int64)   # while n != 1 with data-dependent trip count
+```
+
+**Phase-2 success criterion subsuming all four** (see §6 SC9, added by
+v4.1): every one of the four programs (`fdict`, `frtN`, `matrix_sum`,
+`collatz_steps`) compiles under `reversible_compile(..., target=:reversible_vm)`
+and round-trips correctly.
 
 ### 3.7 Frontend integration
 
@@ -817,6 +936,9 @@ art is **reuse or wrap**, not reimplement.
 | Output-channel type-theoretic model | Qurts (Hirata–Heunen 2025), Sparcl (Matsuda–Wang 2020) | `references/quantum-uncomputation/qurts-2024.pdf`; `references/reversible-languages/matsuda-wang-2020-sparcl.pdf` | Affine types / `pin` operator. Reference, not adopted wholesale. |
 | Hybrid classical+reversible IR boundary | Deworetzki–Schlecht–Meyer 2024 | `references/reversible-ir/deworetzki-2024-hybrid-ssa.pdf` | Model for Bennett.jl classical-SSA → Phase-2 RSSA lowering. |
 | Bennett.jl frontend / IR extraction | Bennett.jl | `Bennett.jl/src/extract/`, `Bennett.jl/src/ir_types.jl:347` | Consumed as `ParsedIR`. Pin SHA `5731cec`. §3.7. |
+| **Float64 reversibility (SoftFloat dispatch)** | Bennett.jl | `Bennett.jl/src/softfloat_dispatch.jl` + `Bennett.jl/src/softfloat/` (~30 files) | **Wholesale inheritance.** No FP-reversibility code in BennettVM. §3.6 §3. |
+| Persistent-tree heap strategy (for dynamic-N alloca) | Bennett.jl | `Bennett.jl/src/lowering/memory.jl:75–98` (`_lower_alloca_dynamic_n!`) | Reused for §3.6.2 case A; extended in BennettVM for full generality. |
+| Maximum LLVM opcode dispatch | Bennett.jl | `Bennett.jl/src/extract/instructions.jl` (~2516 LOC) | Inherited via `ParsedIR`; BennettVM wires the two gaps (`fpext`/`fptrunc` LLVM-opcode dispatch and `frem`). §3.6.1. |
 
 ### 4.1 Explicit non-reuse
 
@@ -930,6 +1052,18 @@ milestone numbers are explicit.
   discharged with `0 sorry, 0 axiom`.
 - **SC8 — Per-step inverse coverage** (§Part IX M7). Per-step inverse test
   (§3.13) passes for every Phase-2 instruction kind.
+- **SC9 — Four motivating programs compile and round-trip** (§3.6.2; §Part
+  IX M_DICT, M_DYN, M_NESTED, plus inherited FP). Each of `fdict`, `frtN`,
+  `matrix_sum`, `collatz_steps` (the canonical programs in §3.6.2) MUST
+  compile under `reversible_compile(..., target=:reversible_vm)` and pass a
+  round-trip test. **This is the load-bearing user-facing milestone — if
+  SC9 fails, BennettVM has no reason to exist.**
+- **SC10 — Float64 round-trip via inherited SoftFloat dispatch** (§3.6).
+  `reversible_compile(x -> x*x + 3x + 1, Float64; target=:reversible_vm)`
+  matches the equivalent Bennett.jl circuit-target output bit-for-bit on a
+  representative input set, by virtue of inheriting Bennett.jl's
+  `softfloat_dispatch.jl`. No FP-reversibility code is written in
+  BennettVM.
 
 ---
 
@@ -985,19 +1119,17 @@ deferred-decision ADR queue.
 
 ### 8.1 Genuinely open
 
-1. **Floating-point reversibility scheme.** v3 §3.6 listed three candidates
-   (residual tape, posit-with-sticky, opaque snapshots). The literature
-   surveyed for v4 does not adjudicate. v5 picks one after a Phase-2
-   prototype on a small FP program; until then, FP is out of scope for
-   Phase 2 (§3.6).
-
-2. **Divergence handling.** Reversible simulation results assume halting
+1. **Divergence handling.** Reversible simulation results assume halting
    computations. BennettVM uses a `max_steps` guard for the trivial case,
    but structural divergence detection (proving that a Julia loop with a
    data-dependent condition halts on all inputs) is unresolved. v5 may
    inherit Bennett.jl's existing termination-bound machinery
-   (`max_loop_iterations` in `Bennett.jl/src/lowering/cfg.jl`) or commit
+   (`max_loop_iterations` in `Bennett.jl/src/lowering/driver.jl`) or commit
    to a separate analysis.
+
+   (v3 §VIII item #1 — FP reversibility scheme — was open in v3, deferred
+   in the v4 initial draft, and resolved in v4.1 by Bennett.jl's SoftFloat
+   dispatch. No longer open.)
 
 ### 8.2 Resolved by v4 (no longer open)
 
