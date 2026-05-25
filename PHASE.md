@@ -1,6 +1,8 @@
-Phase 1 (archive; PRD v4 pending)
+Phase 2 (production)
 
-Phase 0 closed: 2026-05-23.
+PRD v4 ratified: 2026-05-25. v3 archived at `docs/prd/bennettvm_prd_v3.md`.
+Phase 0 closed: 2026-05-23. Phase 1 (archive + v4 authoring) closed
+2026-05-25.
 
 ## What happened in Phase 0
 
@@ -21,7 +23,7 @@ One Claude Code session, multi-pass serial orchestration.
 4. **Per-step inverse test pattern** is load-bearing. Aggregate round-trip test alone misses middle-instruction inverse bugs because the leading Const inverse masks corruption.
 5. **Return/Halt collapse** in spike (no subroutines) — Phase 2 must decide whether to keep both or unify.
 6. **`UnaryOp :not`** is bitwise `~` on `Int64`, not boolean negation — PRD §5.1's "Bool-typed regs" wording is moot until a type system exists.
-7. **Bennett 1973 PDF gap** — substitute sources (Vitanyi CF'05 §2, Bennett 1989 §1–2 Lemma 1, BTV 2001 §1) were adequate for Phase-0 Stage 1. Phase-2 Stage 2 ("Output") and Stage 3 ("Cleanup") will need the original. TIB ILL remains the recommended acquisition path.
+7. **Bennett 1973 PDF gap** — substitute sources (Vitanyi CF'05 §2, Bennett 1989 §1–2 Lemma 1, BTV 2001 §1) were adequate for Phase-0 Stage 1. **RESOLVED 2026-05-25**: user supplied the original PDF at `references/foundational/bennett-1973-logical-reversibility.pdf` (SHA256 `e61ad668…0687`). Verified against IBM JRD 17(6) Nov 1973: confirmed C.H. Bennett "Logical Reversibility of Computation" pp 525-532; three-stage Compute/Output/Cleanup theorem with explicit bounds `4ν + 4λ + 5` steps, `s + ν + 1` work-tape squares, `2√(νs)` asymptotic reduction. Phase-2 Stage 2/3 design is no longer blocked.
 8. **Q6 cross-check (Law 2 evidence):** none of RC3, TOPPS-janus, jana, janus-vesta, evincarofautumn-janus has a history-tape + round-trip property test in the BennettVM sense. RC3 does compiler-level RSSA reversal (no runtime trace). TOPPS-janus does syntactic `invertStmt` — the Yokoyama-Glück 2007 "no history for reversible source" lesson. The BennettVM design IS distinct, not a rebuild of existing work.
 
 ## What's next (Phase 1 → PRD v4)
@@ -32,14 +34,22 @@ The PRD v4 author MUST:
 - Cross-reference the spike retrospective (`spike/RETROSPECTIVE.md`) section-by-section into v4.
 - Resolve PRD v3 §VIII open questions (FP scheme; Bennett.jl integration boundary; Lean vs Coq; pebble-game-as-binding vs ship-in-tree).
 - Adopt the BobISA citation correction (Thomsen-Axelsen-Glück 2012, not Axelsen-Yokoyama 2011).
-- Acquire Bennett 1973 PDF before Stage 2/3 design begins.
+- ~~Acquire Bennett 1973 PDF before Stage 2/3 design begins.~~ ✅ Resolved 2026-05-25.
 
 The Phase-2 production VM starts from an empty `src/` + `test/` tree (CLAUDE.md P0.7). **No code from `spike/` is promoted.** Phase 2 design is informed by the retrospective; implementation is fresh.
 
-## How to flip to Phase 2
+## Phase-2 entry conditions (all met 2026-05-25)
 
-When PRD v4 lands:
-1. Move `bennettvm_prd.md` → `docs/prd/bennettvm_prd_v3.md`.
-2. Drop the v4 PRD at `bennettvm_prd.md` (root).
-3. Update this file to `Phase 2 (production)` with the v4 ratification date.
-4. Start the Phase-2 epic in beads.
+1. ✅ `bennettvm_prd.md` is v4 (1191 LOC, hostile-reviewer-passed with 14
+   defects corrected before commit).
+2. ✅ v3 archived at `docs/prd/bennettvm_prd_v3.md` (frozen historical record).
+3. ✅ This file flipped to `Phase 2 (production)`.
+4. ⏳ Phase-2 epic `bennettvm-phase2-epic` to be created in beads at session
+   close, with the v4 Part IX milestones M0–M12 as initial sub-issues.
+
+## Phase-2 first milestone: M0 + M5 gating
+
+Per v4 §Part VI SC6 and §Part IX M5: **the Phase-2 first action is the RC3
+`rvm` smoke test** (ADR `docs/adr/0001-rc3-rvm-smoke.md`). This gates M0
+(Bennett.jl handoff smoke). Do not write Phase-2 IR code before M5
+completes.

@@ -28,11 +28,11 @@ The two backends are semantically distinct (see [`bennettvm_prd.md`][prd] §3.7)
 
 | Phase | State | Artifact |
 |---|---|---|
-| Pre-Phase-0 | ✅ Done | `references/` (43 paper PDFs + 5 source clones), `CLAUDE.md`, `PHASE.md`, `references/manifest/SOURCES.md` |
+| Pre-Phase-0 | ✅ Done | `references/` (47+ paper PDFs incl. Bennett 1973 + 5 source clones), `CLAUDE.md`, `PHASE.md`, `references/manifest/SOURCES.md` |
 | Phase 0 (throwaway spike) | ✅ Done | `spike/` (789/789 tests, tagged `spike-0-archived`, chmod -w) |
 | Phase 0 retrospective | ✅ Done | `spike/RETROSPECTIVE.md` (264 LOC, 9 questions answered) |
-| Phase 1 (PRD v4) | ⏳ Pending | Tracked as bd issue `bennettvm-pb2` |
-| Phase 2 (production) | 🚫 Blocked | Starts when PRD v4 lands |
+| Phase 1 (PRD v4 authoring) | ✅ Done 2026-05-25 | `bennettvm_prd.md` (v4, 1223 LOC); v3 archived at `docs/prd/bennettvm_prd_v3.md` |
+| Phase 2 (production) | 🟢 Open | First milestone M0 + gating M5 (RC3 `rvm` pre-read); see v4 §Part IX |
 
 See [`PHASE.md`](./PHASE.md) for the current phase and gates.
 

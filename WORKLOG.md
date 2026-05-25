@@ -7,6 +7,152 @@
 
 ---
 
+## Session 2 — 2026-05-25 — Phase 1 close: PRD v4 authored
+
+**Agents:** Opus 4.7 orchestrator; 4 parallel Sonnet research subagents
+(literature survey, Bennett.jl integration boundary, spike retrospective
+deep-read, RC3+Janus prior-art) plus 1 Sonnet hostile reviewer. All
+research subagents were read-only (no `julia` invocation; CLAUDE.md Rule 7
+permits parallel here).
+
+**Result:** PRD v4 ratified. Phase 1 closed. `PHASE.md` flipped to `Phase 2
+(production)`. v3 archived at `docs/prd/bennettvm_prd_v3.md` (582 LOC,
+frozen). v4 at root `bennettvm_prd.md` (1223 LOC). bd issue
+`bennettvm-pb2` closed.
+
+### Timeline
+
+#### 1. Bennett 1973 PDF acquired (the v3 blocker)
+
+User supplied `bennett1973.pdf` from their Windows downloads folder mid-
+session. Copied to `references/foundational/bennett-1973-logical-reversibility.pdf`,
+SHA256 `e61ad668…0687`. Verified against IBM JRD 17(6) Nov 1973: confirmed
+three-stage Compute/Output/Cleanup construction (Table 1, p. 528), 7-stage
+input-from-output construction (Table 2, p. 530), `2√(νs)` segmentation
+bound and `ν²` log-ν nested-segmentation bound at p. 530 lower right. v4
+§2.1 cites these directly. Manifest and PHASE.md updated to mark blocker
+resolved. **TIB ILL not required.**
+
+#### 2. Parallel Sonnet research subagents (4 agents, all read-only)
+
+Per CLAUDE.md Rule 7, only Julia-touching agents must be serial; literature
+review and codebase reading can parallelize. Dispatched four:
+
+- **A. Literature survey** (`references/`, all 8 §2 subdirectories).
+  Verified citation pages by opening PDFs; produced ~2800-word per-pillar
+  table; flagged hallucination risks (Bennett 1973 vs 1989, RSSA φ on
+  splits AND joins, BobISA jump source-label encoding, Unqomp/Reqomp/Qurts
+  design-point differences).
+- **B. Bennett.jl boundary** (`../Bennett.jl/` at pin `5731cec`). Mapped
+  pipeline: `Julia → code_llvm → ParsedIR → lower() → LoweringResult →
+  bennett()`. Identified `ParsedIR` (`Bennett.jl/src/ir_types.jl:347`,
+  exported at `Bennett.jl/src/Bennett.jl:88`) as the natural Phase-2
+  handoff. Documented three handoff alternatives; recommended Handoff A
+  (consume `ParsedIR` externally; no Bennett.jl source mutation needed at
+  Phase-2 start).
+- **C. Spike retrospective deep-read.** Cross-referenced all Q1–Q9 findings
+  + 6 "elevated" findings beyond the retrospective into proposed v4
+  normative wording with file:line citations.
+- **D. RC3 + Janus implementations.** Mapped RC3's RSSA taxonomy (12
+  concrete instruction subclasses in `references/implementations/RC3/.../instances/`),
+  TOPPS-janus `Invert.hs` `invertStmt` pattern for injective inversion,
+  janus-vesta's `MOV` violation of the memory-as-exchange rule (an explicit
+  non-reuse). Produced the §Part IV reuse matrix.
+
+#### 3. PRD v4 written (1191 LOC pre-review)
+
+Structure: §0 executive summary; §1 phase context (what survived from v3,
+what v4 changes); §2 prior-art with corrected citations (BobISA →
+Thomsen-Axelsen-Glück 2012, RIL → Mogensen 2015 §3); §3 Phase-2 design
+spec (17 normative subsections; §3.9–§3.17 are spike-derived); §4 reuse
+map with file:line; §5 Phase-1 retrospective summary; §6 8 success
+criteria; §7 risks; §8 reduced open questions + ADR queue; §9 milestone
+work breakdown M0–M12; appendices.
+
+#### 4. Hostile reviewer pass (Sonnet, per CLAUDE.md Rule 6)
+
+Verdict: REQUEST CHANGES (most severe finding was BLOCKER).
+
+- **2 BLOCKERS:** (1) `IRBasicBlock` and `IRInst` not exported from
+  Bennett.jl — `using` example was broken; fixed to qualified access and
+  noted Rule-14 constraint. (2) §3.7 missing `IRLoad`/`IRStore` →
+  `Exchange` lowering pass; v4 §3.2 mandates memory-as-exchange but §3.7
+  silently admitted classical loads/stores via `ParsedIR`. Added
+  pre-RSSA normalization-pass requirement.
+- **5 MAJORS:** `step!`/`unstep!` signature claim wrong (spike uses
+  `(s, prog)`, not `(s, instr)`); two citations to nonexistent
+  retrospective §6.x sections (correct path is Q-numbered); wrong
+  file:line for uniform-bound analysis (`cfg.jl:81–83` →
+  `driver.jl:79–82`); Part VI vs Part IX milestone-numbering mismatch
+  + broken `§6.1–§6.8` cross-ref; "15 instruction classes" → "12
+  concrete subclasses (22 files)".
+- **6 MINORS + 1 NIT:** small citation corrections (Bennett 1973
+  resource-bound page, Bennett 1989 Theorem 1 page, Meuli 2019 section
+  numbering, `collatz_step` → `collatz_steps`, `LabelTable.java:12` →
+  `LabelEntry.java:7` for dual-address, Appendix A.4 missing file paths,
+  Bennett.jl boundary §8.2 oversells resolution).
+
+All 14 defects fixed before commit. Final v4 LOC: 1223.
+
+#### 5. Phase transition + close
+
+- `git mv bennettvm_prd.md → docs/prd/bennettvm_prd_v3.md`.
+- v4 installed at `bennettvm_prd.md`.
+- `PHASE.md` flipped to `Phase 2 (production)` with ratification date.
+- `README.md` status table updated.
+- This worklog entry.
+- bd: `bennettvm-pb2` closed.
+
+### Findings worth recording (will outlive PRD v4)
+
+**Parallel research subagents are massively load-bearing for PRD work.**
+Four agents covered ~10,000 words of structured output in ~10 min wall-
+time across literature, Bennett.jl, spike, and prior-art implementations.
+Serial would have taken ~40 min and the cross-references between domains
+would have been weaker (each agent's report assumed cold context, which
+sharpened the per-domain summaries). Pattern to repeat for v5.
+
+**Hostile-reviewer subagent caught 14 defects in 1191 LOC.** Two were
+BLOCKERS that would have shipped if not caught (`IRBasicBlock` non-export;
+missing `IRLoad`/`IRStore` translation pass). The reviewer's per-axis
+signoff structure (12 named axes, verdict + evidence per finding, positive
+notes section) is the right format — vague "looks ok" reviews are useless;
+this format is actionable. Keep the format for Phase-2 reviewer subagents.
+
+**Citation page numbers drift between sub-agents and reality.** Agent A
+claimed several page numbers that were close but wrong (Bennett 1989
+Theorem 1 location; Meuli 2019 §III-B vs §III). The hostile reviewer
+caught all of these. Lesson: page-precise citations need a separate
+verification pass; agents won't self-correct.
+
+**Bennett 1973 user-supply path beats TIB ILL.** The user had the PDF on
+their personal machine; we burned half a session of Subagent D in pre-
+Phase-0 trying to get it through TIB VPN and exhausted 30+ mirrors. For
+future hard-to-acquire PDFs, **ask the user first** before launching an
+acquisition subagent.
+
+**RC3 is the right pre-read, not just a reference.** The implementations-
+survey agent found that RC3's instruction taxonomy is the canonical RSSA
+embedding and that Phase 2's IR MUST be structurally isomorphic to it.
+This is the strongest Law-2 reuse in v4: not "consult RC3" but "match its
+taxonomy, with deviations requiring an ADR." The pre-read criterion is
+elevated to M5 (gating M0).
+
+### Decisions for future-me
+
+- **Don't ship Bennett.jl mutations as part of Phase 2 M0.** v4 §3.7
+  Handoff A ensures Phase 2 starts with zero Bennett.jl source mutation.
+  Handoff B (`target=:reversible_vm` dispatch arm) is deferred to ADR 0003
+  with the 3+1 protocol and explicit user approval (CLAUDE.md Rule 14).
+- **The Phase-2 first action is the RC3 `rvm` smoke test**, NOT writing
+  Phase-2 IR code. v4 §6 SC6 and §9 M5 codify this.
+- **The straight-line property test gap (Q9 of the retrospective + §6.5
+  of the deep-read report) is now binding for Phase 2** as v4 §3.15:
+  random control-flow programs are required, not just straight-line. M7
+  exercises this.
+
+---
+
 ## Session 1 — 2026-05-23 — Pre-Phase-0 prep + Phase-0 spike + close
 
 **Agents:** Opus 4.7 orchestrator; 11 serial sub-agent passes (Opus for

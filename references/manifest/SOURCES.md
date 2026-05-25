@@ -30,7 +30,7 @@ for Phase-2 production (per PRD Law 1 and §3.x).
 
 | Citation | Priority | Path | Status | Assigned |
 |---|---|---|---|---|
-| Bennett 1973, *Logical reversibility of computation*, IBM JRD 17(6):525–532 | **P0** | `references/foundational/bennett-1973-logical-reversibility.pdf` | ⏸ DEFER | A |
+| Bennett 1973, *Logical reversibility of computation*, IBM JRD 17(6):525–532 | **P0** | `references/foundational/bennett-1973-logical-reversibility.pdf` | ✅ HAVE SHA256:e61ad66840e45bec4b67fa839cf3f89edd733b8e60c86b0c8fd03129de960687 (496K; source: user-supplied 2026-05-25, was TIB-ILL pending) | A |
 | Bennett 1989, *Time/space trade-offs for reversible computation*, SIAM JC 18(4):766–776 | **P2** | `references/foundational/Bennett1989_time_space_tradeoffs.pdf` | ✅ HAVE | — |
 | Knill 1995, *An analysis of Bennett's pebble game*, LANL LAUR-95-2258, arXiv:math/9508218 | **P2** | `references/foundational/Knill1995_bennett_pebble_analysis.pdf` | ✅ HAVE | — |
 | Buhrman–Tromp–Vitanyi 2001, *Time and space bounds for reversible simulation*, arXiv:quant-ph/0101133 | **P2** | `references/foundational/buhrman-tromp-vitanyi-2001.pdf` + `-tex/icalp01.tex` | ✅ HAVE | A |
@@ -185,6 +185,7 @@ Appended by Acquisition Subagent A, 2026-05-23. Format: `<sha256>  <path>`
 f348cc0a1fea3665edab4310208b57b896cf7fbac763e502a51fa7e688794e21  references/reverse-debugging/ocallahan-2017-rr-deployability.pdf
 49dced8ce4eca783f44754961ab280337622be4c12a86f63b3402610c0a15427  references/reverse-debugging/rr-docs.md
 a91a10676754f484e5c2b5958765c13316d18f64db13893d772ac1bbc5021b01  references/ad-and-checkpointing/enzyme-gpu-2021.pdf
+e61ad66840e45bec4b67fa839cf3f89edd733b8e60c86b0c8fd03129de960687  references/foundational/bennett-1973-logical-reversibility.pdf
 ```
 
 ### Identity notes
@@ -200,8 +201,8 @@ a91a10676754f484e5c2b5958765c13316d18f64db13893d772ac1bbc5021b01  references/ad-
 
 | Item | Reason deferred |
 |---|---|
-| Bennett 1973 (P0) | Paywalled: IBM JRD on IEEE Xplore (pdfPath /iel5/5288520/5391321/05391327.pdf confirmed, but redirects to ?denied=); TIB VPN provides access to IEEE Xplore abstract pages but NOT to old IBM JRD content (requires separate IBM JRD subscription). Unpaywall confirms not OA. Exhaustive URL scan of 30+ course page mirrors, Wayback Machine, CERN CDS (requires CERN SSO), IBM Research archives — all failed. **ESCALATION REQUIRED**: this paper is not accessible via any known free mirror or TIB VPN. Consider requesting ILL (Interlibrary Loan) from TIB directly at https://www.tib.eu/de/suchen-finden/tib-portal-de-suche/. |
-| Landauer 1961 (R) | Same situation as Bennett 1973 — IBM JRD on IEEE Xplore (doc 5392446, pdfPath /iel5/5288520/5392444/05392446.pdf), TIB VPN denied. |
+| ~~Bennett 1973 (P0)~~ | **RESOLVED 2026-05-25**: user supplied PDF (Windows downloads → `references/foundational/bennett-1973-logical-reversibility.pdf`). SHA256 `e61ad66840e45bec4b67fa839cf3f89edd733b8e60c86b0c8fd03129de960687`. Verified pages 1-3 against IBM JRD 17(6) Nov 1973: confirmed C.H. Bennett "Logical Reversibility of Computation", pp 525-532, three-tape construction with quintuples-to-quadruples standardization, three-stage Compute/Output/Cleanup theorem with explicit step/space bounds `4ν + 4λ + 5` steps and `s + ν + 1` work-tape squares (cite for Phase-2 Stage 2/3 design). |
+| Landauer 1961 (R) | Same situation as Bennett 1973 was — IBM JRD on IEEE Xplore (doc 5392446, pdfPath /iel5/5288520/5392444/05392446.pdf), TIB VPN denied. Acquisition path: TIB ILL `fernleihe@tib.eu`, DOI `10.1147/rd.53.0183`. |
 | LMT (Lange–McKenzie–Tapp) (R) | Pre-arXiv; SIAM and ACM DL both return 403 via TIB VPN; ECCC TR IDs not found; no open access version located. |
 | Li–Vitanyi pebble chain lower bounds (R) | Pre-arXiv; no open access version found. arXiv cs/0602071 was a different paper. |
 | O'Callahan–Huey 2020 ACM Queue (R) | ACM Queue returns 403 even via TIB VPN with browser session cookies. |

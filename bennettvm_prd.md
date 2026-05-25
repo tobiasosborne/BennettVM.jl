@@ -1,581 +1,1223 @@
-# Product Requirements Document v3: BennettVM.jl
+# Product Requirements Document v4: BennettVM.jl
 
-**A two-phase plan for a reversible VM target for Bennett.jl, informed by 50 years of reversible computing literature.**
+**A reversible VM target for Bennett.jl — Phase-2 production specification, written after the Phase-0 spike closed.**
+
+---
 
 ## Revision history
 
 - **v1.** Initial draft. Bennett-1973 trace VM as the entire roadmap.
-- **v2.** Addressed prior-art positioning, quantum-applicability claims, output-channel invariant, floating-point reversibility, cost model.
-- **v3 (this).** Reframed around a deliberately throwaway smoke-test spike followed by a production implementation informed by an explicit literature review and reuse map. The spike is one Claude Code session; the production VM is the actual deliverable. v3 also corrects a number of structural mistakes in v2 that would have led to reinventing well-published work.
+- **v2.** Added prior-art positioning, quantum-applicability claims, output-channel
+  invariant, floating-point reversibility, cost model.
+- **v3.** Reframed around a deliberately throwaway smoke-test spike followed by a
+  production implementation informed by an explicit literature review and reuse
+  map. Archived at `docs/prd/bennettvm_prd_v3.md` once v4 is ratified.
+- **v4 (this).** Written 2026-05-25 after Phase-0 close. Inputs: (a) the spike
+  retrospective `spike/RETROSPECTIVE.md` (frozen artifact, all nine questions
+  answered); (b) full read of every §2 reference in `references/` (47 papers and
+  five source clones — see §2 reuse rows for citations); (c) survey of the
+  Bennett.jl pipeline at pinned SHA `5731cec` for the integration boundary
+  (see §3.7). v4 supersedes v3 for Phase-2 work; v3 remains the historical
+  record of pre-spike intent.
 
 ---
 
 ## 0. Executive summary
 
-This document specifies **BennettVM.jl** as a reversible execution target for Bennett.jl, developed in two phases:
+This document specifies **Phase 2 — Production** of BennettVM.jl, a reversible
+execution target for [Bennett.jl][bennett]. Bennett.jl compiles plain Julia
+functions to *fixed reversible circuits* — the right artifact for a quantum
+oracle, but it cannot represent unbounded loops or runtime-sized memory.
+BennettVM is the second lowering target (`target = :reversible_vm`) that closes
+that gap: a reversible interpreter for terminating computations of statically-
+unknown length.
 
-- **Phase 0 — Spike.** One Claude Code session (multi-agent orchestration). Bennett-1973 trace VM, full-state history, single toy program (e.g. countdown loop or fixed-point Taylor in Q-format). Deliberately throwaway. Goal: surface concrete issues that cannot be anticipated from this document.
-- **Phase 1 — Learnings.** Spike is archived; a retrospective updates this PRD into v4.
-- **Phase 2 — Production.** Feature-complete reversible VM. Built on a reversible SSA-style IR (RSSA-influenced), with Pendulum/BobISA-style reversible instructions, Enzyme-style min-cut recompute-vs-cache analysis for delta histories, Bennett-1989 pebble-game lowering for quantum oracle synthesis, and integration with existing uncomputation tools (Unqomp/Reqomp/Qurts) where applicable.
+[bennett]: ../Bennett.jl
 
-The methodological thesis: implementation cost for the spike has collapsed to a few hours of agent-orchestrated coding; we use that to extract genuine learnings rather than to relitigate decisions a priori. Phase 2 then reuses as much published infrastructure as possible.
+The two-phase methodology of v3 has executed once:
 
----
+- **Phase 0 — Spike.** Closed 2026-05-23. Bennett-1973 trace VM in `spike/`
+  with full-state history, eight bytecodes, `Int64`-only locals, countdown
+  program, 789/789 tests, mutation-proof verified. Tagged `spike-0-archived`,
+  chmod -w.
+- **Phase 1 — Archive and learnings.** `spike/RETROSPECTIVE.md` is the surviving
+  deliverable (264 LOC, nine questions answered). This v4 PRD is its synthesis.
+- **Phase 2 — Production.** Starts when v4 ratifies. RSSA-based IR ported from
+  Mogensen 2016 / RC3, Pendulum/BobISA-style ISA, Enzyme-style min-cut delta
+  histories with rr-style periodic checkpoints, Bennett-1989 pebble-game
+  lowering for the quantum-oracle subset, optional Reqomp/Unqomp/Qurts
+  integration, Lean 4 formalization of *abstract VM semantics only*. **Phase 2
+  starts from an empty `src/` + `test/` tree.** No code from `spike/` is
+  promoted. Spike code is consulted as a pattern source for naming and API
+  shape, not forked.
 
-## 1. Development model
-
-### 1.1 Why a deliberate throwaway?
-
-Two reasons:
-
-1. **PRDs encode plausible decisions, not actual constraints.** Several v1 and v2 sections turned out to be wrong on inspection of the literature. A working spike, even one that gets discarded, will surface concrete decisions that the PRD cannot anticipate — equality semantics for stacks, halt-state propagation, error-state reversibility, what the cost-report actually wants to measure, what Bennett.jl's lowering can reliably emit.
-2. **Agent capabilities make this cheap.** A single Claude Code session orchestrating ~3–5 sub-agents (interpreter, instruction-set, test, reviewer, golden-master) can produce a runnable Bennett-1973 trace VM with a small test corpus in hours. The cost of doing this *before* committing to Phase 2 design is negligible compared to the cost of getting Phase 2 wrong.
-
-This is the same methodology Tobias has been applying elsewhere in the Scientist Workbench stack (NJOY port, TensorGR.jl, QVLS-Sturm): aggressive variation under selection pressure, with golden masters and punishing benchmarks rather than upfront design lock-in.
-
-### 1.2 Phase 0 — Spike
-
-**Duration.** One Claude Code session. Hard stop at session end regardless of completeness.
-
-**Methodology.**
-- Multi-agent orchestration. Suggested split: interpreter agent, instruction-set agent, test/property-test agent, reviewer agent. Reviewer engages after core changes per the Wild Brains / Scientist Workbench convention.
-- Sequential, not parallel, sub-agents (Julia precompilation cache conflicts; established constraint from Tobias's prior work).
-- Golden master = a reference irreversible Julia interpreter of the same bytecode subset. Property: VM forward result agrees with reference Julia result.
-- Punishing benchmarks = round-trip equality after `unrun!`, history-length equals step count, history-empty after full unrun, max-steps guard triggers correctly.
-- Fail-fast / fail-loud. No silent fallbacks.
-- Ground truth from local PDFs only (Bennett 1973, Yokoyama-Glück 2007, Mogensen 2016 RSSA). No hallucinated APIs.
-- Beads as sole issue tracker.
-
-**Scope.** Exactly the Bennett-1973 trace VM from PRD v2, narrowed to scalars only, integers only (no Q-format yet), one example program, no Bennett.jl integration. This is the minimum that exercises the design.
-
-**Deliverables.**
-1. `BennettVM-spike/` Julia package (named "spike" to flag throwaway status).
-2. `IState`, `RState`, `HistoryStack` (full-state snapshots only).
-3. Eight bytecode instructions: `Const`, `Move`, `UnaryOp`, `BinaryOp`, `Jump`, `JumpIf`, `Return`, `Halt`.
-4. `step!`, `unstep!`, `run!`, `unrun!`.
-5. One hand-written program (countdown loop is sufficient; gcd is a stretch goal).
-6. Round-trip property test on small random programs.
-7. A 1–2 page **spike retrospective** capturing what was harder/easier/different than expected.
-
-**Explicit non-deliverables (Phase 0).**
-- No Bennett.jl integration.
-- No fixed-point or floating-point types.
-- No reversible RAM primitives.
-- No oracle mode.
-- No Lean.
-- No performance work.
-- No documentation beyond the retrospective.
-
-**Success criterion.** A countdown loop forward-runs to halt, `unrun!`s to the initial state with empty history, and the retrospective document exists. Failure on the retrospective means we did not learn anything and should redo Phase 0.
-
-### 1.3 Phase 1 — Archive and learnings
-
-The spike repository is archived (read-only branch or separate repository, prefixed `spike-`). The retrospective answers at minimum:
-
-1. Which assumptions in PRD v3 turned out wrong or underspecified?
-2. What were the actual decisions Claude Code converged on for ambiguous points (equality, error handling, halt semantics, history representation)?
-3. What were the surprises in cost, complexity, or Julia idioms?
-4. What tooling, library, or design choices made the implementation easier and should carry over to Phase 2?
-5. What was *not* learned by doing this spike — i.e., what does Phase 2 still need to design from scratch?
-
-The output is **PRD v4**, which supersedes v3 for Phase 2. v4 is written after the spike, not before.
-
-### 1.4 Phase 2 — Production
-
-This is the actual artifact. It is *not* an extension of the spike; the spike is discarded. v4 will specify it in detail; this document specifies the *constraints* it must satisfy (Part III below) and the *prior art* it must build on (Part II).
-
-The high-level intent of Phase 2:
-
-- Reversible SSA-style IR (informed by Mogensen's RSSA).
-- Reversible instruction set with Pendulum/PISA and BobISA influence.
-- Mixed history strategy: injective instructions push nothing; non-injective instructions use delta entries with Enzyme-style min-cut analysis to choose recompute-vs-cache; rr-style periodic checkpoints for long-running regions.
-- Bennett-1989 pebble-game lowering pass for quantum oracle synthesis subset.
-- Integration with Bennett.jl's existing circuit backend and frontend.
-- Optional integration with Unqomp/Reqomp/Qurts for quantum uncomputation synthesis on programs that admit it.
-- Lean formalization of the abstract VM semantics, not the Julia implementation.
+The methodological thesis from v3 is unchanged: the cost of a Phase-0 spike was
+hours; the cost of a wrong Phase-2 design would be months. The spike retired
+genuine ambiguities (equality semantics, exception ordering, discard-pop
+predicate, per-step inverse test) that v3 could not have anticipated. v4 codifies
+those resolutions as Phase-2 normative requirements (§3.9 onward).
 
 ---
 
-## Part II: Prior art and literature review
+## 1. Phase context
 
-This section is the substance most missing from v1–v2. It exists so that Phase 2 does not reinvent published work.
+### 1.1 Where we are
+
+- `PHASE.md` reads `Phase 1 (archive; PRD v4 pending)` until v4 ratifies, then
+  flips to `Phase 2 (production)` with the v4 ratification date.
+- The Phase-0 spike repository is at `spike/`, tagged `spike-0-archived`, with
+  filesystem permissions `-w` recursively. The spike test suite (789/789
+  passing) is the frozen Phase-0 artifact.
+- The Phase-2 production tree is empty: `src/BennettVM.jl` does not yet exist;
+  `test/runtests.jl` does not yet exist.
+- The Bennett.jl pin remains `5731cec22a1fd29efe02d4dc21c2a57e655ecb47`. Phase 2
+  consumes the `ParsedIR` type defined at `Bennett.jl/src/ir_types.jl:347`,
+  which is already exported. No Bennett.jl source mutation is required to
+  *start* Phase 2 (see §3.7).
+
+### 1.2 What survived from v3
+
+v3 Parts II (prior art), III (Phase-2 design constraints), IV (reuse map), VI
+(success criteria), VII (risks) are carried into v4 with updates. v3 Part V
+(Phase-0 spike specification) is **retired**: Phase 0 closed; v4 §5 replaces it
+with the Phase-1 retrospective summary keyed to v3 §V's deliverables.
+
+### 1.3 What v4 changes
+
+In order of impact on Phase-2 work:
+
+1. **Bennett 1973 acquired.** The PDF blocker noted in v3 §5.5 and in the
+   retrospective Q7 has been resolved: `references/foundational/bennett-1973-logical-reversibility.pdf`
+   (SHA256 `e61ad668…0687`, 496 KB, user-supplied 2026-05-25). The
+   Stage 1/Stage 2/Stage 3 construction and the `2√(νs)` segmentation bound
+   are now citable directly (Bennett 1973 Table 1, p. 528; Table 2, p. 530;
+   the nested-segmentation paragraph at p. 530, lower right). Phase-2
+   Stage 2/3 design is no longer blocked.
+
+2. **BobISA citation corrected.** v3 §2.5 cited "Axelsen–Yokoyama 2011 LATA".
+   No such paper exists. The actual reference is Thomsen–Axelsen–Glück 2012
+   (RC 2012, DOI 10.1007/978-3-642-29517-1_3). Applied throughout §2.4 and
+   Appendix A.
+
+3. **Mogensen RIL citation corrected.** v3 §2.4 implied a standalone RIL
+   paper. RIL is introduced in §3 of Mogensen 2015 RC (LNCS 9138, DOI
+   10.1007/978-3-319-20860-2_5, "Garbage Collection for Reversible Functional
+   Languages"). Applied.
+
+4. **Spike-derived normative requirements.** §3.9 through §3.15 are new and
+   binding: mutable-struct `RState`, mandatory `Base.==`/`Base.hash` on
+   `IState`, forward-before-push step ordering, discard-pop predicate, per-step
+   inverse test, golden-master co-location, seeded property tests. Each is
+   sourced from a specific spike artifact and retrospective Q-section.
+
+5. **Bennett.jl integration boundary specified.** §3.7 now names
+   `Bennett.jl ParsedIR` (defined at `Bennett.jl/src/ir_types.jl:347–398`) as
+   the Phase-2 input type. Bennett.jl is not modified at Phase-2 start. The
+   handoff is the maximum-decoupling option of the three considered.
+
+6. **Open questions reduced.** v3 §VIII had six open items. Four are now
+   resolved or moved to §3 normative statements (Bennett.jl boundary, pebble
+   game in-tree vs FFI, Lean choice, BobISA correction). Two genuinely
+   remain: floating-point reversibility scheme and divergence handling.
+   See §8.
+
+7. **Deferred items table.** §8 introduces a queue of Phase-2 ADRs that must
+   be filed before specific Phase-2 milestones. The first ADR is the
+   Bennett.jl handoff smoke-test.
+
+---
+
+## Part II: Prior art and literature review (revised)
+
+This section supersedes v3 Part II. Every claim cites a local file path. v4
+adds: (a) Bennett 1973 (now on disk); (b) BobISA correction; (c) Mogensen RIL
+correction; (d) Hybrid SSA (Deworetzki-Schlecht-Meyer 2024); (e) tightened
+prose where Phase-0 work surfaced ambiguity.
 
 ### 2.1 The classical foundations
 
-**Bennett 1973.** *Logical reversibility of computation.* IBM J. Res. Dev. 17(6), 525–532. The three-tape reversible TM with a history tape. v0 / Phase-0 spike is literally this construction.
+**Bennett 1973** (`references/foundational/bennett-1973-logical-reversibility.pdf`,
+IBM JRD 17(6):525–532, Nov 1973). The three-tape reversible TM. Table 1 (p. 528)
+shows the canonical three-stage construction:
 
-**Bennett 1989.** *Time/space trade-offs for reversible computation.* SIAM J. Comput. 18(4), 766–776. Recursive pebble-game simulation: T irreversible steps in O(T^{1+ε}) time and O(log T) space, or O(T) time and O(T^ε) space. The right asymptotic target for any production reversible VM.
+- Stage 1 (Compute): split each irreversible quintuple `AT → T'σA'` into a
+  pair of quadruples `A_j[T/b] → [T'/b]A_m'`, `A_m'[/b/] → [σm 0]A_k`, with
+  the index `m` recorded on a history tape that is "out of phase" with the
+  working tape (p. 529, col. 1).
+- Stage 2 (Copy output): a sequence of B-state quadruples (Table 1, middle)
+  that copies the output to a third tape without writing the history tape.
+- Stage 3 (Retrace): C-state quadruples (the first-stage quadruples with
+  C's substituted for A's and inverses applied) that undo Stage 1's history.
 
-**Lange–McKenzie–Tapp (LMT).** Exponential-time, O(S)-extra-space reversible simulation. The other endpoint of the time-space tradeoff.
+Resource bounds (p. 527, lower right; p. 529 back-references the same
+statement): if S takes ν steps and
+uses s tape squares, R takes `4ν + 4λ + 5` steps and uses `s + ν + 1` working-
+tape squares, `ν + 1` history squares, and `λ + 2` output squares. The
+nested-segmentation paragraph (p. 530, lower right) sketches the bound
+`2√(νs)` total temporary storage at the cost of doubling time, and a `log ν`
+space limit at the cost of `ν²` time — this is the precursor to Bennett 1989's
+recursive pebble game. Phase-0 implements Stage 1 only with full-snapshot
+history; Phase 2 implements all three stages plus the recursion.
 
-**Knill 1995.** *An analysis of Bennett's pebble game.* LANL LAUR-95-2258, arXiv:math/9508218. Recursion for the time-optimal solution given a space bound. Explicit asymptotic expression for the best time-space product. Direct input for any pebble-game implementation.
+**Bennett 1989** (`references/foundational/Bennett1989_time_space_tradeoffs.pdf`,
+SIAM JC 18(4):766–776). Theorem 1 (p. 768; Table 2 on p. 769) is the pebble-game
+recursion: `RS(z,x,n,m,d)` hierarchically breaks computation into `n` segments
+of length `m`, achieving `O(T^{1+ε})` time and `O(S log T)` space; the
+Corollary on p. 770 gives `O(S²)` space-optimal simulation. Phase 2's lowering
+pass implements Theorem 1, not Lemma 1 (the linear-time / `O(S+T)` space form
+that is the spike).
 
-**Buhrman–Tromp–Vitanyi 2001.** *Time and space bounds for reversible simulation.* Established the tradeoff family; characterizes the space of choices between Bennett-1973 and LMT.
+**Knill 1995** (`references/foundational/Knill1995_bennett_pebble_analysis.pdf`,
+LANL LAUR-95-2258, arXiv:math/9508218). Theorem 2.1 (p. 3) is the exact
+recursive formula `F(n,S) = min_{1≤m<n} [F(m,S) + F(m,S-1) + F(n-m,S-1)]`.
+Tables 1–2 (pp. 7–8) tabulate `F(n,S)` up to `n=100`, `S=20` — usable as test
+oracles for the Phase-2 lowering pass.
 
-**Li–Vitanyi.** Lower bounds for reversible pebbling on lines (chains). The bound that Phase-2 pebbling must aspire to.
+**Buhrman–Tromp–Vitanyi 2001** (`references/foundational/buhrman-tromp-vitanyi-2001.pdf`,
+arXiv:quant-ph/0101133). Establishes the tradeoff family characterizing the
+design space between Bennett-1973 and LMT.
+
+**Vitanyi CF'05** (`references/foundational/vitanyi-time-space-energy.pdf`,
+arXiv:cs/0504088). Survey. The §4 summary of Bennett 1973 and 1989 is the safe
+disambiguation reference when memory drifts. (Note: `vitanyi-reversible.pdf` is
+a duplicate of this file; the manifest tracks the dedup.)
 
 ### 2.2 Reversible imperative languages
 
-**Janus.** Lutz–Derby 1986 (Caltech class notes, "Janus86"); Yokoyama–Glück 2007 PEPM (modern formalization with invertible self-interpreter). The canonical reversible imperative language. Self-inverse statements (`+=`, `-=`, `swap`), reversible conditionals with postconditions, reversible `from-until` loops. The Yokoyama–Glück 2007 result that matters: **the Janus self-interpreter is reversible without a computation history.** If the source language is reversible by construction, no trace tape is required. This is the structural lesson Phase 2 must absorb.
+**Janus / Yokoyama–Glück 2007 PEPM** (`references/reversible-languages/yokoyama-glueck-2007-pepm.pdf`).
+The modern formalization. §2 defines Janus; §3 implements the self-interpreter
+SINT in Janus itself. Theorem 4 establishes that SINT is reversible **without a
+runtime computation history** — because Janus is reversible-by-construction
+(Figure 5: per-statement inverter), the interpreter can flip direction by
+swapping `call` and `uncall`. *Phase-2 lesson:* this property is not directly
+inheritable — BennettVM's source language is irreversible Julia bytecode, not
+Janus — but it bounds the design space for the *injective-instruction subset*
+of Phase 2 IR (§3.2): for that subset, no history is needed.
 
-Implementations:
-- TOPPS at DIKU: official reference interpreter.
-- Jana (mbudde, GitHub): Haskell interpreter.
-- evincarofautumn/Janus: another Haskell.
-- janus-cpu/janus-vesta: Rust VM emulating a Janus CISC instruction set.
-- RC3 (THM): the most actively-developed Janus toolchain, with optimizing compiler to RSSA and reversible C output.
+**Glück–Yokoyama 2016 R-WHILE** (`references/reversible-languages/glueck-yokoyama-2016-rwhile.pdf`).
+Structured reversible programming with `from a until b ... loop t end`. The
+question Phase 2 leaves open: which subset of Julia `while` loops admits this
+lowering? See §8.
 
-**R-CORE / R-WHILE.** Glück–Yokoyama 2016. *A linear-time self-interpreter of a reversible imperative language.* Structured reversible programming. The reversible loop is `from a until b ... loop t end` rather than `while`. Phase-2 question: which subset of Julia `while` loops admits an R-WHILE-style lowering?
+**Lutz–Derby 1986** (`references/reversible-languages/lutz-derby-1986-janus.pdf`).
+The original Janus notes. Historical record; not load-bearing for Phase 2.
 
-**RC3 (Reversible Computing Compiler Collection).** Technische Hochschule Mittelhessen. https://git.thm.de/thm-rc3/release. Active project. Optimizing compiler for Janus, virtual machine for RSSA, output to reversible C. This is the closest existing analogue to what BennettVM is. **Read the RC3 source before writing Phase-2 code.** Listed dependency in the production phase.
+**Hermes (Mogensen 2022), ROOPL (Haulund 2017), RFUN, CoreFun, Sparcl,
+Theseus.** Cited in Appendix A. Phase 2 does not implement any of these; they
+inform taste.
 
-**ROOPL.** Haulund 2017 (MS thesis, U. Copenhagen). Reversible OOP with classes, inheritance, subtyping. Out of scope for BennettVM but worth knowing exists.
+### 2.3 Reversible intermediate languages
 
-**Hermes.** Mogensen 2022. *Hermes: a reversible language for lightweight encryption.* Sci. Comput. Program. 215. Domain-specific reversible language. Demonstrates that reversibility can pay off for specific application classes (here, encryption primitives).
+**Mogensen 2016 RSSA** (`references/reversible-ir/mogensen-2016-rssa.pdf`,
+PSI 2015 / LNCS 9609, DOI 10.1007/978-3-319-41579-6_16). The IR Phase 2 is
+based on. Two structural commitments from §3:
 
-**Reversing Erlang and other concurrent imperative work.** Multiple recent papers reversing concurrent imperative programs by identifier tracking. Not directly applicable to a serial VM but indicates the active extent of the field.
+- φ-equivalents appear on **both joins and splits** of control flow.
+  Forward execution needs a join-φ (conditional entry, form `L1(x,...) L2 ← c`);
+  backward execution needs a split-φ (conditional exit, form `c → L1(y,...) L2`).
+  Classical-SSA φ on joins-only is *wrong* in RSSA and produces un-invertible IR.
+- Selected uses of a variable are **variable-destroying**, substituting for the
+  traditional reversible-architecture exchange.
 
-### 2.3 Reversible functional languages
+**Mogensen 2015 RIL** (`references/reversible-ir/mogensen-ril.pdf`,
+LNCS 9138 §3, DOI 10.1007/978-3-319-20860-2_5, "Garbage Collection for
+Reversible Functional Languages"). **RIL is not a standalone paper** — it is
+introduced in §3 of this 2015 work. v3 §2.4's framing as a standalone RIL paper
+was incorrect.
 
-**Π and Π°.** James–Sabry. Combinator calculus for reversible computation, type isomorphisms.
+**Deworetzki–Meyer 2021 (Janus-to-RSSA)** (`references/reversible-ir/deworetzki-meyer-2021-janus-to-rssa.pdf`,
+RC 2021, DOI 10.1007/978-3-030-79837-6_4). The RC3 compiler design: Janus source
+→ RSSA → four backends (AST interpreter, three-address-code C, RSSA C, RSSA
+VM). §2.2 (pp. 66–67) is the most accessible RSSA exposition; Phase 2 reads
+this before reading Mogensen 2016.
 
-**Theseus.** James–Sabry. *Isomorphic interpreters from logically reversible abstract machines.* High-level reversible language with abstract-machine semantics.
+**Deworetzki 2022, 2023; Deworetzki–Schlecht–Meyer 2024 Hybrid SSA**
+(`references/reversible-ir/deworetzki-{2022-optimizing,2023-cfg-opt,2024-hybrid-ssa}.pdf`).
+Optimization passes and the mixed-classical-reversible SSA form. Hybrid SSA is
+directly relevant because BennettVM consumes Bennett.jl's *classical* SSA
+(`ParsedIR` — §3.7) and produces a reversible form: the boundary is precisely
+what Hybrid SSA models.
 
-**RFUN.** Yokoyama–Axelsen–Glück 2012; Thomsen et al. First-order reversible functional language. First-match policy for pattern matching to maintain reversibility. Symmetric pattern matching and data construction with linearity.
+**Oguchi–Yuen 2024 CRIL/CRSSA** (`references/reversible-ir/oguchi-yuen-2024-cril-crssa.pdf`,
+arXiv:2309.07310). Concurrent extension. Out of scope for Phase 2.
 
-**CoreFun.** Jacobsen–Kaarsgaard–Thomsen 2018 (RC 2018). Typed reversible functional core language. Type system based on combined logic of unrestricted and relevantly-typed terms. Special support for ancillary (read-only) variables. Provides static reversibility checking. Should be examined when designing Phase-2 type-level annotations for ancilla-like data.
+### 2.4 Reversible ISAs
 
-**Sparcl.** Matsuda–Wang 2020 (ICFP, *PACMPL* 4). *A language for partially-invertible computation.* Linear-typed, with a type constructor distinguishing invertible from non-invertible data. Allows ordinary computation to coexist with invertible parts. This is structurally similar to what Bennett.jl wants: ordinary Julia coexisting with reversible-compiled subroutines.
+**Pendulum / Vieri 1995 MS, 1999 PhD** (`references/reversible-isa/vieri-{1995-pendulum-ms,1999-reversible-arch-phd}.pdf`).
+MS Chapter 4 §4.2 (pp. 30–38) defines the 18-instruction ISA; §4.2.1 (p. 32)
+states the **memory-as-exchange** rule: every memory access preserves the
+prior register value. A load that does not store back is irreversible.
+PhD Chapter 4 §4.4 (pp. 50–60 SCRL) establishes that multiplexing is a
+many-to-one mapping and therefore illegal in a reversible ISA. Phase 2's
+memory model adopts both rules: §3.2.
 
-**Qurts.** Hirata–Heunen 2025 (POPL 9). *Automatic Quantum Uncomputation by Affine Types with Lifetime.* Programs interpreted as reversible pebble games. Affine types with lifetimes drive ancilla management. Recent and directly relevant.
+**BobISA / Thomsen–Axelsen–Glück 2012** (`references/reversible-isa/axelsen-yokoyama-2011-bobisa.pdf`
+— the filename predates the citation correction). RC 2012, DOI 10.1007/978-3-642-29517-1_3.
+"A Reversible Processor Architecture and Its Reversible Logic Design." Key
+property for Phase 2: **reversible jumps encode the source label** so the
+predecessor pc can be recovered from local state. A classical-style jump to
+address D from address P loses P and is therefore irreversible. Phase-2
+control flow adopts this encoding (§3.2).
 
-### 2.4 Reversible intermediate languages
+**Frank 1999 MIT PhD** (`references/reversible-isa/frank-1999-thesis.pdf`).
+406-page thesis. The thermodynamic backing for the reversible-computing
+argument. Phase 2 cites this for the negative constraint: any instruction
+that destroys information is thermodynamically irreversible and must be
+either excluded or routed through a designated garbage output.
 
-**RIL.** Mogensen. Reversible Intermediate Language. Used for memory usage analysis of reversible functional languages.
+**Mogensen 2022 Fast Control** (`references/reversible-isa/mogensen-2022-fast-control.pdf`,
+RC 2022). Analysis of PISA/BobISA control mechanisms. Reference [5] of this
+paper is what confirmed the BobISA citation correction. Relevant for Phase 2
+control-flow refinements.
 
-**RSSA.** Mogensen 2016, PSI 2015. *RSSA: A Reversible SSA Form.* Reversible variant of SSA. Two key design points:
-- Selected uses of a variable *destroy* the variable (substitute for traditional reversible exchange).
-- φ-nodes appear on **both** joins **and splits** of control flow (forward AND backward control flow needs reconciliation).
+### 2.5 Quantum uncomputation
 
-This is the IR Phase 2 should be based on. There is published work on compiling Janus to RSSA, register allocation for RSSA, copy/constant propagation in RSSA, and optimizations of reversible control flow on top of RSSA (Deworetzki–Meyer 2023). **Use RSSA. Do not reinvent it.**
+**Unqomp (Paradis et al 2021)** (`references/quantum-uncomputation/unqomp-2021.pdf`,
+PLDI 2021). Synthesizes uncomputation on a circuit-graph DAG with no space
+budget. Theorem 3.1: synthesized circuit resets ancilla qubits to `|0⟩`
+without measurement.
 
-**CRIL / CRSSA.** Oguchi–Yuen 2024 (RC 2024). Concurrent extension of RIL/RSSA with synchronization. Out of scope for Phase 2 but worth knowing.
+**Reqomp (Paradis et al 2024)** (`references/quantum-uncomputation/Reqomp2024_uncomputation.pdf`,
+Quantum 8:1258, arXiv:2212.10395). Extends Unqomp with a qubit budget,
+trading qubits for gates via `evolveVertex` (§3.2). Up to 96% ancilla
+reduction. For Phase 2, Reqomp is an FFI binding *candidate* for the
+quantum-oracle subset, not a substitute for the pebble-game pass.
 
-**Hybrid SSA.** Deworetzki–Schlecht–Meyer 2024. Connects reversible and classical SSA. Relevant for Bennett.jl, which has *both* reversible and irreversible code regions.
+**Qurts (Hirata–Heunen 2025 POPL)** (`references/quantum-uncomputation/qurts-2024.pdf`,
+arXiv:2411.10835). Affine types with lifetimes for automatic uncomputation in
+a Rust-like quantum language. Programs interpreted as reversible pebble games.
+*Not directly applicable to BennettVM* — Qurts is a source-language type
+system, not a runtime tool — but Table 1 (p. 3) is the authoritative
+comparison table for the design space (Qurts vs Unqomp vs Reqomp vs ReQWire
+vs Silq).
 
-### 2.5 Reversible ISAs
+**Meuli–Soeken–De Micheli 2019** (`references/quantum-uncomputation/Meuli2019_reversible_pebbling.pdf`,
+DATE 2019, arXiv:1904.02121). SAT-based pebble game. Generalizes Knill's
+linear-chain recursion to arbitrary DAGs. Table I (p. 4) reports 52.77%
+qubit reduction vs naive Bennett at 2.68× step overhead. For Phase 2: this
+is the practical tool for the DAG case; the Knill recursion handles
+straight-line programs.
 
-**PISA / Pendulum.** Vieri 1995 (MIT MS), 1999 (MIT PhD). *Reversible Computer Engineering and Architecture.* 18-instruction reversible ISA. 12-bit data and address. Fabricated in 0.5μm CMOS. **Memory access is always an exchange.** This single design rule eliminates a large class of reversibility violations and should be adopted directly in Phase 2.
+**Quist et al 2025 spooky pebbling** (`references/quantum-uncomputation/spooky-pebble.pdf`,
+Quantum, arXiv:2110.08973). Bennett's pebble game extended with mid-circuit
+measurements. Tight bounds: time `O(T/ε)`, qubits `O(T^ε · S^{1-ε})`,
+exponentially better than reversible at the same qubit count. Out of scope
+for Phase-2 initial design (the VM backend is classical-reversible per §3.7);
+flagged in §8 as a Phase-2.x option for quantum-MCM-capable hardware.
 
-**BobISA.** Axelsen–Yokoyama 2011 (LATA). Reversible ISA inspired by PISA, with improved branch and address-calculation handling. Reversible jumps encode the source label so the predecessor is recoverable. This is the right model for Phase-2 control flow.
+**Quantum Register Machine / Zhang–Ying 2025** (`references/quantum-uncomputation/zhang-ying-2025-qrm.pdf`,
+PLDI 9:180, arXiv:2408.10054). Quantum control flow at the ISA level. Out of
+scope for Phase 2; relevant if BennettVM ever targets quantum recursion.
 
-**Storrs Hall 1994.** *A reversible instruction set architecture and algorithms.* PhysComp '94. Earlier reversible ISA work.
+### 2.6 Reverse-time debugging
 
-**Fast Control for Reversible Processors.** Mogensen et al. (LNCS RC 2022). Analysis of PISA/BobISA control mechanisms and proposed improvements. Relevant for Phase-2 reversible control flow design.
+**rr (O'Callahan et al 2017)** (`references/reverse-debugging/ocallahan-2017-rr-deployability.pdf`,
+USENIX ATC, arXiv:1705.05937). §2.1 (p. 2): "record all sources of
+nondeterminism within the boundary and all inputs crossing into the boundary,
+and re-execute by replaying the nondeterminism and inputs." For BennettVM
+(fully deterministic — no I/O, no concurrency, no nondeterminism inside the
+VM), the rr architecture implies: **periodic full-state checkpoints + replay
+within segments**, not per-step logging. Phase 2 §3.3 adopts this as the base
+mechanism for deterministic regions.
 
-### 2.6 Quantum uncomputation: the modern stack
+### 2.7 Compiler-based reverse-mode AD
 
-The Phase-2 quantum lift target lives in this body of work, not in our heads.
+**Enzyme (Moses–Churavy 2020 NeurIPS)** (`references/ad-and-checkpointing/enzyme-2020.pdf`,
+arXiv:2010.01709). §2 "Cache" (p. 4): Enzyme decides per-instruction whether
+to cache or recompute, using alias analysis, activity analysis, and a cost
+model. The min-cut analysis is the Bennett-1989 pebble problem specialized
+to dataflow graphs, solved heuristically at LLVM IR. Phase 2 ports this for
+delta-history selection (§3.3).
 
-**Unqomp.** Paradis–Bichsel–Cohen–Vechev 2021 (PLDI). *Synthesizing uncomputation in quantum circuits.* First procedure to automatically synthesize uncomputation. Circuit-graph formalism. Distinguishes qfree gates (those describable on computational basis states) from non-qfree.
+**Enzyme GPU 2021** (`references/ad-and-checkpointing/enzyme-gpu-2021.pdf`,
+SC 2021). Extension to GPU kernels. Reference, not direct input.
 
-**Reqomp.** Paradis–Bichsel–Vechev 2024 (*Quantum* 8, 1258). *Space-constrained uncomputation for quantum circuits.* Builds on Unqomp. Trade qubits for gates. Up to 96% ancilla reduction. **For any classical reversible function with a known circuit, Reqomp is the production tool.**
+### 2.8 What is still not in the literature
 
-**Reversible pebbling game for quantum memory management.** Meuli–Soeken–De Micheli 2019 (DATE). SAT-based pebble game for quantum oracle synthesis. Reduces pebbles by 52.77% on average versus Bennett's method.
+Three genuine gaps (down from v3's three; one of v3's items — "Julia-native
+reversible VM with Bennett.jl-style frontend integration" — is now what we
+are building):
 
-**Spooky pebble game.** Gidney; tight bounds by Quist et al 2025 (*Quantum*). Extends Bennett's reversible pebble game with mid-circuit measurements. Allows irreversible steps at a "phase price" paid later. For quantum oracle synthesis where measurement is available, this strictly dominates pure reversible pebbling.
+1. **RSSA-over-Julia.** All RSSA work assumes statically-typed first-order
+   programs (Janus, RIL). Julia has dynamic dispatch, multiple return values,
+   and heap mutation with aliasing. How to embed Julia IR into RSSA without
+   losing reversibility guarantees in the presence of aliased heap mutation
+   is unaddressed. Phase 2 §3.7 handles this only at the surface — Bennett.jl
+   has already rejected dynamic-`Dict` and dynamic-`Array` allocation
+   (`Bennett.jl/README.md:247`), narrowing the problem.
 
-**Qrisp + Unqomp integration.** Seidel et al. Integration of automatic uncomputation into the Qrisp high-level quantum programming framework. Reference for how to expose automatic uncomputation to end users.
+2. **Floating-point reversibility scheme.** v3 §3.6 listed three options
+   (residual tape, posit-with-sticky, opaque snapshots). The literature does
+   not adjudicate. Deferred to v5 per §8.
 
-**Qurts.** Already cited (§2.3). Type-driven uncomputation.
-
-**Quantum Register Machine.** Zhang–Ying 2025 (PLDI 9, art. 180). *Quantum Register Machine: Efficient Implementation of Quantum Recursive Programs.* First purely-quantum architecture with quantum control flow and recursive procedure calls at the instruction-set level. Stores programs and data in QRAM, executes on quantum registers. Directly relevant if Bennett.jl ever wants quantum recursion as a target. For BennettVM Phase 2, the relevance is structural: a quantum analogue exists, and the classical reversible VM and the quantum register machine probably want to share IR-level concepts.
-
-### 2.7 Reverse-time debugging (the engineering lesson)
-
-The reversibility-for-debugging community has been deploying this in production for a decade. The lessons are real.
-
-**rr (Mozilla).** O'Callahan–Huey, 2014+. https://rr-project.org/. https://github.com/rr-debugger/rr. ACM Queue article, 2020. The dominant design: **record nondeterministic inputs only, replay deterministically.** Most computation is deterministic; only the boundary (syscalls, scheduler decisions, RDTSC, RDRAND, signals) needs recording. Reverse execution = restore previous checkpoint + replay forward. Periodic checkpoints amortize the cost.
-
-**For BennettVM, the rr lesson is decisive.** Our VM is fully deterministic (no I/O, no concurrency, no nondeterminism). Therefore, in Phase 2:
-- Logging *every* step is wasteful even with delta histories.
-- The right base mechanism is **periodic full-state checkpoints + deterministic forward replay** to land at any intermediate step.
-- Between checkpoints, no per-step logging is needed *at all* for purely-deterministic regions.
-- This is orthogonal to and composes with Bennett-1989 pebbling. Pebbling gives sublinear space asymptotically; rr-style checkpointing gives concrete constant-factor speedups.
-
-**UndoDB**, **WinDbg time travel**, **Simics**, **DrDebug**, **Microsoft Intellitrace.** Commercial and academic reverse debuggers. Various points on the record/replay vs. instrumentation tradeoff curve. Background reading, not direct input.
-
-### 2.8 Compiler-based reverse-mode AD
-
-**Enzyme.** Moses–Churavy et al. https://enzyme.mit.edu. LLVM/MLIR AD plugin. Tobias works adjacent to this and has called BennettIR "the Enzyme of reversible computing." The critical reusable concept:
-
-> Using a minimum-cut recompute vs cache analysis, Enzyme determines a minimal set of values that must be preserved in order to satisfy the dependencies of the reverse pass.
-
-This is **the Bennett-1989 pebbling problem specialized to dataflow graphs**, solved heuristically at the LLVM IR level. Enzyme's min-cut analysis should be adapted directly for Phase 2's delta-history selection. We are not reinventing this in BennettVM; we are porting a known-good algorithm.
-
-**CoDiPack, Tapenade, ADOL-C.** Other AD tools with reverse-mode and various checkpointing strategies (Griewank's revolve algorithm being the classic). Griewank's revolve is itself a special case of Bennett-1989 pebbling for dataflow graphs.
-
-### 2.9 What is not in the literature
-
-A few things this PRD assumes do not yet exist in published form. If they do, this PRD is wrong and should be revised.
-
-1. **A Julia-native reversible VM with Bennett.jl-style frontend integration.** RC3 exists for Janus, not for Julia. Bennett.jl appears to be the only Julia reversible-compilation effort at this scale.
-2. **A reversible VM with both classical execution and quantum-oracle-synthesis lowering.** Reqomp/Unqomp work at the circuit level; RC3 works at the classical level; nobody seems to be running both off a shared IR.
-3. **Lean 4 formalization of a reversible VM with pebble-game lowering.** Lean formalization of reversible flowcharts exists (Kaarsgaard et al, join inverse categories); a full VM does not appear to be formalized.
-
-The Phase-2 contribution is (1) + (2) + (3), built by reusing the above.
+3. **Divergent-program handling.** All reversible-simulation results assume
+   the simulated machine halts. BennettVM must handle divergence gracefully
+   (max-steps trip is reversible; provably divergent loops are not). Phase 2
+   §3.x handles only the max-steps case; structural divergence detection is
+   out of scope.
 
 ---
 
-## Part III: Phase-2 design constraints (informed by Part II)
+## Part III: Phase-2 design specification (normative)
 
-This is *not* the Phase-2 design. The Phase-2 design is in v4, written after the spike. What this section gives is the hard constraints that Phase 2 must satisfy.
+This section is binding. Every MUST/SHOULD is RFC-2119-conformant. Citations
+of the form `spike/Interpreter.jl:103–109` refer to the frozen Phase-0
+artifact; citations of the form `Bennett.jl/src/ir_types.jl:347` refer to the
+Bennett.jl pin `5731cec`.
 
 ### 3.1 IR
 
-The Phase-2 IR is based on **RSSA (Mogensen 2016)**, with:
+**Phase 2 IR MUST be Mogensen-style RSSA (Mogensen 2016).** Specifically:
 
-- φ-nodes on both joins and splits.
-- Variable-destroying uses (as in Mogensen's design).
-- Three-address form derived from RIL.
-- Extensions for Bennett.jl-specific lowering needs (to be decided in v4).
+- Basic blocks. Each block has an *entry point* (`UnconditionalEntry` or
+  `ConditionalEntry` — Mogensen 2016 §3) and an *exit point*
+  (`UnconditionalExit` or `ConditionalExit`).
+- **φ-equivalents on both joins AND splits.** `ConditionalEntry L1(x,...) L2 ← c`
+  reconciles incoming control from `L1` (if `c` holds) and `L2` (otherwise).
+  `ConditionalExit c → L1(y,...) L2` enables backward execution to determine
+  which predecessor was taken without a history entry.
+- **Variable-destroying uses**, substituting for the classical reversible
+  exchange.
+- Three-address form for assignments: `x := y ⊕ (l ⊙ r)` per Mogensen 2016
+  §3 (where `⊕` is the modification operator and `⊙` is the binary op).
 
-We do not invent a new reversible SSA form. We extend Mogensen's.
+**Reference implementation:** the IR taxonomy in `references/implementations/RC3/compiler/src/main/java/rc3/rssa/instances/`
+(12 concrete instruction subclasses out of 22 files in that directory; the
+other 10 are interface/support types `Atom`, `BinaryOperand`, `Constant`,
+`ControlInstruction`, `Instruction`, `MemoryAccess`, `Program`, `RValue`,
+`Value`, `Variable`). The concrete subclasses — `ArithmeticAssignment`,
+`SwapInstruction`, `MemoryAssignment`, `MemoryInterchangeInstruction`,
+`MemorySwapInstruction`, `CallInstruction`, `BeginInstruction`,
+`EndInstruction`, `UnconditionalEntry`, `UnconditionalExit`,
+`ConditionalEntry`, `ConditionalExit` — are the authoritative
+representations of Mogensen 2016 §3. **Phase 2's IR taxonomy MUST be structurally
+isomorphic to this set.** Departures require an ADR citing the published
+justification.
+
+**Reference-implementation pre-read criterion:** before any Phase-2 IR code is
+written, the `rc3` and `rvm` binaries MUST be built and a sample RSSA program
+executed through `rvm`. The result MUST be documented in `docs/adr/0001-rc3-rvm-smoke.md`.
+This is Phase-2 success criterion 6 (§6) operationalized as a milestone gate.
+
+**Extensions to RSSA for Bennett.jl ingestion** (Phase-2-specific):
+
+- Julia-integer width annotations on operands. Bennett.jl's `ParsedIR` already
+  carries bit-widths on `args` and `ret_elem_widths` (`Bennett.jl/src/ir_types.jl:347–356`);
+  these are propagated into RSSA operands without loss.
+- A `Bennett.PendingVecLane`-equivalent placeholder for sub-instruction lane
+  reconciliation. (See `Bennett.jl/src/ir_types.jl` for the existing sentinel
+  set.)
+- An explicit `Halt` / `Return` distinction (§3.9.10).
 
 ### 3.2 Instruction classes
 
-Following Pendulum/BobISA, the Phase-2 ISA distinguishes:
+Following Pendulum (Vieri 1995 §4.2.1) and BobISA (Thomsen–Axelsen–Glück 2012):
 
-- **Injective primitives.** `NOT`, `CNOT`, `Toffoli`, `Swap`, `AddMod`/`SubMod` on fixed-width integers, `LoadExchange`/`StoreExchange` (memory access is always an exchange, per Pendulum). Each is self-inverse or has a fixed paired inverse. Push nothing to history.
+- **Injective primitives.** `NOT`, `CNOT`, `Toffoli`, `Swap`, fixed-width
+  `AddMod`/`SubMod`/`XorMod`, `Exchange` (memory access). Each is self-inverse
+  or has a fixed paired inverse. **Push nothing to history.**
+- **Reversible control flow.** `ConditionalEntry`/`ConditionalExit` per RSSA
+  (§3.1); BobISA-encoded jumps that recover the source label from local state.
+  **Push nothing to history.**
+- **Non-injective ops.** Operations that genuinely lose information (e.g., a
+  Julia `div`-with-rounding where the residue is not recovered). MUST be
+  represented as an injective core (the function's mathematical bijection
+  extended with explicit ancilla outputs) wrapped in an *ancilla-allocation*
+  protocol. The history payload is the ancilla value(s), not a full snapshot.
 
-- **Reversible control flow.** Following BobISA: reversible jumps encode the source label, so the predecessor pc is recoverable from local state. No history entry needed.
+**Memory access MUST always be an exchange** (Vieri 1995 §4.2.1).
+Specifically: `MemoryInterchangeInstruction x := M[y] := z` reads `M[y]` into
+`x` AND writes `z` into `M[y]`, in a single reversible step. A load that does
+not store back is forbidden — Phase 2 IR generation MUST emit an explicit
+zero-write paired with every effective load.
 
-- **Non-injective ops.** Whatever cannot be expressed in the injective subset (e.g., Julia operations that genuinely lose information, or interfaces to irreversible foreign code). Use Enzyme-style min-cut delta history.
+**Reversible jumps MUST encode the source label.** A jump from address P to
+address D MUST embed P (or a derivative recoverable from local state) in the
+target's incoming-edge condition. This is the RC3 `LabelTable` dual-address
+mechanism (`references/implementations/RC3/compiler/src/main/java/rc3/rssa/pass/LabelTable.java:12`):
+each label has a forward-entry address and a backward-entry address.
+
+**Anti-pattern (from spike, do NOT carry over):** the spike's `Const`, `Move`,
+`UnaryOp`, `BinaryOp` are uniform non-injective primitives that incur a full-
+snapshot history entry each. Phase 2 MUST partition by injectivity per the
+list above and pay the history cost only for the non-injective subset.
+(Justification: `spike/RETROSPECTIVE.md` Q4 §"Anti-patterns the spike
+surfaced".)
 
 ### 3.3 History mechanism
 
-Three-layered, in order of preference:
+The Phase-2 history strategy is **three-layered**, applied in order of
+preference:
 
-1. **No log.** For injective instructions and reversible jumps.
-2. **Delta entries with min-cut selection.** For non-injective ops in deterministic regions. Algorithm: Enzyme's recompute-vs-cache analysis ported to the BennettVM IR.
-3. **Periodic full-state checkpoints + deterministic replay.** For long-running regions and as a safety net. The rr design pattern.
+1. **No log.** Injective instructions and reversible jumps (§3.2) push
+   nothing.
+2. **Delta entries with min-cut selection.** For non-injective ops in
+   deterministic regions, the history payload is the minimal information
+   required to invert the step (typically: the destroyed value(s), not a
+   snapshot). The decision of *which* values to cache vs recompute is the
+   Enzyme min-cut analysis (Moses–Churavy 2020 NeurIPS §2 "Cache") ported to
+   the Phase-2 IR.
+3. **Periodic full-state checkpoints + deterministic replay.** For long-
+   running regions and as a safety net. The rr architecture (O'Callahan et al
+   2017 §2.1): record nondeterminism, replay determinism. Since BennettVM is
+   fully deterministic inside the VM boundary, only checkpoint state and
+   replay forward.
 
-Full per-step state snapshots (the Phase-0 mechanism) **must not appear in Phase 2**. They are the worst point on the time-space tradeoff curve and the Phase-0 spike exists to confirm that we hate them.
+**Full per-step `IState` snapshots (the Phase-0 mechanism) MUST NOT appear in
+Phase 2.** They are the worst point on the time-space curve and exist in the
+spike specifically so that the Phase-0 retrospective could refute them.
+Justification: `spike/RETROSPECTIVE.md` Q4 §"Anti-patterns".
+
+**Enzyme min-cut adaptation ADR.** Before the delta-history selector is
+implemented, an ADR MUST identify which Phase-2 RSSA dataflow constructs
+correspond to Enzyme's LLVM-IR value-dependency graph edges. Filed as
+`docs/adr/0002-enzyme-min-cut-mapping.md`. See §8.
+
+**Checkpoint interval.** Configurable. Default is set after the measurement
+task in §6.M1 produces concrete cost data; until then, the default is
+"every 64 retained-snapshot-equivalent steps" as a placeholder.
 
 ### 3.4 Pebble-game lowering pass
 
-For programs targeting quantum oracle synthesis, the Phase-2 compiler includes a Bennett-1989 pebble-game lowering pass. This pass:
+For programs targeting **quantum oracle synthesis**, Phase 2 includes a
+Bennett-1989 pebble-game lowering pass. This pass:
 
-- Takes a uniformly-bounded program in the RSSA-extended IR.
-- Produces a sequence of compute / uncompute steps satisfying a configurable space bound.
-- Optionally uses SAT-based pebbling (Meuli et al 2019) for small programs where optimal pebbling matters.
-- Optionally uses spooky pebbling (Gidney; Quist et al 2025) if mid-circuit measurement is available in the target backend.
-
-For programs that fit Unqomp/Reqomp/Qurts directly, we emit to those tools rather than reimplementing.
+- **Input.** A uniformly-bounded program in the Phase-2 RSSA IR. Uniform
+  bounding means: every loop has a static iteration cap; every memory region
+  has a static size. Programs failing uniform-bound analysis MUST be rejected
+  with a clear error message (the analysis is the same one Bennett.jl
+  applies for the `:circuit` target — `Bennett.jl/src/lowering/driver.jl:79–82`,
+  where `lower()` throws `ArgumentError` for back-edge loops without an
+  explicit `max_loop_iterations`).
+- **Algorithm for straight-line / chain programs.** Knill 1995 Theorem 2.1
+  recursion `F(n,S) = min_m [F(m,S) + F(m,S-1) + F(n-m,S-1)]`. Knill Tables 1–2
+  (pp. 7–8) usable as test oracles.
+- **Algorithm for DAG programs.** Meuli et al 2019 SAT encoding. Z3 (or a
+  Julia-native SAT backend if available) as the solver.
+- **Output.** A sequence of compute/uncompute steps satisfying a configurable
+  space bound. Optionally a uniform-circuit family for the quantum-oracle
+  backend.
+- **Optional integration:** for programs that fit Reqomp / Unqomp directly,
+  emit a circuit-graph in their input format and shell out. Decision in
+  `docs/adr/0005-pebble-vs-reqomp.md` (§8). v3's §VIII open-question #4
+  is *resolved* in principle: implement Knill recursion + Meuli SAT in tree;
+  bind to Reqomp for the qubit-budgeted quantum-oracle subset only.
 
 ### 3.5 Output channel invariant
 
-(Carried forward from v2 §12.) `run_oracle!` writes to an `OutputRef` that is **external to the reversible state**. This is the unique unrecorded write. Implementation enforces this with a distinct nominal type, statically checked.
+(Carried from v2 §12 / v3 §3.5, strengthened.) `run_oracle!` writes to an
+`OutputRef` that is **external to the reversible state**. The `OutputRef`
+MUST:
+
+1. Be a distinct nominal type, not a `Symbol` key into `IState.locals`.
+2. Be statically prevented from aliasing any field of `IState` or `RState`.
+3. Be the **sole unrecorded write** in `run_oracle!`. Every other state
+   change is reversible.
+
+**Static check reference:** RC3's aliasing analysis (`references/implementations/RC3/compiler/src/main/java/rc3/januscompiler/pass/AliasingAnalysisPass.java:30`)
+forbids RHS = LHS in assignment and same-variable-twice in call arguments.
+Phase 2 MUST implement an equivalent pass for `OutputRef` non-aliasing
+specifically.
+
+**Type-theoretic reference:** Qurts (Hirata–Heunen 2025) affine types with
+lifetimes; Sparcl (Matsuda–Wang 2020) `pin` operator. Phase 2 does not adopt
+these wholesale but their distinction between invertible and non-invertible
+data is the design model.
 
 ### 3.6 Numeric types
 
-Phase 2 supports:
-- `Bool`, fixed-width integers.
-- Fixed-point Q m.n reals.
-- Floating point only via one of: residual-tape FP, posit-with-sticky, or opaque snapshots. Decision deferred to v4.
+Phase 2 supports, in order of priority:
+
+1. `Bool`, fixed-width signed and unsigned integers (`Int8…Int64`, `UInt8…UInt64`).
+   These are the Bennett.jl-supported set at pin `5731cec` (`Bennett.jl/src/ir_types.jl`
+   argument widths).
+2. Fixed-point Q m.n reals. As a wrapper over fixed-width integers; reversibility
+   is inherited.
+3. **Floating point is OUT OF SCOPE for the initial Phase-2 milestone.** v3
+   §3.6 listed three candidate schemes; v5 will pick one. Phase 2 emits a
+   clear "FP not supported" error if a Bennett.jl `ParsedIR` carries an
+   `IRBinOp` on an FP operand. See §8.
 
 ### 3.7 Frontend integration
 
-Phase 2 integrates with Bennett.jl as a backend target:
+Phase 2 consumes Bennett.jl's `ParsedIR` type (`Bennett.jl/src/ir_types.jl:347–398`),
+already exported from the Bennett.jl module (`Bennett.jl/src/Bennett.jl:88`).
+No Bennett.jl source mutation is required at Phase-2 start.
+
+**Entry-point API (Phase-2 surface):**
 
 ```julia
-reversible_compile(f, argtypes...; target = :vm)
-```
+module BennettVM
 
-But `:circuit` and `:vm` are semantically distinct backends, not interchangeable. The circuit backend yields a fixed permutation on finite Hilbert space (suitable for quantum). The VM backend yields a classical reversible interpreter; for quantum, run the pebble-game pass to extract a uniform-circuit family.
+# `ParsedIR` is exported from Bennett.jl (`Bennett.jl/src/Bennett.jl:88`).
+# `IRBasicBlock` and `IRInst` are NOT exported at pin 5731cec; access them
+# qualified as `Bennett.IRBasicBlock`, `Bennett.IRInst`. Phase 2 SHOULD NOT
+# request export changes during the M0 milestone (Rule 14: no Bennett.jl
+# source mutation without explicit user approval); the qualified-access
+# pattern is sufficient.
+using Bennett: ParsedIR
 
-### 3.8 Lean formalization
+export VMProgram, lower_vm, simulate_vm, verify_vm_reversibility
 
-Phase 2 includes Lean 4 formalization scoped to:
+# Lower a classical-SSA ParsedIR to a reversible VM program.
+lower_vm(parsed::ParsedIR; opts::VMCompileOptions=VMCompileOptions()) :: VMProgram
 
-- Abstract VM semantics on `IState` and `RState`.
-- Trace simulation theorem (Bennett-1973 baseline).
-- Reversible RAM primitives as `Equiv`s on `IState`.
-- Output-channel non-aliasing theorem.
-- Bennett-1989 pebble-game correctness for the lowering pass.
-- *Not* the Julia implementation. *Not* Bennett.jl. *Not* the LLVM frontend.
+# Forward execution.
+simulate_vm(prog::VMProgram, input) :: NamedTuple   # output + intermediate state
 
-Existing Lean work on reversible flowcharts (Kaarsgaard et al, join inverse categories) is the starting point.
-
----
-
-## Part IV: Reuse map
-
-This is what we take from where, concretely.
-
-| What we need | Where it comes from | Notes |
-|---|---|---|
-| Reversible SSA IR | Mogensen RSSA 2016 + Deworetzki–Meyer 2023 optimizations | Read RSSA paper and RC3 source first |
-| Reversible instruction set | Pendulum/PISA (Vieri 1995/1999) + BobISA (Axelsen-Yokoyama 2011) | Memory-as-exchange rule; reversible jumps with source labels |
-| Self-interpreter design (no-history) | Janus self-interpreter (Yokoyama–Glück 2007) | Structural lesson; aspirational for Phase-2 injective subset |
-| Reversible loop construct | R-WHILE from-until (Glück–Yokoyama 2016) | For the subset of Julia `while` that admits it |
-| Min-cut delta-history selection | Enzyme recompute-vs-cache analysis | Direct algorithm port from LLVM IR to BennettVM IR |
-| Periodic checkpointing | rr (Mozilla) design pattern | For deterministic regions in Phase 2 |
-| Pebble-game lowering | Bennett 1989; Knill 1995 recursion; Meuli et al 2019 SAT | Phase-2 pass, not v0 |
-| Quantum uncomputation synthesis | Unqomp (Paradis et al 2021), Reqomp (Paradis et al 2024) | For programs we emit as quantum circuits |
-| Mid-circuit-measurement uncomputation | Spooky pebble game (Gidney; Quist et al 2025) | Optional, for quantum backends supporting measurement |
-| Type-driven uncomputation | Qurts (Hirata–Heunen 2025), CoreFun (Jacobsen et al 2018) | Reference for Phase-2 type-level annotations |
-| Lean baseline | Kaarsgaard et al, join inverse categories | Starting point for VM formalization |
-| Reverse-mode AD bridge | Enzyme.jl (Moses–Churavy) | Tobias's existing stack; integration point |
-| Bennett.jl frontend | Bennett.jl (existing) | Julia→IR lowering, type analysis, finite-circuit backend |
-| Existing Janus toolchain to read | RC3 (THM), TOPPS DIKU, janus-vesta | Existence proofs and design references |
-
-### 4.1 What Phase 2 reuses from Bennett.jl specifically
-
-- Julia frontend / IR extraction.
-- Type analysis for the supported numeric subset.
-- Existing reversible gate library (`NOT`, `CNOT`, `Toffoli`, etc.) and its primitive semantics.
-- Finite-circuit backend for the `target = :circuit` case.
-- Test infrastructure and CI.
-
-### 4.2 What Phase 2 reuses from outside Bennett.jl
-
-- Mogensen RSSA as the basis for the Phase-2 IR (with extensions).
-- Pendulum/BobISA design principles for the ISA (with adaptations for Julia-derived programs).
-- Enzyme's min-cut analysis ported to the BennettVM IR for delta-history selection.
-- Existing quantum uncomputation tools as alternative backends for the quantum oracle target.
-
----
-
-## Part V: Phase-0 spike specification
-
-This is the only part of the document that gets implemented before v4 is written.
-
-### 5.1 Spike scope
-
-Implement, in Julia, the Bennett-1973 trace VM described in v1/v2 §8, narrowed to:
-
-- Integer scalars (`Int64`, `Bool`) only. No fixed-point. No arrays.
-- Eight bytecode instructions (§9.1 of v2).
-- Full-state history (`Vector{IState}` or equivalent).
-- `step!`, `unstep!`, `run!`, `unrun!`.
-- One hand-written program: countdown loop.
-- Round-trip property test.
-
-### 5.2 Spike non-scope
-
-- No Bennett.jl integration.
-- No injective-instruction optimization.
-- No reversible RAM primitives.
-- No output channel / oracle mode.
-- No fixed-point or floating-point.
-- No Lean.
-- No serialization.
-- No documentation beyond the retrospective.
-
-### 5.3 Spike API
-
-```julia
-module BennettVMSpike
-
-export Program, IState, RState
-export initial_state, step!, unstep!, run!, unrun!
-export is_halted, result
-
-# all standard types
-struct IState; pc::Int; locals::Dict{Symbol,Int64}; status::Symbol; end
-struct RState; current::IState; history::Vector{IState}; end
-
+# Round-trip check.
+verify_vm_reversibility(prog::VMProgram) :: Bool
 end
 ```
 
-Equality, hashing, copying: whatever Julia provides by default, with explicit overrides only where round-trip equality forces it. Document any non-default choices in the retrospective.
+**Handoff alternatives considered (§Part IX milestone M0):**
 
-### 5.4 Test corpus
+| Handoff | Input shape | Decoupling | Verdict |
+|---|---|---|---|
+| A. `ParsedIR` (recommended) | Classical SSA, exported type | Max | **Adopted** |
+| B. New `target=:reversible_vm` arm in `Bennett.lower()` | Same; called via dispatch | Medium | Deferred; requires Bennett.jl `lower.jl` mutation under 3+1 protocol and user approval (Rule 14). Filed as `docs/adr/0003-bennett-target-vm-dispatch.md`. |
+| C. Post-SSA-liveness IR | Tighter coupling to internal helper | Low | Rejected; couples to a non-exported function. |
 
-1. **Countdown.** `while n > 0; n -= 1; acc += 1; end`. T = n. Required.
-2. **Round-trip property.** For 100 small random programs (bounded length, bounded variable count), forward then backward equals initial state.
-3. **History invariant.** `length(st.history) == steps_taken` during forward execution.
-4. **Empty-after-unrun.** `isempty(st.history)` after `unrun!`.
-5. **Max-steps guard.** `run!(st, prog; max_steps=10)` errors on a program that needs more.
+**Bennett.jl-side constraints inherited at the boundary:**
 
-Stretch goals (only if time):
-6. gcd loop.
-7. fixed-point Taylor (if Q-format is trivial enough; otherwise defer).
+- `IRPhi` is classical-SSA (joins only). Phase 2 MUST add the symmetric
+  split-φ when lowering to RSSA. The Hybrid SSA (Deworetzki-Schlecht-Meyer
+  2024) construction is the model.
+- `IRLoad` and `IRStore` are classical non-exchange memory operations
+  (`Bennett.jl/src/ir_types.jl:157–179`). They violate the §3.2
+  memory-as-exchange rule and therefore MUST NOT pass through into Phase-2
+  RSSA unchanged. Phase 2 MUST include an `IRLoad`/`IRStore` → `Exchange`
+  lowering pass that pairs every effective load with an explicit zero-write
+  (and every store with a paired snapshot of the old value), per Vieri 1995
+  §4.2.1. This pass is the Phase-2 equivalent of the "explicit zero-write
+  paired with every effective load" rule in §3.2; it lives in a Phase-2
+  pre-RSSA normalization phase between `ParsedIR` ingestion and RSSA
+  emission.
+- `IRCall` is inlined by Bennett.jl's `lower_call!`. Phase 2 receives an
+  inlined single-function CFG. Cross-procedure analysis is out of scope for
+  Phase 2.
+- `IRAlloca` with dynamic `n_elems` is currently rejected by Bennett.jl's
+  circuit target. Phase 2 *consumes* such allocas — they are precisely the
+  unbounded-memory case the VM target exists to handle.
+- `LoopGuard` is a `LoweringResult`-level concept, not a `ParsedIR` concept.
+  Phase 2 does NOT receive `LoopGuard` data; loops are natively executed.
 
-### 5.5 Spike methodology
+**Pin contract.** Phase 2 binds against `Bennett.jl` at SHA
+`5731cec22a1fd29efe02d4dc21c2a57e655ecb47`. Repinning requires repeating the
+M0 smoke test and updating `BENNETT_JL_PIN.md`.
 
-- One Claude Code session. Hard stop.
-- Sub-agents: interpreter, instruction-set, tests, reviewer. Sequential, not parallel.
-- Golden master: a reference irreversible Julia function for each test program.
-- Property tests with explicit seeds for reproducibility.
-- Reviewer agent engages after every core change.
-- Ground truth from local PDFs (Bennett 1973, Yokoyama–Glück 2007).
+### 3.8 Lean formalization
 
-### 5.6 Spike retrospective (the actual deliverable)
+Phase 2 Lean targets, **bounded to abstract VM semantics only**:
 
-A short document — 1–2 pages — answering:
+1. Trace simulation theorem (Bennett-1973 baseline restated as a structural
+   bisimulation between the abstract `step!/unstep!` semantics and the
+   irreversible reference).
+2. Round-trip theorem (`unrun!(run!(s, prog)) = s ∧ history(s) = []`).
+3. Reversible RAM primitive equivalences (`Exchange` is an `Equiv` on the
+   memory component of `IState`).
+4. Output-channel non-aliasing theorem (`OutputRef ⊥ IState`).
+5. Bennett-1989 pebble-game correctness for the lowering pass.
 
-1. Which v3 assumptions were wrong or underspecified? (Concrete list.)
-2. What ambiguities did Claude Code resolve, and how? (Equality, copy, error handling, halt semantics, history representation.)
-3. What was unexpectedly hard or easy?
-4. What carries over to Phase 2?
-5. What does Phase 2 still need to design from scratch?
-6. **Was anything the spike implemented already exists in RC3, janus-vesta, or elsewhere?** Honest cross-check.
+**Out of scope:** the Julia implementation, the LLVM frontend, Bennett.jl, the
+RC3 reference compiler, the SAT solver behind the Meuli encoding. Scope creep
+here has eaten months in adjacent repos (CLAUDE.md Rule 15).
 
-The retrospective is the input to PRD v4. If we cannot write it, Phase 0 failed.
+**`0 sorry, 0 axiom`** applies from the first Lean commit.
+
+**Tractability ADR.** Before any Lean code is written,
+`docs/adr/0004-lean-tractability.md` MUST attempt a single-theorem proof
+(theorem 2 above, restricted to a single-instruction subset) as a feasibility
+probe. The Kaarsgaard et al. join-inverse-category Lean library is the prior-
+art starting point. v3 §VIII open-question #5 (Lean 4 vs Coq vs Agda) is
+*resolved* per CLAUDE.md Rule 15: **Lean 4.**
+
+### 3.9 API and naming conventions (binding)
+
+The following types and operations MUST appear in Phase 2 with these exact
+names and signatures. Sources are spike artifacts; the spike's choices
+survived the retrospective Q4 review.
+
+- **`IState`** — instantaneous description. MUST contain at minimum `pc`,
+  `locals` (an associative structure keyed by IR variable name), and `status`.
+  Other fields permitted.
+- **`RState`** — reversible wrapper. MUST be declared `mutable struct`. MUST
+  contain `current::IState` and `history::Vector{T}` for an
+  implementation-defined history element type `T`.
+- **`step!(s::RState, prog) :: RState`** — forward one instruction. (Spike
+  signature; Phase 2 MAY refactor to `step!(s::RState, instr)` by lifting
+  pc-dispatch into the caller — that decision is a Phase-2 ADR, not a v4
+  normative requirement.)
+- **`unstep!(s::RState, prog) :: RState`** — backward one instruction. (Same
+  ADR caveat.)
+- **`run!(s::RState, prog; max_steps=…) :: RState`** — forward to halt or
+  `max_steps`.
+- **`unrun!(s::RState, prog) :: RState`** — backward to empty history.
+- **`forward(instr, s::IState) :: IState`** — generic function dispatched
+  per-instruction-type.
+- **`inverse(instr, s::IState, prev) :: IState`** — generic function. `prev`
+  is a history payload; its concrete type is per-instruction-type (Phase 2
+  ADR `docs/adr/0006-inverse-prev-type.md` resolves whether `prev` is a
+  single union type, an associated type per instruction, or `Any`).
+- **`initial_state(prog) :: RState`** — construct from a program. MUST
+  validate that the program is non-empty.
+- **`is_halted(s::RState) :: Bool`** — terminal-status query.
+- **`result(s::RState)`** — output query. MUST raise on non-halted state.
+
+**Justification:** retrospective Q4 §"Naming conventions worth keeping";
+spike artifacts `Types.jl`, `Interpreter.jl`, `BennettVMSpike.jl`.
+
+### 3.10 Equality and hashing semantics (binding)
+
+`IState` MUST override `Base.==` and `Base.hash` to compare **structurally**
+across all fields. Specifically: `pc == pc`, `status === status`, and
+`locals == locals` with structural dict equality (not `===` on the dict
+object).
+
+**Rationale.** Julia's default `==` on a struct containing a `Dict` field
+reduces to `===` (identity) on the dict component. Without the override,
+`unrun!(run!(s, prog)).current == initial_state(prog).current` silently
+returns `false` regardless of implementation correctness, making the round-
+trip invariant untestable. The override was added in spike Pass 1 at
+`spike/src/Interpreter.jl:103–109`. v3 §5.3's "explicit overrides only where
+round-trip equality forces it" is *always* triggered; v4 makes the override
+unconditional.
+
+### 3.11 Step ordering and exception safety (binding)
+
+`step!` MUST compute `new_state = forward(instr, s.current)` BEFORE mutating
+`s.history` or `s.current`. If `forward` raises an exception, `s.history` and
+`s.current` MUST be unchanged.
+
+**Rationale.** The Phase-0 Pass-1 implementation pushed the history snapshot
+before calling `forward`. A `forward` exception left the history one entry
+ahead of the state. Pass-1F reordered to compute-then-mutate; this is the
+correct pattern. (Source: `spike/RETROSPECTIVE.md` Q3 "Unexpectedly hard";
+spike `Interpreter.jl:175–187`.)
+
+### 3.12 Discard-pop predicate (binding)
+
+After a successful `forward`, if the resulting `IState` satisfies
+
+```
+new_state.status !== :running
+  && new_state.pc == snapshot.pc
+  && new_state.locals == snapshot.locals
+```
+
+then the pre-step snapshot MUST NOT be retained in `s.history`. This is the
+*discard-pop predicate*: a step whose only observable effect is the status
+bit carries no information worth preserving.
+
+**Generalization for Phase 2.** Injective instructions (§3.2) push nothing
+*by classification*, not via the predicate. The predicate handles the special
+case of a status-only transition for non-injective instructions. Both rules
+coexist.
+
+**Consequence for the history-length invariant.** `length(s.history)` counts
+only steps that retained a snapshot — NOT the total number of `step!` calls.
+For the canonical countdown(n) program with a pure-status-flip `Halt`, this
+means `length(history) == steps − 1` after termination. (Source: spike
+`Interpreter.jl:182–186`; `test_history.jl:16–37,46–80`;
+`spike/RETROSPECTIVE.md` Q1, Q2.3, Q2.4.)
+
+### 3.13 Per-step inverse test (binding)
+
+The Phase-2 test suite MUST include, for every new instruction kind added, a
+*per-step inverse test*: snapshot every pre-step `IState` during forward
+execution; during `unrun!`, assert `s.current == pre_states[i]` at each
+backward step.
+
+**Rationale.** Aggregate round-trip tests can mask middle-instruction inverse
+bugs because a correct leading-instruction inverse later in the sequence
+restores `s.current` regardless of corruption in the middle. The spike's
+Pass 3 mutation-proof exposed this: swapping `prev` for `s` in
+`inverse(::BinaryOp, ...)` did not initially break the aggregate round-trip
+test, but did break the per-step test (19 RED on perturbation, 0 after
+revert). (Source: `spike/test/test_roundtrip.jl:80–135`;
+`spike/RETROSPECTIVE.md` Q3, Q4 §"Test patterns worth keeping".)
+
+### 3.14 Golden master co-location (binding)
+
+Every Phase-2 test program factory MUST be co-located with a *reference
+irreversible Julia oracle* in the same file (or sibling file under
+`test/reference/`). Forward execution of the Phase-2 program MUST agree
+bit-for-bit with the oracle on the same inputs.
+
+**Rationale.** The spike's `test/reference/countdown.jl` co-locates the
+program factory and the oracle. This ensures any edit to the program factory
+puts the oracle in immediate view. (Source: spike retrospective Q4 §"Test
+patterns worth keeping".)
+
+### 3.15 Property test discipline (binding)
+
+Phase-2 property tests MUST use explicit seeds (e.g.,
+`MersenneTwister(0xBE171973)`) and MUST include randomly-generated programs
+*with control flow* (jumps, conditionals, bounded loops) — not only straight-
+line programs. The spike's property tests were straight-line-only for
+termination simplicity; Phase 2's RSSA-level CFG and uniform-loop-bound
+analysis (§3.4) make termination-bounded random CFG generation tractable.
+
+(Source: `spike/test/reference/property_programs.jl:1–24`; spike
+retrospective Q4 §"Test patterns worth keeping" and Q9 — the straight-line
+limitation is implicit in what Q9 flags as not-learned by the spike.)
+
+### 3.16 Initial-state validation and result-query safety (binding)
+
+- `initial_state(prog)` MUST raise a descriptive error if `prog` is empty.
+- `result(s)` MUST raise an error if `s.current.status !== :halted`. The
+  error message MUST include the actual status value.
+- `unstep!(s, ...)` on empty history MUST raise `ErrorException` with a
+  clear message. No silent no-op, no default state.
+
+(Source: `spike/src/Interpreter.jl:119, 138, 206–214`; spike
+retrospective Q2.7 — "`step!` on a halted or error state: silent no-op";
+"`result(s)` on a non-halted state: throws ErrorException"; Q4 §"Test
+patterns worth keeping" — fail-fast on empty `unstep!` history is the
+"load-bearing correctness check for the round-trip invariant.")
+
+### 3.17 Return / Halt distinction (binding for v5)
+
+**For initial Phase-2:** `Return` and `Halt` MAY be unified or kept distinct.
+The spike merged them because no call stack exists.
+
+**For Phase-2.x (when subroutines land):** `Return` MUST pop a call frame
+(restoring caller's `pc` and the caller's locals), and is NOT semantically
+equivalent to `Halt`. A pure-status-flip `Halt` triggers the discard-pop
+predicate; `Return` does NOT (because `pc` changes), so its snapshot MUST be
+retained.
+
+ADR `docs/adr/0007-return-vs-halt.md` records the decision when call stacks
+land. (Source: spike retrospective Q4, Q8.3, §9.3.)
 
 ---
 
-## Part VI: Phase-2 success criteria (target)
+## Part IV: Reuse map (revised — file:line citations)
 
-Specified at the level of constraints; details deferred to v4.
+Every Phase-2 design decision answers "what published work does this replace,
+and why?" before being accepted. The default response to discovering prior
+art is **reuse or wrap**, not reimplement.
 
-1. Compiles a Julia function with a dynamic `while` loop (e.g. fixed-point Taylor in Q-format) to a Phase-2 reversible program with no per-step full-state history.
-2. Forward execution matches the reference irreversible Julia implementation under the same numeric semantics.
-3. `unrun!` restores initial state with empty history *and* sublinear-in-T peak history bytes for programs in the injective-dominated subset.
-4. Pebble-game lowering pass produces, on a uniformly-bounded program, a quantum-oracle-suitable uniform circuit family. For at least one example, this circuit family is accepted by Reqomp/Qrisp/Quipper and runs in simulation.
-5. Lean formalization mechanically verifies the abstract trace simulation, the round-trip theorem, the output-channel non-aliasing theorem, and the Bennett-1989 pebble-game correctness theorem for the lowering pass.
-6. Reads through RC3 source and Mogensen RSSA paper occurred before any line of Phase-2 code was written. (Documented in v4.)
+| Phase-2 component | Reuse from | Source path | Notes |
+|---|---|---|---|
+| RSSA IR taxonomy | RC3 (Java) | `references/implementations/RC3/compiler/src/main/java/rc3/rssa/instances/` (15 files) | Structurally isomorphic port to Julia. Cite Mogensen 2016 §3 per RC3's `@implSpec` annotations. |
+| RSSA basic-block reversal | RC3 | `rc3/rssa/blocks/BasicBlock.java:23` | `BasicBlock.reversed()` = reverse list + per-instruction `.reverse()`. Algorithm verbatim. |
+| RSSA label dispatch | RC3 | `rc3/rssa/pass/LabelEntry.java:7` (dual-address `DirectionVar<Integer>`); `rc3/rssa/pass/LabelTable.java` (dispatch class) | Dual-address (forward + backward) per label. |
+| Aliasing analysis | RC3 | `rc3/januscompiler/pass/AliasingAnalysisPass.java:30` | Forbids RHS=LHS and same-var-twice in calls. Model for §3.5 output-channel pass. |
+| Syntactic inversion for injective subset | TOPPS-janus | `references/implementations/TOPPS-janus/src/Jana/Invert.hs:23–69` | `invertStmt` pattern. Applies to Phase-2 injective instructions only. |
+| Reversible if-fi / from-until inversion | TOPPS-janus | `Invert.hs:28–31` | Model for Phase-2 RSSA conditional inversion. |
+| Pendulum exchange semantics | Vieri 1995 MS | `references/reversible-isa/vieri-1995-pendulum-ms.pdf` §4.2.1 (p. 32) | Memory-as-exchange rule (§3.2). |
+| BobISA jump encoding | Thomsen–Axelsen–Glück 2012 | `references/reversible-isa/axelsen-yokoyama-2011-bobisa.pdf` | Source-label-encoding jumps (§3.2). NOTE: file misnamed; manifest §Citation-errata. |
+| Min-cut delta-history selection | Enzyme (Moses–Churavy 2020) | `references/ad-and-checkpointing/enzyme-2020.pdf` §2 "Cache" (p. 4) | Port from LLVM IR to Phase-2 IR; algorithm verbatim. ADR 0002. |
+| Periodic checkpoint + replay | rr (O'Callahan et al 2017) | `references/reverse-debugging/ocallahan-2017-rr-deployability.pdf` §2.1 (p. 2) | Architecture model for deterministic regions (§3.3). |
+| Pebble-game recursion (chains) | Bennett 1989; Knill 1995 | `references/foundational/Bennett1989_time_space_tradeoffs.pdf` Thm 1 (p. 768); `Knill1995_bennett_pebble_analysis.pdf` Thm 2.1 (p. 3) + Tables 1–2 (pp. 7–8) | Direct implementation; Knill tables as test oracles. |
+| Pebble-game SAT (DAGs) | Meuli–Soeken–De Micheli 2019 | `references/quantum-uncomputation/Meuli2019_reversible_pebbling.pdf` §III (pp. 2–4); Table I (p. 4) | SAT encoding; Z3 or Julia-native solver. Table I (p. 4) as benchmark target (52.77% qubit reduction vs naive Bennett at 2.68× step overhead). |
+| Quantum uncomputation (qubit-bounded) | Reqomp (Paradis et al 2024) | `references/quantum-uncomputation/Reqomp2024_uncomputation.pdf` | FFI binding for the quantum-oracle subset. Not in-tree. |
+| Three-stage construction (Compute/Output/Cleanup) | Bennett 1973 | `references/foundational/bennett-1973-logical-reversibility.pdf` Table 1 (p. 528), Table 2 (p. 530) | Stage-1 implemented by spike; Stage-2/3 by Phase-2. |
+| Output-channel type-theoretic model | Qurts (Hirata–Heunen 2025), Sparcl (Matsuda–Wang 2020) | `references/quantum-uncomputation/qurts-2024.pdf`; `references/reversible-languages/matsuda-wang-2020-sparcl.pdf` | Affine types / `pin` operator. Reference, not adopted wholesale. |
+| Hybrid classical+reversible IR boundary | Deworetzki–Schlecht–Meyer 2024 | `references/reversible-ir/deworetzki-2024-hybrid-ssa.pdf` | Model for Bennett.jl classical-SSA → Phase-2 RSSA lowering. |
+| Bennett.jl frontend / IR extraction | Bennett.jl | `Bennett.jl/src/extract/`, `Bennett.jl/src/ir_types.jl:347` | Consumed as `ParsedIR`. Pin SHA `5731cec`. §3.7. |
+
+### 4.1 Explicit non-reuse
+
+- **janus-vesta** (`references/implementations/janus-vesta/`) is NOT a model
+  for Phase-2 ISA: its `MOV` is a destructive non-exchange (`execute.rs:618`,
+  violating Vieri 1995 §4.2.1), and its jumps do not encode source labels
+  (`execute.rs:765`). The "Janus ISA" name is misleading.
+- **jana** and **evincarofautumn-janus** offer nothing beyond TOPPS-janus for
+  Phase-2 purposes; included only for completeness.
+- **Quantum Register Machine (Zhang–Ying 2025)** is out of scope for Phase 2.
+
+---
+
+## Part V: Phase-1 retrospective summary
+
+This section replaces v3 Part V (Phase-0 spike specification). The spike
+closed 2026-05-23 with 789/789 tests; the retrospective is at
+`spike/RETROSPECTIVE.md` and remains the authoritative artifact. v4 § cross-
+references below.
+
+### 5.1 Spike result
+
+Bennett-1973 trace VM, Stage 1 only, in `spike/`. Eight bytecode instructions
+(`Const`, `Move`, `UnaryOp`, `BinaryOp`, `Jump`, `JumpIf`, `Return`, `Halt`).
+`Int64` locals. Full-snapshot history. 789/789 tests including a per-step
+inverse test that was mutation-proof verified. Git tag `spike-0-archived`,
+filesystem chmod -w.
+
+### 5.2 What carried into Phase 2
+
+| Spike artifact | v4 normative location |
+|---|---|
+| `IState`/`RState` partition | §3.9 |
+| `step!`/`unstep!`/`run!`/`unrun!` naming | §3.9 |
+| `inverse(instr, s, prev)` signature | §3.9 |
+| Discard-pop predicate | §3.12 |
+| Fail-fast on empty `unstep!` history | §3.16 |
+| Per-step inverse test pattern | §3.13 |
+| Golden master co-location | §3.14 |
+| Seeded property tests | §3.15 |
+| `mutable struct RState` | §3.9 |
+| `Base.==` / `Base.hash` overrides on `IState` | §3.10 |
+| Forward-before-push step ordering | §3.11 |
+| `initial_state` empty-program validation | §3.16 |
+
+### 5.3 What was rejected from the spike
+
+| Spike artifact | Reason rejected | v4 replacement |
+|---|---|---|
+| Full-snapshot history per step | Worst point on time-space tradeoff; spike existed to confirm | §3.3 three-layer history |
+| Flat `Vector{AbstractInstruction}` + integer pc | Not a compiler IR | §3.1 RSSA basic blocks |
+| Non-injective `Const`/`Move`/`UnaryOp`/`BinaryOp` as uniform primitives | All pay full snapshot regardless of information loss | §3.2 injective/non-injective partition |
+| Spike `Move` (destructive copy) | Information-losing on `dst` | Pendulum `Exchange` (§3.2) |
+| `Return ≡ Halt` equivalence | Acceptable for no-call-stack spike | §3.17 distinct in v5 |
+
+### 5.4 Errata applied from spike retrospective Q7
+
+1. BobISA citation: Axelsen–Yokoyama 2011 LATA → Thomsen–Axelsen–Glück 2012
+   RC. Applied throughout §2.4 and Appendix A.
+2. Mogensen RIL: standalone-paper framing → Mogensen 2015 LNCS 9138 §3.
+   Applied to §2.3 and Appendix A.
+3. "Bool-typed regs" wording in v3 §5.1: removed; locals are uniformly
+   `Int64` in the spike; v4 §3.6 specifies the Phase-2 type universe.
+4. `struct RState`: v3 §5.3 template code corrected to `mutable struct
+   RState`. v4 §3.9.
+
+### 5.5 What the retrospective surfaced beyond Q1–Q9
+
+(From the spike code itself, elevated by the deep-read agent during v4
+synthesis.)
+
+- The `_copy_locals` helper at `spike/src/Instructions.jl:74` enforces fresh-
+  dict discipline at a single point; Phase 2 SHOULD consider whether
+  `IState.locals` should be an immutable persistent map so that this
+  discipline is type-enforced rather than convention. (See §8 Q-FP for the
+  related v5 deferral.)
+- Property tests are straight-line-only. v4 §3.15 mandates control-flow
+  random programs in Phase 2.
+- The countdown program exercises 5 of 8 instruction kinds. v4 §3.13
+  requires per-step inverse coverage for every instruction kind, closing
+  the gap.
+
+---
+
+## Part VI: Phase-2 success criteria
+
+The full ordered work breakdown is in §Part IX (M0–M12). This Part VI
+extracts the **eight load-bearing success criteria** — the subset of M0–M12
+whose completion defines "Phase 2 is done." Cross-references to §Part IX
+milestone numbers are explicit.
+
+- **SC1 — Bennett.jl handoff smoke** (§Part IX M0). `lower_vm(parsed)`
+  accepts a Bennett.jl `ParsedIR` for `collatz_steps(::Int8)` and produces
+  a Phase-2 RSSA program without error. *Gated by §Part IX M5 (RC3 pre-read).*
+- **SC2 — Cost measurement** (§Part IX M1). Benchmark full-snapshot vs delta
+  vs checkpoint-replay; default checkpoint interval set in §3.3.
+- **SC3 — Forward correctness** (§Part IX M3). A Julia function with a
+  dynamic `while` loop (fixed-point Taylor in Q-format or Collatz) compiles
+  and forward-executes bit-for-bit against the reference irreversible Julia
+  implementation.
+- **SC4 — Round-trip correctness** (§Part IX M4, M7). `unrun!` restores
+  initial state with empty history AND sublinear-in-T peak history bytes
+  for the injective-dominated subset.
+- **SC5 — Pebble-game lowering** (§Part IX M8). The Bennett-1989 pebble-game
+  pass produces, on a uniformly-bounded program, a quantum-oracle-suitable
+  uniform circuit family. At least one example accepted by Reqomp or
+  simulated correctly.
+- **SC6 — RC3 `rvm` pre-read documented** (§Part IX M5; ADR 0001).
+  Required before any Phase-2 IR code is written.
+- **SC7 — Lean formalization** (§Part IX M10, M11). All five §3.8 targets
+  discharged with `0 sorry, 0 axiom`.
+- **SC8 — Per-step inverse coverage** (§Part IX M7). Per-step inverse test
+  (§3.13) passes for every Phase-2 instruction kind.
 
 ---
 
 ## Part VII: Risks and mitigations
 
-### 7.1 Phase-0 produces no useful learnings
+Carried from v3 §7 with updates:
 
-**Mitigation.** Retrospective is the success criterion, not the working VM. If the retrospective is empty, the time was wasted; we accept that risk because the cost is one session.
+7.1 **Phase-0 retrospective is insufficiently load-bearing.** *Mitigation:*
+already executed; retrospective is comprehensive (264 LOC, nine questions);
+v4 §3.9–§3.17 codify its findings.
 
-### 7.2 v4 retreads ground that should have been settled in v3
+7.2 **v4 retreads ground that should have been settled in v3.** *Mitigation:*
+Part II is the literature backstop; the four parallel research subagents
+(literature, Bennett.jl, spike, implementations) that produced the input for
+v4 have already run.
 
-**Mitigation.** Part II of v3 is the literature backstop. v4's primary author (post-spike) must read every reference in §2 before writing v4.
+7.3 **Phase 2 reinvents RSSA, BobISA, or Enzyme min-cut.** *Mitigation:*
+§Part IV is the binding reuse map; every Phase-2 commit cites it.
 
-### 7.3 Phase 2 reinvents RSSA, BobISA, or Enzyme min-cut
+7.4 **Quantum oracle synthesis overpromise.** *Mitigation:* §3.4 ties the
+quantum-oracle subset to a uniform-bound analysis; programs failing the
+bound are rejected with a clear error rather than producing a wrong
+"circuit family".
 
-**Mitigation.** Reuse map (Part IV) is explicit. Every Phase-2 design decision must answer "what published work does this replace, and why?" before being accepted.
+7.5 **Bennett.jl frontend changes break BennettVM integration.**
+*Mitigation:* `ParsedIR` is exported and stable at pin `5731cec`. Repinning
+requires repeating M0. §3.7.
 
-### 7.4 Quantum oracle synthesis claim is overpromised
+7.6 **Lean formalization scope creeps.** *Mitigation:* §3.8 enumerates the
+five targets exhaustively. The tractability ADR (`docs/adr/0004`) gates the
+first Lean commit.
 
-**Mitigation.** v2 §6.2 obstruction analysis carried forward. Quantum applicability requires the pebble-game lowering pass. Documented explicitly in Phase-2 success criteria.
+7.7 **The throwaway spike becomes load-bearing.** *Mitigation:* already
+archived (`spike-0-archived`, chmod -w). Phase 2 starts from empty `src/`+
+`test/`. CLAUDE.md P0.7.
 
-### 7.5 Bennett.jl frontend changes break BennettVM integration
+7.8 **Bennett.jl integration requires `lower.jl` mutation prematurely.**
+*Mitigation:* §3.7 specifies Handoff A (`ParsedIR` consumed externally);
+Handoff B (target dispatch arm) is a later integration milestone with the
+3+1 protocol and user approval.
 
-**Mitigation.** Phase 2 depends on Bennett.jl through a documented IR interface, not internal API surfaces. Pinned versions during initial development.
-
-### 7.6 Lean formalization scope creeps
-
-**Mitigation.** Lean targets are explicit (§3.8). Anything else is out of scope and gets deferred.
-
-### 7.7 We discover the entire design is published in some 2019 paper we missed
-
-**Mitigation.** Part II is the cross-check. If a published artifact subsumes a major piece of Phase 2, we fork or wrap it rather than rebuild. The default response to discovering prior art is reuse, not reimplementation.
-
-### 7.8 The throwaway spike becomes load-bearing
-
-**Mitigation.** Archive immediately on Phase-0 completion. Mark repository read-only. Phase 2 starts from an empty directory.
-
----
-
-## Part VIII: Open questions for v4
-
-These cannot be answered before Phase 0 and the literature review by Phase-2 author:
-
-1. Exact form of the Phase-2 IR extensions to RSSA — Bennett.jl-specific operations, type-level ancilla annotations, etc.
-2. Integration boundary with Bennett.jl: which IR does Bennett.jl emit; does it emit RSSA directly or does BennettVM lower a less-reversible IR?
-3. Default numeric subset for Phase 2 — does Q-format suffice, or is FP needed earlier than expected?
-4. Whether to ship a pebble-game implementation in BennettVM directly or to bind to Reqomp/Qurts via FFI.
-5. Lean 4 vs Coq vs Agda for formalization. Default: Lean 4 per Tobias's existing stack.
-6. Whether to publish at RC (Reversible Computation conference) — likely yes if Phase 2 lands; the audience is small but exactly the right audience.
+7.9 **A subset of Bennett.jl `ParsedIR` constructs are not yet supported by
+Phase 2.** *Mitigation:* Phase 2 emits clear "not supported" errors with
+the offending instruction kind, not silent acceptance with wrong results.
+The supported subset grows monotonically across Phase-2.x releases.
 
 ---
 
-## Appendix A: References
+## Part VIII: Open questions for v5
+
+Reduced from v3 §VIII's six items to two genuine open questions plus a
+deferred-decision ADR queue.
+
+### 8.1 Genuinely open
+
+1. **Floating-point reversibility scheme.** v3 §3.6 listed three candidates
+   (residual tape, posit-with-sticky, opaque snapshots). The literature
+   surveyed for v4 does not adjudicate. v5 picks one after a Phase-2
+   prototype on a small FP program; until then, FP is out of scope for
+   Phase 2 (§3.6).
+
+2. **Divergence handling.** Reversible simulation results assume halting
+   computations. BennettVM uses a `max_steps` guard for the trivial case,
+   but structural divergence detection (proving that a Julia loop with a
+   data-dependent condition halts on all inputs) is unresolved. v5 may
+   inherit Bennett.jl's existing termination-bound machinery
+   (`max_loop_iterations` in `Bennett.jl/src/lowering/cfg.jl`) or commit
+   to a separate analysis.
+
+### 8.2 Resolved by v4 (no longer open)
+
+| v3 §VIII item | v4 disposition |
+|---|---|
+| #1 IR extensions to RSSA | §3.1: structurally isomorphic to RC3 taxonomy + listed extensions |
+| #2 Bennett.jl integration boundary | §3.7: `ParsedIR` consumed externally (Handoff A). Caveat: resolved in the sense that Phase 2 consumes `ParsedIR` (classical SSA) and lowers it to RSSA internally; the deeper question of whether a future Bennett.jl version could emit RSSA directly is deferred to Handoff B / ADR 0003. |
+| #3 Default numeric subset | §3.6: integers and Q-format; FP deferred |
+| #4 Pebble-game in-tree vs FFI | §3.4: Knill recursion + Meuli SAT in-tree; Reqomp FFI for qubit-budgeted quantum subset |
+| #5 Lean 4 vs Coq vs Agda | §3.8: Lean 4 per CLAUDE.md Rule 15 |
+| #6 Publish at RC | Deferred to user; not a PRD-blocking decision |
+
+### 8.3 ADR queue (filed during Phase 2, not v5)
+
+| ADR | Title | Gates |
+|---|---|---|
+| 0000 | Handoff smoke test (Bennett.jl `ParsedIR` consumed end-to-end) | M0 |
+| 0001 | RC3 `rvm` pre-read documented | M0 (precedes IR code) |
+| 0002 | Enzyme min-cut mapping (LLVM IR → Phase-2 RSSA dataflow) | Delta-history selector |
+| 0003 | Bennett.jl `target=:reversible_vm` dispatch arm (requires user approval per Rule 14) | Phase-2.x integration |
+| 0004 | Lean formalization tractability (one-theorem feasibility probe) | First Lean commit |
+| 0005 | Pebble-game pass vs Reqomp FFI (per-subprogram routing rule) | M4 |
+| 0006 | `inverse(instr, s, prev)` `prev` type — union, associated, or `Any` | Phase-2 IR codegen |
+| 0007 | `Return` vs `Halt` distinction (when call stacks land) | Phase-2.x subroutines |
+
+---
+
+## Part IX: Phase-2 work breakdown (initial)
+
+Ordered milestones. Each is a beads epic. The first beads epic at Phase-2 open
+is `bennettvm-phase2-epic` (created when v4 ratifies and `PHASE.md` flips).
+
+M0. **Bennett.jl handoff smoke test.** ADR 0001 first (RC3 `rvm` built and
+exercised), then ADR 0000 (`lower_vm(parsed::ParsedIR)` accepts a trivial
+program end-to-end). Output: an empty `VMProgram` type, a stub `lower_vm`,
+and a passing smoke test.
+
+M1. **Cost measurement.** Benchmark history strategies. Output: a measurement
+report and a default checkpoint interval.
+
+M2. **IR design and basic-block infrastructure.** Port RC3 RSSA taxonomy to
+Julia. No Lean yet. ADR 0006 first.
+
+M3. **Forward-only interpreter.** Run a Bennett.jl `ParsedIR` for an integer
+arithmetic program in Phase-2 IR. No history. No `unrun!`.
+
+M4. **History layer 3 (periodic checkpoints).** rr-style. No min-cut yet.
+`unrun!` works for short programs.
+
+M5. **History layer 1 (no log for injective).** Partition the ISA; remove
+checkpoints for injective instructions.
+
+M6. **History layer 2 (delta with min-cut).** ADR 0002 first. Port Enzyme
+min-cut analysis. Default checkpoint interval validated against M1.
+
+M7. **Per-step inverse and golden master.** Phase-2 test suite reaches
+parity with the spike's mutation-proof coverage.
+
+M8. **Pebble-game lowering pass.** ADR 0005 first. Knill recursion for
+chains; Meuli SAT for DAGs. M4 success criterion checked.
+
+M9. **Output-channel `OutputRef`.** Static non-aliasing pass. RC3 aliasing-
+analysis port.
+
+M10. **Lean baseline.** ADR 0004 first. Theorems 1–3 (trace simulation,
+round-trip, RAM equivs).
+
+M11. **Lean output-channel and pebble-game theorems.** §3.8 targets 4–5.
+
+M12. **Bennett.jl target dispatch arm.** ADR 0003 (requires user approval
+per CLAUDE.md Rule 14). `Bennett.lower(parsed; target=:reversible_vm)`
+calls into BennettVM.
+
+Each milestone produces a closeable beads epic. Phase 2 is *complete* when
+M0–M12 close and the eight load-bearing success criteria SC1–SC8 (§Part VI)
+are met.
+
+---
+
+## Appendix A: References (errata applied)
 
 ### A.1 Foundational reversible computation
-- Bennett, C.H. *Logical reversibility of computation.* IBM J. Res. Dev. 17(6), 525–532 (1973).
-- Bennett, C.H. *Time/space trade-offs for reversible computation.* SIAM J. Comput. 18(4), 766–776 (1989).
-- Knill, E. *An analysis of Bennett's pebble game.* arXiv:math/9508218 (1995). LANL LAUR-95-2258.
-- Buhrman, H., Tromp, J., Vitanyi, P. *Time and space bounds for reversible simulation.* arXiv:quant-ph/0101133 (2001).
-- Landauer, R. *Irreversibility and heat generation in the computing process.* IBM J. Res. Dev. 5(3), 183–191 (1961).
+
+- Bennett, C.H. *Logical reversibility of computation.* IBM J. Res. Dev.
+  17(6), 525–532 (1973). `references/foundational/bennett-1973-logical-reversibility.pdf`
+  SHA256 `e61ad668…0687`.
+- Bennett, C.H. *Time/space trade-offs for reversible computation.* SIAM
+  J. Comput. 18(4), 766–776 (1989). `references/foundational/Bennett1989_time_space_tradeoffs.pdf`.
+- Knill, E. *An analysis of Bennett's pebble game.* arXiv:math/9508218
+  (1995). LANL LAUR-95-2258. `references/foundational/Knill1995_bennett_pebble_analysis.pdf`.
+- Buhrman, H., Tromp, J., Vitanyi, P. *Time and space bounds for reversible
+  simulation.* arXiv:quant-ph/0101133 (2001). `references/foundational/buhrman-tromp-vitanyi-2001.pdf`.
+- Vitanyi, P. *Time, space, and energy in reversible computing.*
+  arXiv:cs/0504088 (2005). `references/foundational/vitanyi-time-space-energy.pdf`.
+- Landauer, R. *Irreversibility and heat generation in the computing
+  process.* IBM J. Res. Dev. 5(3), 183–191 (1961). [TIB ILL pending.]
 
 ### A.2 Reversible imperative languages
+
+- Yokoyama, T., Glück, R. *A reversible programming language and its
+  invertible self-interpreter.* PEPM 2007. `references/reversible-languages/yokoyama-glueck-2007-pepm.pdf`.
+- Glück, R., Yokoyama, T. *A linear-time self-interpreter of a reversible
+  imperative language.* IEICE Trans. Inf. Syst. 2016. `references/reversible-languages/glueck-yokoyama-2016-rwhile.pdf`.
 - Lutz, C., Derby, H. *Janus: a time-reversible language.* Caltech, 1986.
-- Yokoyama, T., Glück, R. *A reversible programming language and its invertible self-interpreter.* PEPM 2007.
-- Glück, R., Yokoyama, T. *A linear-time self-interpreter of a reversible imperative language.* Computer Software 33(3), 2016. (R-WHILE.)
-- Haulund, T. *Design and implementation of a reversible object-oriented programming language.* MS thesis, U. Copenhagen, 2017. (ROOPL.)
-- Mogensen, T.Æ. *Hermes: a reversible language for lightweight encryption.* Sci. Comput. Program. 215, 102746 (2022).
+  `references/reversible-languages/lutz-derby-1986-janus.pdf`.
+- Haulund, T. *ROOPL.* MS thesis, U. Copenhagen, 2017.
+  `references/reversible-languages/haulund-2017-roopl.pdf`.
 
 ### A.3 Reversible functional languages and type systems
-- Yokoyama, T., Axelsen, H.B., Glück, R. *Towards a reversible functional language.* RC 2011. (RFUN.)
-- Thomsen, M.K. et al. *Interpretation and programming of the reversible functional language RFUN.* IFL 2015.
-- Jacobsen, P.A.H., Kaarsgaard, R., Thomsen, M.K. *CoreFun: A Typed Functional Reversible Core Language.* RC 2018.
-- Matsuda, K., Wang, M. *Sparcl: a language for partially-invertible computation.* PACMPL 4(ICFP), 2020.
-- James, R.P., Sabry, A. *Theseus: A high level language for reversible computing.* RC 2014.
-- James, R.P., Sabry, A. *Information effects.* POPL 2012. (Π.)
-- Hirata, K., Heunen, C. *Qurts: Automatic Quantum Uncomputation by Affine Types with Lifetime.* PACMPL 9(POPL), 2025.
+
+- Yokoyama, T., Axelsen, H.B., Glück, R. *Towards a reversible functional
+  language.* RC 2011, LNCS 7165 ch.2. `references/reversible-languages/yokoyama-axelsen-glueck-2011-rfun.pdf`.
+- Jacobsen, P.A.H., Kaarsgaard, R., Thomsen, M.K. *CoreFun.* RC 2018.
+  `references/reversible-languages/jacobsen-2018-corefun.pdf`.
+- Matsuda, K., Wang, M. *Sparcl.* JFP 34, 2024 (definitive version of
+  ICFP 2020 PACMPL 4). `references/reversible-languages/matsuda-wang-2020-sparcl.pdf`.
+- James, R.P., Sabry, A. *Theseus.* RC 2014. `references/reversible-languages/james-sabry-2014-theseus.pdf`.
+- Hirata, K., Heunen, C. *Qurts.* POPL 2025 (arXiv:2411.10835).
+  `references/quantum-uncomputation/qurts-2024.pdf`.
 
 ### A.4 Reversible intermediate languages
+
 - Mogensen, T.Æ. *RSSA: A Reversible SSA Form.* PSI 2015, LNCS 9609 (2016).
-- Mogensen, T.Æ. *Partial evaluation of the reversible language Janus.* PEPM 2011.
-- Deworetzki, N., Meyer, U. *Compiling Janus to RSSA.* 2021.
-- Deworetzki, N. *Optimizing Reversible Programs.* RC 2022.
-- Deworetzki, N. *Optimization of Reversible Control Flow Graphs.* RC 2023.
-- Oguchi, S., Yuen, S. *Concurrent RSSA for CRIL.* RC 2024.
-- Deworetzki, N., Schlecht, M., Meyer, U. *Connecting Reversible and Classical Computing Through Hybrid SSA.* RC 2024.
+  `references/reversible-ir/mogensen-2016-rssa.pdf`.
+- Mogensen, T.Æ. *Garbage Collection for Reversible Functional Languages.*
+  RC 2015, LNCS 9138 (RIL introduced in §3, not as a standalone paper).
+  `references/reversible-ir/mogensen-ril.pdf`.
+- Deworetzki–Meyer 2021, *Compiling Janus to RSSA*, RC 2021.
+  `references/reversible-ir/deworetzki-meyer-2021-janus-to-rssa.pdf`.
+- Deworetzki 2022, *Optimizing Reversible Programs*, RC 2022.
+  `references/reversible-ir/deworetzki-2022-optimizing.pdf`.
+- Deworetzki 2023, *Optimization of Reversible Control Flow Graphs*, RC 2023.
+  `references/reversible-ir/deworetzki-2023-cfg-opt.pdf`.
+- Deworetzki, Schlecht, Meyer 2024, *Connecting Reversible and Classical
+  Computing Through Hybrid SSA*, RC 2024.
+  `references/reversible-ir/deworetzki-2024-hybrid-ssa.pdf`.
 
 ### A.5 Reversible ISAs
-- Vieri, C.J. *Pendulum: A reversible computer architecture.* MS thesis, MIT, 1995.
-- Vieri, C.J. *Reversible Computer Engineering and Architecture.* PhD thesis, MIT, 1999.
-- Frank, M.P. *Reversibility for efficient computing.* PhD thesis, MIT, 1999.
-- Axelsen, H.B., Yokoyama, T. *A simple and efficient universal reversible Turing machine.* LATA 2011. (BobISA.)
-- Hall, J.S. *A reversible instruction set architecture and algorithms.* PhysComp '94.
-- Mogensen, T.Æ. *Fast Control for Reversible Processors.* RC 2022.
 
-### A.6 Quantum uncomputation tooling
-- Paradis, A., Bichsel, B., Cohen, A., Vechev, M. *Unqomp: synthesizing uncomputation in quantum circuits.* PLDI 2021.
-- Paradis, A., Bichsel, B., Vechev, M. *Reqomp: Space-constrained Uncomputation for Quantum Circuits.* Quantum 8, 1258 (2024). arXiv:2212.10395.
-- Meuli, G., Soeken, M., De Micheli, G. *Reversible pebbling game for quantum memory management.* DATE 2019.
-- Gidney, C. *Spooky pebble games and irreversible uncomputation.* algassert.com (2019+).
-- Quist, N. et al. *Tight Bounds on the Spooky Pebble Game.* Quantum (2025). arXiv:2110.08973.
-- Seidel, R. et al. *Qrisp.* Higher-level quantum programming framework.
-- Zhang, Z., Ying, M. *Quantum Register Machine: Efficient Implementation of Quantum Recursive Programs.* PACMPL 9(PLDI), art. 180 (2025). arXiv:2408.10054.
+- Vieri, C.J. *Pendulum: A reversible computer architecture.* MS thesis,
+  MIT, 1995. `references/reversible-isa/vieri-1995-pendulum-ms.pdf`.
+- Vieri, C.J. *Reversible Computer Engineering and Architecture.* PhD
+  thesis, MIT, 1999. `references/reversible-isa/vieri-1999-reversible-arch-phd.pdf`.
+- Frank, M.P. *Reversibility for efficient computing.* PhD thesis, MIT,
+  1999. `references/reversible-isa/frank-1999-thesis.pdf`.
+- **Thomsen, M.K., Axelsen, H.B., Glück, R.** *A Reversible Processor
+  Architecture and Its Reversible Logic Design.* RC 2012, DOI
+  10.1007/978-3-642-29517-1_3. (BobISA. v3 §2.5 incorrectly cited "Axelsen–
+  Yokoyama 2011 LATA"; no such paper exists. v4 corrects this.)
+  `references/reversible-isa/axelsen-yokoyama-2011-bobisa.pdf` (filename
+  predates correction).
+- Mogensen, T.Æ. *Fast Control for Reversible Processors.* RC 2022.
+  `references/reversible-isa/mogensen-2022-fast-control.pdf`.
+
+### A.6 Quantum uncomputation
+
+- Paradis, A., Bichsel, B., Cohen, A., Vechev, M. *Unqomp.* PLDI 2021.
+  `references/quantum-uncomputation/unqomp-2021.pdf`.
+- Paradis, A., Bichsel, B., Vechev, M. *Reqomp.* Quantum 8:1258 (2024),
+  arXiv:2212.10395. `references/quantum-uncomputation/Reqomp2024_uncomputation.pdf`.
+- Meuli, G., Soeken, M., De Micheli, G. *Reversible pebbling game for
+  quantum memory management.* DATE 2019, arXiv:1904.02121.
+  `references/quantum-uncomputation/Meuli2019_reversible_pebbling.pdf`.
+- Quist, N. et al. *Tight Bounds on the Spooky Pebble Game.* Quantum (2025),
+  arXiv:2110.08973. `references/quantum-uncomputation/spooky-pebble.pdf`.
+- Zhang, Z., Ying, M. *Quantum Register Machine.* PACMPL 9(PLDI), art. 180
+  (2025), arXiv:2408.10054. `references/quantum-uncomputation/zhang-ying-2025-qrm.pdf`.
 
 ### A.7 Reverse-time debugging
-- O'Callahan, R., Jones, C., Froyd, N., Huey, K. *Engineering Record And Replay For Deployability.* USENIX ATC 2017.
-- O'Callahan, R., Huey, K. *To Catch a Failure: The Record-and-Replay Approach to Debugging.* ACM Queue 18(1), 2020.
-- rr-project. https://rr-project.org. https://github.com/rr-debugger/rr.
 
-### A.8 Compiler-based AD (relevant to delta histories)
-- Moses, W., Churavy, V. *Instead of Rewriting Foreign Code for Machine Learning, Automatically Synthesize Fast Gradients.* NeurIPS 2020. (Enzyme.)
-- Moses, W.S. et al. *Reverse-mode automatic differentiation and optimization of GPU kernels via Enzyme.* SC 2021.
-- Griewank, A., Walther, A. *Algorithm 799: revolve.* ACM TOMS 26(1), 2000. (Checkpointing for AD.)
+- O'Callahan, R., Jones, C., Froyd, N., Huey, K. *Engineering Record And
+  Replay For Deployability.* USENIX ATC 2017, arXiv:1705.05937.
+  `references/reverse-debugging/ocallahan-2017-rr-deployability.pdf`.
 
-### A.9 Implementations to read
-- RC3 (Reversible Computing Compiler Collection), Technische Hochschule Mittelhessen. https://git.thm.de/thm-rc3/release.
-- TOPPS (DIKU) Janus interpreter. https://topps.diku.dk/pirc/.
-- jana (mbudde). https://github.com/mbudde/jana.
-- janus-vesta. https://github.com/janus-cpu/janus-vesta.
-- Enzyme. https://github.com/EnzymeAD/Enzyme. https://enzyme.mit.edu.
+### A.8 Compiler-based AD
+
+- Moses, W., Churavy, V. *Instead of Rewriting Foreign Code for Machine
+  Learning, Automatically Synthesize Fast Gradients.* NeurIPS 2020,
+  arXiv:2010.01709. `references/ad-and-checkpointing/enzyme-2020.pdf`.
+- Moses, W.S. et al. *Reverse-mode automatic differentiation and
+  optimization of GPU kernels via Enzyme.* SC 2021.
+  `references/ad-and-checkpointing/enzyme-gpu-2021.pdf`.
+
+### A.9 Implementations consulted (source clones, not papers)
+
+- RC3, `references/implementations/RC3/` (SHA 1b4c357). **Required pre-read
+  per §3.1 / M5.**
+- TOPPS-janus, `references/implementations/TOPPS-janus/` (kirkedal/Jana, SHA f1330f4).
+- jana, `references/implementations/jana/` (SHA 5b51b57). Pedagogical only.
+- janus-vesta, `references/implementations/janus-vesta/` (SHA b798194). **Do
+  NOT model Phase-2 ISA on this** (§4.1).
+- evincarofautumn-janus, `references/implementations/evincarofautumn-janus/` (SHA e5fe853). Pedagogical only.
+- Enzyme, `references/implementations/Enzyme-src` (symlink to Bennett.jl's external Enzyme). **Required pre-read for ADR 0002.**
 
 ---
 
-## Appendix B: Phase-0 spike checklist
+## Appendix B: Phase-2 ADR queue (initial)
 
-A one-page checklist for the Claude Code session. Print before starting.
+See §8.3 table. ADRs land in `docs/adr/` as filed.
 
-- [ ] Read Bennett 1973 PDF cover-to-cover. Local copy only.
-- [ ] Read Yokoyama-Glück 2007 PEPM PDF. Note the *no-history* self-interpreter point.
-- [ ] Initialize `BennettVM-spike/` Julia package. Mark as `private = true` in TOML.
-- [ ] Sub-agent assignments: interpreter / instruction-set / tests / reviewer.
-- [ ] `IState`, `RState`, `HistoryStack`.
-- [ ] Eight bytecode instructions. No more.
-- [ ] `step!` / `unstep!` / `run!` / `unrun!`.
-- [ ] Countdown program runs forward to halt.
-- [ ] Countdown program `unrun!`s to initial state.
-- [ ] `length(history) == steps_taken` invariant.
-- [ ] `isempty(history)` after `unrun!`.
-- [ ] Round-trip property test (100 random programs).
-- [ ] `max_steps` guard test.
-- [ ] **Retrospective document written.** (Hard requirement.)
-- [ ] Repository archived / marked read-only.
-- [ ] PRD v4 ticket opened in beads, with retrospective attached.
+---
+
+## Appendix C: Errata applied from v3
+
+| v3 Locus | Defect | v4 Correction |
+|---|---|---|
+| §2.5 | BobISA cited as Axelsen–Yokoyama 2011 LATA | Thomsen–Axelsen–Glück 2012 RC, DOI 10.1007/978-3-642-29517-1_3. §2.4. |
+| §2.4 | RIL implied as standalone paper | Mogensen 2015 LNCS 9138 §3. §2.3. |
+| §5.1 | "Bool-typed regs for `:not`" | Removed; spike locals are uniformly `Int64`; v4 §3.6 specifies the v4 type universe. |
+| §5.3 | `struct RState` (immutable) | `mutable struct RState`. §3.9. |
+| §5.3 | "explicit equality overrides only where round-trip forces it" | Unconditional `Base.==`/`Base.hash` overrides on `IState`. §3.10. |
+| §5.4.3 | `length(history) == steps_taken` (ambiguous) | Discard-pop predicate explicit; `length(history)` counts retained snapshots only. §3.12. |
+| §VIII | Six open questions | Two open; four resolved; ADR queue filed. §8. |
+
+---
+
+## Closing note
+
+This PRD is the input to Phase 2, not the output. Phase 2's deliverable is
+a working production reversible VM with the milestones in §Part IX
+discharged and the success criteria in §Part VI met. v5 is written when
+Phase 2 closes or when v4 is found wanting in a way that warrants
+re-ratification, whichever comes first.
