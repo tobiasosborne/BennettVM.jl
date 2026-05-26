@@ -19,4 +19,5 @@ using BennettVM
     include("test_dispatch.jl")
     include("test_operators.jl")
     include("test_arithmetic_assignment.jl")
+    include("test_swap_instruction.jl")
 end

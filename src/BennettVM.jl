@@ -97,6 +97,14 @@ include("ir/operators.jl")
 # `IState.jl`), and `BINARY_OPERATORS` / `is_binary_operator` (from
 # `operators.jl`), so MUST follow all three. Not yet exported.
 include("ir/arithmetic_assignment.jl")
+# M2.7 — second concrete RSSA instruction: `SwapInstruction`
+# (`bennettvm-ti3`). Implements RC3's four-field `x, y := z, w`
+# register-exchange form (ADR 0001 §Observations row 2). The
+# prototypical injective instruction — self-inverse via
+# target↔source swap, no history record needed (PRD v4 §3.2).
+# Depends on `Instruction` (from `instructions.jl`) and `IState`
+# (from `IState.jl`); MUST follow both. Not yet exported.
+include("ir/swap_instruction.jl")
 include("lower_vm.jl")
 
 export VMProgram, lower_vm
