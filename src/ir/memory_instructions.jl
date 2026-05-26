@@ -196,3 +196,241 @@ function inverse(instr::MemoryAssignment, s::IState, prev)::IState
     s.pc -= 1
     return s
 end
+
+"""
+    MemoryInterchange (M2.12)
+
+The fourth concrete RSSA instruction in BennettVM's twelve-subclass
+taxonomy (`docs/adr/0001-rc3-rvm-smoke.md` §Observations, row 4:
+RC3 `MemoryInterchangeInstruction` / Pendulum-style exchange).
+Implements the RC3 / Mogensen-RSSA register-memory exchange form
+
+    x := M[y] := z
+
+where `target` (`x`) is a *created* SSA name that receives the OLD
+memory cell at address `y`, while `source` (`z`) is a *destroyed* SSA
+name whose value moves into `M[y]`. The address operand `y` is either
+an SSA name (read from `s.locals`) or a literal `Int64`. The exchange
+is **atomic**: the read of the old memory value and the write of
+`z`'s value happen as a single bijective step on the (register, cell)
+pair.
+
+# Why this is the canonical reversible load (Pendulum lesson)
+
+A classical load `x := M[y]` is not reversible — it loses the
+pre-load value of `x`. Vieri's Pendulum (Vieri 1995/1999) documents
+this as a fatal design mistake; every reversible ISA since then —
+PISA, BobISA, RSSA, RC3 — encodes load as an *exchange* that
+simultaneously stores the destination register's old value back into
+memory. In an SSA-shaped IR the "old value of x" doesn't exist
+(every register name has exactly one defining instruction), so the
+exchange takes the form above: `z`'s value (a fresh SSA name being
+destroyed) is what gets written to memory, and `x` (a fresh SSA name
+being created) receives what was in memory. The pair (register
+slot, cell slot) is permuted bijectively; no information is lost.
+
+This is the M2.12 instruction whose existence is gated by CLAUDE.md
+"Hallucination-risk callouts" / "PISA memory access is always an
+exchange". A non-exchange load is *forbidden* at this IR layer; if a
+future lowering pass appears to need one for performance, the right
+move is to read the callout again, not to add a second memory
+instruction with weaker semantics.
+
+# Self-inverse via target↔source swap
+
+The inverse of `x := M[y] := z` is `z := M[y] := x` — exchange
+`target` and `source` and run the same exchange semantics. This
+matches RC3's `MemoryInterchangeInstruction.reverse()` which builds
+a new instance with `left` and `right` swapped (see RC3 source at
+`references/implementations/RC3/compiler/src/main/java/rc3/rssa/instances/MemoryInterchangeInstruction.java`
+line 41-44). The instruction is therefore in the *injective* class
+(M6.1) just like `SwapInstruction` — no history record needed.
+
+# Zero-init convention (symmetric with M2.11)
+
+Reading from an address that has never been written returns
+`Int64(0)`. The implementation uses `get(s.memory, a, Int64(0))` for
+the forward read; the inverse, after computing the value to restore,
+**deletes the key from `s.memory` if that value is `0`**. This is
+the same load-bearing rule as `MemoryAssignment` (see this file's
+M2.11 top-of-module docstring and `src/ir/IState.jl`'s `memory`
+field paragraph). Specifically:
+
+  * Forward: if `M[y]` was unset, `target` receives `Int64(0)`; the
+    forward write then *creates* the key with `z`'s value.
+  * Inverse: if `target`'s value (which equals the pre-forward
+    `M[y]`) is `Int64(0)`, the inverse path deletes the key after
+    the swap so `s.memory` returns to the pre-forward state —
+    *including the absence of the key*, not merely `memory[y] == 0`.
+
+The round-trip invariant `inverse(forward(s)) == s` is what would
+fail without delete-on-zero, exactly as in the M2.11 case. The
+M2.12 test "MemoryInterchange with zero-init address" pins this.
+
+# Constructor validation (Rule 1)
+
+The constructor rejects three degenerate cases at construction time:
+
+  1. `target === source` — the same SSA name appears on both sides
+     of the exchange; the instruction would simultaneously create
+     and destroy one register, losing information. (Also an SSA
+     single-assignment violation in any case.)
+  2. `addr === target` (when `addr isa Symbol`) — the address
+     operand `y` is *read* during the exchange but `target` is
+     being *created* by it; the SSA single-assignment rule forbids
+     defining `target` while `y` (referring to the same name) is
+     simultaneously a use site. Lowering must rename.
+  3. `addr === source` (when `addr isa Symbol`) — `y` is read for
+     the address while `source` is being destroyed; if they're the
+     same name the read and the destroy operate on the same cell
+     and the semantics become ambiguous (does the address resolve
+     to `source`'s value BEFORE or AFTER its destruction?). Forbid
+     at construction time rather than pin an order.
+
+These match the M2.7 `SwapInstruction` rejections (target/source
+overlap is an SSA single-assignment violation everywhere it
+appears).
+
+# pc symmetry
+
+`forward` sets `s.pc += 1`; `inverse` sets `s.pc -= 1`. Matches the
+per-step ±1 symmetry of every M2.x instruction; the M3.x `RState`
+round-trip aligns frames by `pc` alone.
+
+# Ref
+
+  * `references/PRD-v4.md` §3.1 — RSSA instruction taxonomy (row 4
+    of the ADR 0001 §Observations twelve-class table).
+  * `docs/adr/0001-rc3-rvm-smoke.md` §Observations row 4 —
+    `MemoryInterchangeInstruction` / `x := M[y] := z` / "Self-inverse
+    via target↔source swap".
+  * RC3 source:
+    `references/implementations/RC3/compiler/src/main/java/rc3/rssa/instances/MemoryInterchangeInstruction.java`
+    — the analogue this struct mirrors; its `reverse()` method (line
+    41-44) defines the target/source swap that produces the inverse.
+    Javadoc cites Mogensen, *RSSA: A Reversible SSA Form*, p. 213
+    (Perspectives of System Informatics 2015).
+  * CLAUDE.md "Hallucination-risk callouts" → "PISA memory access is
+    always an exchange. Vieri 1995/1999. A load that doesn't store
+    back is not reversible — it loses the pre-load value of the
+    destination register." This instruction is the canonical
+    reversible load.
+  * `src/ir/memory_instructions.jl` (this file) — the M2.11
+    `MemoryAssignment` block above shares `_resolve` and the
+    delete-on-zero rule; same module-level conventions.
+  * CLAUDE.md Rule 1 — constructor validates inputs; degenerate
+    cases fail loud at construction time.
+"""
+struct MemoryInterchange <: Instruction
+    target::Symbol                  # x — created; receives the OLD memory value
+    addr::Union{Symbol,Int64}       # y — address (SSA ref or literal)
+    source::Symbol                  # z — destroyed; its value goes into M[y]
+
+    function MemoryInterchange(target::Symbol,
+                               addr::Union{Symbol,Int64},
+                               source::Symbol)
+        target === source &&
+            error("MemoryInterchange: target === source (= $(target)); ",
+                  "would simultaneously create and destroy the same SSA ",
+                  "name, losing information")
+        if addr isa Symbol
+            addr === target &&
+                error("MemoryInterchange: addr === target (= $(addr)); ",
+                      "SSA single-assignment violation — the address ",
+                      "operand is a use site for the same name being ",
+                      "defined; lowering must rename")
+            addr === source &&
+                error("MemoryInterchange: addr === source (= $(addr)); ",
+                      "the address read and the source destroy would ",
+                      "alias; semantics ambiguous (pre- vs post-destroy ",
+                      "address resolution); forbid at construction time")
+        end
+        return new(target, addr, source)
+    end
+end
+
+"""
+    forward(instr::MemoryInterchange, s::IState) -> IState
+
+Execute `x := M[y] := z` atomically on `s`:
+
+  1. Resolve `a := y` (locals lookup for a `Symbol`, identity for an
+     `Int64`).
+  2. Read `zval := s.locals[source]` and `old := get(s.memory, a, 0)`
+     (the zero-init convention: an unset address reads as `0`).
+  3. Write `s.memory[a] := zval` (M[a] receives z's old value).
+  4. Delete `s.locals[source]` (z is destroyed).
+  5. Insert `s.locals[target] := old` (x is created with the old
+     M[a]).
+  6. Bump `pc`.
+
+The order matters only for the locals dict ops (must read `zval`
+before deleting `source`, and must compute `old` before overwriting
+the cell); for `s.memory` the read of `old` happens before the
+write of `zval` even though they target the same key, so the
+single-cell exchange is well-defined.
+"""
+function forward(instr::MemoryInterchange, s::IState)::IState
+    a    = _resolve(instr.addr, s)
+    zval = s.locals[instr.source]
+    old  = get(s.memory, a, Int64(0))      # zero-init: absent key reads as 0.
+    s.memory[a] = zval                     # M[a] receives z's old value.
+    delete!(s.locals, instr.source)        # destroy z.
+    s.locals[instr.target] = old           # create x with the old M[a].
+    s.pc += 1
+    return s
+end
+
+"""
+    inverse(instr::MemoryInterchange, s::IState, prev) -> IState
+
+Undo a previous `forward` on `instr`. Implements the
+target↔source-swapped exchange `z := M[y] := x`. The `prev`
+argument is part of the dispatch signature (M2.4) but **unused** —
+`MemoryInterchange` is injective (M6.1
+`is_injective(MemoryInterchange) = true`), no history record is
+ever pushed for it, and the caller may pass `nothing`.
+
+# Steps
+
+  1. Resolve `a := y`.
+  2. Read `xval := s.locals[target]` (this equals the pre-forward
+     `M[a]`).
+  3. Read `cur := s.memory[a]` (this equals the pre-forward
+     `s.locals[source]`).
+  4. If `xval == 0`, delete `s.memory[a]` (zero-init delete rule
+     — restores the absent-key state when `M[a]` was unset before
+     forward); otherwise write `s.memory[a] := xval`.
+  5. Delete `s.locals[target]` (x is destroyed).
+  6. Insert `s.locals[source] := cur` (z is restored).
+  7. Decrement `pc`.
+
+# The delete-on-zero rule (load-bearing, symmetric with M2.11)
+
+If the value being restored to memory is `Int64(0)`, **delete the
+key from `s.memory`**. This restores the zero-init equivalence —
+an address that was never written before `forward` should not
+appear in `s.memory` after `inverse`. Without this, the round-trip
+invariant `inverse(forward(s)) == s` would fail for the first-time-
+exchange case (post-inverse `Dict` would carry an `addr → 0` entry
+that the pre-forward `Dict` lacked). Pinned in
+`test/test_memory_instructions.jl` via the "MemoryInterchange with
+zero-init address" testset.
+"""
+function inverse(instr::MemoryInterchange, s::IState, prev)::IState
+    a    = _resolve(instr.addr, s)
+    xval = s.locals[instr.target]          # = pre-forward M[a].
+    cur  = s.memory[a]                     # = pre-forward s.locals[source];
+                                           # must exist post-forward (KeyError
+                                           # surfaces a Rule-1 bug if not).
+    if xval == Int64(0)
+        # Delete-on-zero: restore the zero-init absent-key state.
+        delete!(s.memory, a)
+    else
+        s.memory[a] = xval
+    end
+    delete!(s.locals, instr.target)        # destroy x.
+    s.locals[instr.source] = cur           # restore z.
+    s.pc -= 1
+    return s
+end

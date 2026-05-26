@@ -167,3 +167,70 @@ end
     @test_throws ErrorException BennettVM.MemoryAssignment(:a, :xor, :b,
                                                            :fadd, :c)
 end
+
+# M2.12 — `MemoryInterchange` testsets. The Pendulum-style reversible
+# load `x := M[y] := z`: an atomic register-memory exchange. Tests
+# pin (1) forward semantics and round-trip on a populated cell,
+# (2) zero-init delete-on-inverse symmetry with M2.11, (3) literal
+# address operand support, and (4) constructor-time rejection of
+# degenerate name overlaps (Rule 1). Ref: src/ir/memory_instructions.jl
+# (the `MemoryInterchange` block), RC3
+# `MemoryInterchangeInstruction.java`.
+
+@testset "MemoryInterchange forward + round-trip (M2.12)" begin
+    instr = BennettVM.MemoryInterchange(:x, :y, :z)
+    s = BennettVM.IState(0,
+        Dict(:y => Int64(100), :z => Int64(42)),
+        :running,
+        Dict{Int64,Int64}(100 => Int64(7)))
+    s_before = deepcopy(s)
+
+    s2 = BennettVM.forward(instr, s)
+    @test s2.locals[:x] == 7                   # x got old M[100]
+    @test !haskey(s2.locals, :z)               # z destroyed
+    @test s2.locals[:y] == 100                 # y untouched (just read for address)
+    @test s2.memory[100] == 42                 # M[100] := z's old value
+    @test s2.pc == 1
+
+    s3 = BennettVM.inverse(instr, s2, nothing)
+    @test s3 == s_before
+end
+
+@testset "MemoryInterchange with zero-init address (M2.12)" begin
+    # M[y] starts UNSET. Forward writes z's value; x receives 0.
+    # Inverse must restore the unset (no key) state.
+    instr = BennettVM.MemoryInterchange(:x, :y, :z)
+    s = BennettVM.IState(0,
+        Dict(:y => Int64(999), :z => Int64(77)),
+        :running)   # no memory entry at 999
+    s_before = deepcopy(s)
+    s2 = BennettVM.forward(instr, s)
+    @test s2.locals[:x] == 0                   # zero-init read
+    @test s2.memory[999] == 77
+    s3 = BennettVM.inverse(instr, s2, nothing)
+    @test !haskey(s3.memory, 999)              # zero-init delete on inverse
+    @test s3 == s_before
+end
+
+@testset "MemoryInterchange with literal address (M2.12)" begin
+    instr = BennettVM.MemoryInterchange(:x, Int64(50), :z)
+    s = BennettVM.IState(0, Dict(:z => Int64(11)), :running,
+                          Dict{Int64,Int64}(50 => Int64(99)))
+    s_before = deepcopy(s)
+    s2 = BennettVM.forward(instr, s)
+    @test s2.locals[:x] == 99
+    @test s2.memory[50] == 11
+    s3 = BennettVM.inverse(instr, s2, nothing)
+    @test s3 == s_before
+end
+
+@testset "MemoryInterchange constructor validation (M2.12)" begin
+    @test_throws ErrorException BennettVM.MemoryInterchange(:x, :y, :x)   # target === source
+    @test_throws ErrorException BennettVM.MemoryInterchange(:x, :x, :z)   # addr shadows target
+    @test_throws ErrorException BennettVM.MemoryInterchange(:x, :z, :z)   # addr shadows source
+    # literal address: target===source still rejected
+    @test_throws ErrorException BennettVM.MemoryInterchange(:x, Int64(5), :x)
+    # legal cases
+    @test BennettVM.MemoryInterchange(:x, :y, :z) isa BennettVM.MemoryInterchange
+    @test BennettVM.MemoryInterchange(:x, Int64(5), :z) isa BennettVM.MemoryInterchange
+end
