@@ -1,5 +1,5 @@
-# test/test_interpreter.jl — M3.1 `initial_state` unit tests
-# (bd `bennettvm-afj`).
+# test/test_interpreter.jl — M3.1 `initial_state` + M3.2 `is_halted` /
+# `result` unit tests (bd `bennettvm-afj`, `bennettvm-3ch`).
 #
 # # What this file pins
 #
@@ -33,6 +33,13 @@
 #      `Dict{Symbol,Int64}`; narrower input types (`Int32`) are
 #      coerced via `Int64(v)` at the boundary, not deferred to the
 #      first arithmetic instruction.
+#   7. **M3.2 `is_halted` truth table** — running/halted/error
+#      dispatch through identity comparison on `status`.
+#   8. **M3.2 `result` copy semantics** — returned dict equals the
+#      halted locals BUT is identity-distinct; mutating it must not
+#      reach the RState.
+#   9. **M3.2 `result` non-halted raise (Rule 1)** — error message
+#      names both the "not halted" marker and the actual status.
 #
 # Per CLAUDE.md Rule 4, every test asserts an invariant against a
 # known-correct value (not just "didn't throw").
@@ -173,4 +180,58 @@ end
     rs = initial_state(vm, Dict(:n => Int32(5)))
     @test rs.current.locals[:n] == Int64(5)
     @test rs.current.locals[:n] isa Int64
+end
+
+# ---------------------------------------------------------------------
+# M3.2 — `is_halted` and `result` accessors (bd `bennettvm-3ch`).
+#
+# `is_halted(s)` is the predicate the M3.4 `run!` loop terminates on;
+# `result(s)` is the terminal accessor that extracts a defensive copy
+# of the halted RState's locals dict and raises descriptively
+# otherwise.
+#
+# The tests below pin:
+#
+#   1. `is_halted` returns the three-status truth table (running:
+#      false, halted: true, error: false) on a freshly-built IState
+#      whose `status` is mutated in place between assertions.
+#   2. `result` on a halted RState returns a dict EQUAL to the
+#      halted-IState locals but DISTINCT in identity — i.e., mutating
+#      the returned dict must NOT propagate back to the RState. The
+#      copy semantics are load-bearing per the function's docstring.
+#   3. `result` on a non-halted RState raises an `ErrorException`
+#      whose message names both the marker "not halted" and the
+#      actual status symbol (`:running` / `:error`), so the failure
+#      mode is diagnosable from the message alone (Rule 1).
+# ---------------------------------------------------------------------
+
+@testset "is_halted (M3.2)" begin
+    s = BennettVM.IState(0, Dict{Symbol,Int64}(), :running)
+    r = BennettVM.RState(s, BennettVM.AbstractHistoryEntry[])
+    @test !is_halted(r)
+    s.status = :halted
+    @test is_halted(r)
+    s.status = :error
+    @test !is_halted(r)
+end
+
+@testset "result accessor — halted (M3.2)" begin
+    s = BennettVM.IState(0, Dict(:x => Int64(42), :y => Int64(7)), :halted)
+    r = BennettVM.RState(s, BennettVM.AbstractHistoryEntry[])
+    res = result(r)
+    @test res == Dict(:x => Int64(42), :y => Int64(7))
+    # Returned dict is a COPY — mutations don't reach the RState.
+    res[:x] = Int64(999)
+    @test r.current.locals[:x] == 42   # unchanged
+end
+
+@testset "result accessor — non-halted errors (M3.2)" begin
+    for status in (:running, :error)
+        s = BennettVM.IState(0, Dict(:x => Int64(1)), status)
+        r = BennettVM.RState(s, BennettVM.AbstractHistoryEntry[])
+        err = try; result(r); nothing; catch e; e; end
+        @test err isa ErrorException
+        @test occursin("not halted", err.msg)
+        @test occursin(string(status), err.msg)
+    end
 end

@@ -193,8 +193,15 @@ include("lower_vm.jl")
 # `BeginInstruction` / `IState` / `RState` / `AbstractHistoryEntry`
 # simultaneously. Exported so tests and the future M3.x dispatch loop
 # can call it as `BennettVM.initial_state(...)` or via `using BennettVM`.
+#
+# M3.2 — `is_halted(s)` / `result(s)` accessors (`bennettvm-3ch`). Live
+# in the same file as `initial_state` (they are the matching terminal
+# accessors to its initial accessor); `is_halted` is the `run!` loop
+# terminator predicate, `result` extracts a defensive copy of the
+# halted locals dict with descriptive Rule-1 raise on non-halted
+# state. Exported alongside `initial_state`.
 include("interpreter/Interpreter.jl")
 
-export VMProgram, lower_vm, n_instructions, initial_state
+export VMProgram, lower_vm, n_instructions, initial_state, is_halted, result
 
 end # module BennettVM

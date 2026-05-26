@@ -237,3 +237,82 @@ function initial_state(prog::VMProgram, input::AbstractDict)::RState
     # concrete entry types future `step!` calls push.
     return RState(istate, AbstractHistoryEntry[])
 end
+
+"""
+    is_halted(s::RState) -> Bool
+
+True iff the wrapped `IState`'s `status` is `:halted`. Used by the
+`run!` loop terminator (M3.4) — the loop runs `step!` while
+`!is_halted(s)` — and by callers wanting to extract the result before
+inspecting `s.current.locals`.
+
+The comparison is `===` (identity) rather than `==`; symbols are
+interned in Julia so the two always agree for `Symbol` values, but
+the M2.1 `IState.status` field docstring already documents `===` as
+the canonical spelling for the three legal status values
+(`:running`, `:halted`, `:error`) and we match that convention here.
+
+# Why this is its own accessor (rather than `s.current.status === :halted`
+# spelled inline at every call site)
+
+Every callsite that wants "is the interpreter done?" must agree on
+the halt predicate; if the predicate ever generalises (e.g., grows
+to "halted OR error" for some callers — PRD v4 §3.9 status-symbol
+set), centralising the question here means one edit, not N. The M3.4
+`run!` loop and the M3.x `unrun!` loop will both go through this
+function.
+
+# Ref
+
+  * PRD v4 §3.9 — `is_halted(rstate) :: Bool` signature.
+  * `src/ir/IState.jl` (M2.1) — the `status::Symbol` field and the
+    `:running` / `:halted` / `:error` enumeration this predicate
+    dispatches on.
+"""
+is_halted(s::RState) = s.current.status === :halted
+
+"""
+    result(s::RState) -> Dict{Symbol,Int64}
+
+Extract the locals dict from a halted `RState`, returned as a **copy**
+so the caller cannot mutate interpreter state through the returned
+handle. Errors descriptively (Rule 1) if the RState is not halted —
+the Phase-0 spike retrospective's Q3 area (status-handling) documents
+that silently returning partial-running results was a load-bearing
+bug class; Phase 2 explicitly rejects it at the boundary.
+
+# Why a copy (and not the live `s.current.locals`)
+
+`IState.locals` is the live mutable dict the interpreter mutates on
+every `step!`. If `result` returned that dict directly, a caller doing
+`r = result(s); r[:x] = 0` would silently corrupt the interpreter
+state — and (worse) make `unrun!` produce wrong answers because the
+backward-pass invariants assume `locals` matches the history. Copying
+at the boundary is the cheapest insurance; the cost is one `Dict`
+allocation per terminal `result` call (not per step), and the
+guarantee is structural.
+
+# Why an error (not `nothing`) on non-halted state
+
+PRD v4 §3.16 + Rule 1: silent partial-result returns are a banned
+mode. The error message names the actual status so the caller can
+distinguish `:running` (loop hasn't reached `Halt` yet) from `:error`
+(an instruction raised — see PRD v4 §3.9 status-symbol enumeration).
+
+# Ref
+
+  * PRD v4 §3.9 — `result(rstate) :: Dict{Symbol,Int64}` signature
+    and the precondition that the RState be halted.
+  * `src/ir/IState.jl` (M2.1) — `locals::Dict{Symbol,Int64}` is the
+    field this accessor copies.
+  * `spike/RETROSPECTIVE.md` Q3 area — the silent partial-result
+    failure mode Phase 2 must not reintroduce.
+  * CLAUDE.md Rule 1 (fail loud, not silent `nothing`).
+"""
+function result(s::RState)
+    if !is_halted(s)
+        error("result: RState is not halted (status = $(s.current.status)). ",
+              "Did run! finish? Inspect the RState before calling result.")
+    end
+    return copy(s.current.locals)
+end
