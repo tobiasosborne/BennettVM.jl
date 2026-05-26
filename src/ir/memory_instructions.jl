@@ -434,3 +434,249 @@ function inverse(instr::MemoryInterchange, s::IState, prev)::IState
     s.pc -= 1
     return s
 end
+
+"""
+    MemorySwap (M2.13)
+
+The fifth concrete RSSA instruction in BennettVM's twelve-subclass
+taxonomy (`docs/adr/0001-rc3-rvm-smoke.md` §Observations, row 5:
+RC3 `MemorySwapInstruction` / candidate name `MemSwap`). Implements
+the memory↔memory exchange form
+
+    M[addr1] <-> M[addr2]
+
+where both addresses are either SSA names (`Symbol`, looked up in
+`s.locals`) or literal `Int64` constants. The two memory cells
+exchange values atomically; no register state is read or written.
+
+# Why this is in the injective class (self-inverse)
+
+A memory↔memory swap is its own inverse: applying the same swap
+twice restores the original state on both cells. There is no
+information lost, no SSA name created or destroyed, no modop to
+dual. The instruction is therefore in the M6.1 *injective* class
+just like `SwapInstruction` (register↔register) and
+`MemoryInterchange` (register↔memory): no history record is needed,
+and the `inverse` method below differs from `forward` only in the
+pc delta. RC3's `MemorySwapInstruction.reverse()` returns the same
+instruction unchanged (compare RC3
+`SwapInstruction.reverse()` which is also identity); the
+self-inverse property is structural.
+
+# Why it isn't redundant with `MemoryInterchange`
+
+`MemoryInterchange` (M2.12) is register↔memory and *creates* /
+*destroys* SSA names — it's the canonical reversible load that
+solves the Pendulum problem (a load that doesn't store back loses
+the destination register's pre-load value). `MemorySwap` is
+memory↔memory and creates/destroys nothing; both cells outlive the
+instruction. The two operations are structurally distinct and lower
+from different upstream IR patterns: `MemoryInterchange` lowers
+from `IRLoad`/`IRStore` pairs; `MemorySwap` lowers from sorting,
+permutation, and array-manipulation idioms where two heap-resident
+values need to exchange places without ever touching a register
+(PRD v4 §3.1). Keeping them as separate instructions preserves the
+information that the lowering pass had — collapsing them would
+force a roundtrip through a synthetic register name.
+
+# Zero-init convention (symmetric with M2.11/M2.12)
+
+Reading from an address that has never been written returns
+`Int64(0)`. The forward path uses `get(s.memory, a, Int64(0))` for
+both reads; after the swap, **each cell is `delete!`'d if its
+new value is `0`** — applied independently and symmetrically on
+both addresses. This is the same load-bearing rule as
+`MemoryAssignment` and `MemoryInterchange` (see this file's M2.11
+top-of-module docstring and `src/ir/IState.jl`'s `memory` field
+paragraph). Specifically:
+
+  * If `M[addr1]` was unset and `M[addr2] == 0` before forward, the
+    swap is a semantic no-op on the cells but `pc` still advances;
+    no key is created.
+  * If `M[addr1]` was unset and `M[addr2] != 0`, forward creates
+    `M[addr1] := M[addr2]` and deletes the key at `addr2` (its new
+    value, the old `M[addr1]`, is `0`).
+  * Inverse runs the same swap with `pc -= 1`, restoring the
+    original presence/absence pattern on both keys.
+
+Without delete-on-zero, the round-trip invariant
+`inverse(forward(s)) == s` would fail whenever one cell was unset
+pre-forward (post-inverse `Dict` would carry an `addr → 0` entry
+that the pre-forward `Dict` lacked).
+
+# Constructor validation (Rule 1)
+
+Three categories of input are screened at construction time:
+
+  1. **Both literal, `addr1 == addr2`**: rejected. A swap of a
+     cell with itself is a semantic no-op AND, more importantly, a
+     data-loss-equivalent corruption hazard — if it ever survives
+     into a real program it indicates the lowering pass produced
+     nonsense. Fail loud at construction time rather than silently
+     execute a no-op that bumps `pc`.
+  2. **Both Symbols, `addr1 === addr2`**: rejected for the same
+     reason — semantically a no-op, and indicates a lowering bug.
+     The `===` test is safe on `Symbol`s (interned) and matches
+     the M2.12 pattern.
+  3. **Mixed Symbol/literal**: cannot detect aliasing statically
+     (the Symbol's value isn't known until runtime). Allowed at
+     construction; the runtime check in `forward` and `inverse`
+     (the `a == b` guard after resolution) catches the case where
+     both resolve to the same address at execution time.
+
+The constructor-time check covers the easy cases; the runtime
+check covers the hard one. Per Rule 1, both fail loud (raise
+`ErrorException`).
+
+# pc symmetry
+
+`forward` sets `s.pc += 1`; `inverse` sets `s.pc -= 1`. Matches the
+per-step ±1 symmetry of every M2.x instruction; the M3.x `RState`
+round-trip aligns frames by `pc` alone.
+
+# Ref
+
+  * `references/PRD-v4.md` §3.1 — RSSA instruction taxonomy (row 5
+    of the ADR 0001 §Observations twelve-class table).
+  * `docs/adr/0001-rc3-rvm-smoke.md` §Observations row 5 —
+    `MemorySwapInstruction` / `M[l] <-> M[r]` / "Self-inverse
+    (injective)".
+  * RC3 source: `MemorySwapInstruction` — the analogue this struct
+    mirrors; like RC3 `SwapInstruction`, its `reverse()` is
+    identity (the instruction is its own inverse).
+  * `src/ir/swap_instruction.jl` — the register↔register sibling;
+    same self-inverse structure, different state field touched.
+  * `src/ir/memory_instructions.jl` (this file) — M2.11 and M2.12
+    blocks above share the `_resolve` helper and the delete-on-zero
+    rule; same module-level conventions.
+  * CLAUDE.md Rule 1 — constructor validates inputs; degenerate
+    self-swap cases fail loud at construction time; runtime
+    aliasing under Symbol resolution fails loud in `forward` /
+    `inverse`.
+"""
+struct MemorySwap <: Instruction
+    addr1::Union{Symbol,Int64}      # first cell address (SSA ref or literal)
+    addr2::Union{Symbol,Int64}      # second cell address (SSA ref or literal)
+
+    function MemorySwap(addr1::Union{Symbol,Int64},
+                        addr2::Union{Symbol,Int64})
+        # Two literals: numeric equality catches the static self-swap.
+        if addr1 isa Int64 && addr2 isa Int64
+            addr1 == addr2 &&
+                error("MemorySwap: addr1 == addr2 (= $(addr1)); ",
+                      "literal self-swap is a no-op and a data-loss-",
+                      "equivalent corruption hazard; reject at ",
+                      "construction time per Rule 1")
+        end
+        # Two Symbols: `===` on interned Symbols catches the static
+        # self-swap. Mixed Symbol/literal cannot be screened here —
+        # the Symbol's value isn't known until runtime.
+        if addr1 isa Symbol && addr2 isa Symbol
+            addr1 === addr2 &&
+                error("MemorySwap: addr1 === addr2 (= $(addr1)); ",
+                      "symbolic self-swap is a no-op and indicates a ",
+                      "lowering bug; reject at construction time per ",
+                      "Rule 1")
+        end
+        return new(addr1, addr2)
+    end
+end
+
+"""
+    forward(instr::MemorySwap, s::IState) -> IState
+
+Execute `M[addr1] <-> M[addr2]` atomically on `s`:
+
+  1. Resolve `a := addr1`, `b := addr2` (locals lookup for a
+     `Symbol`, identity for an `Int64`).
+  2. Runtime-alias check: if `a == b`, fail loud — a self-swap is
+     a no-op and a data-loss-equivalent corruption hazard
+     (Rule 1). This catches the mixed Symbol/literal case the
+     constructor cannot screen statically.
+  3. Read `va := get(s.memory, a, 0)` and `vb := get(s.memory, b, 0)`
+     (the zero-init convention: an unset address reads as `0`).
+  4. Apply the delete-on-zero rule independently on each cell:
+     write `s.memory[a] := vb` (or delete if `vb == 0`); write
+     `s.memory[b] := va` (or delete if `va == 0`).
+  5. Bump `pc`.
+
+The order matters: both reads (`va`, `vb`) happen before either
+write, so the single-cell exchange semantics are preserved even
+though the writes target two different keys.
+"""
+function forward(instr::MemorySwap, s::IState)::IState
+    a = _resolve(instr.addr1, s)
+    b = _resolve(instr.addr2, s)
+    a == b &&
+        error("MemorySwap: addr1 and addr2 resolved to same address ",
+              "$(a) at runtime; symbolic-vs-literal aliasing — ",
+              "self-swap is a no-op and a data-loss-equivalent ",
+              "corruption hazard; refuse to execute (Rule 1)")
+    va = get(s.memory, a, Int64(0))    # zero-init: absent key reads as 0.
+    vb = get(s.memory, b, Int64(0))
+    # Apply zero-init delete-rule symmetrically on both addresses
+    # after the swap.
+    if vb == Int64(0)
+        delete!(s.memory, a)
+    else
+        s.memory[a] = vb
+    end
+    if va == Int64(0)
+        delete!(s.memory, b)
+    else
+        s.memory[b] = va
+    end
+    s.pc += 1
+    return s
+end
+
+"""
+    inverse(instr::MemorySwap, s::IState, prev) -> IState
+
+Undo a previous `forward` on `instr`. `MemorySwap` is **self-
+inverse**: the inverse operation is the same memory↔memory swap,
+differing only in the pc delta (`pc -= 1` instead of `pc += 1`).
+The body is intentionally a copy of `forward`'s — collapsing the
+two through a `direction` helper would be DRY but would obscure
+the read-on-each-side that gives `forward` and `inverse` identical
+semantics; clarity wins here. (See file's top-of-module M2.13
+docstring for the self-inverse rationale.)
+
+The `prev` argument is part of the dispatch signature (M2.4) but
+**unused** — `MemorySwap` is injective (M6.1
+`is_injective(MemorySwap) = true`, wired in M6.1), no history
+record is ever pushed for it, and the caller may pass `nothing`.
+
+# The delete-on-zero rule (load-bearing, symmetric with M2.11/M2.12)
+
+After the swap, each cell is `delete!`'d if its new value is `0`,
+independently. This restores the zero-init equivalence — an
+address that was never written before `forward` should not appear
+in `s.memory` after `inverse`. Pinned in
+`test/test_memory_instructions.jl` via the M2.13 "MemorySwap
+one-side-zero" and "MemorySwap both-sides-zero" testsets.
+"""
+function inverse(instr::MemorySwap, s::IState, prev)::IState
+    # MemorySwap is self-inverse — same swap operation, pc decrements.
+    a = _resolve(instr.addr1, s)
+    b = _resolve(instr.addr2, s)
+    a == b &&
+        error("MemorySwap: addr1 and addr2 resolved to same address ",
+              "$(a) at runtime; symbolic-vs-literal aliasing — ",
+              "self-swap is a no-op and a data-loss-equivalent ",
+              "corruption hazard; refuse to execute (Rule 1)")
+    va = get(s.memory, a, Int64(0))
+    vb = get(s.memory, b, Int64(0))
+    if vb == Int64(0)
+        delete!(s.memory, a)
+    else
+        s.memory[a] = vb
+    end
+    if va == Int64(0)
+        delete!(s.memory, b)
+    else
+        s.memory[b] = va
+    end
+    s.pc -= 1
+    return s
+end

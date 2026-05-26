@@ -234,3 +234,87 @@ end
     @test BennettVM.MemoryInterchange(:x, :y, :z) isa BennettVM.MemoryInterchange
     @test BennettVM.MemoryInterchange(:x, Int64(5), :z) isa BennettVM.MemoryInterchange
 end
+
+# M2.13 — `MemorySwap` testsets. The memory↔memory swap
+# `M[l] <-> M[r]`: an atomic exchange of two heap cells with no
+# register involvement. Self-inverse (the inverse is the same swap
+# with pc decremented), injective (no history record needed).
+# Tests pin (1) forward semantics and round-trip on a populated pair
+# of cells, (2) the involution property — two forwards restore the
+# original state, (3) zero-init delete-on-inverse symmetry with
+# M2.11/M2.12 for the one-side-unset and both-sides-unset cases,
+# and (4) constructor-time + runtime-alias rejection of degenerate
+# self-swap cases (Rule 1). Ref: src/ir/memory_instructions.jl (the
+# `MemorySwap` block), RC3 `MemorySwapInstruction`.
+
+@testset "MemorySwap forward + self-inverse (M2.13)" begin
+    instr = BennettVM.MemorySwap(:p, :q)
+    s = BennettVM.IState(0, Dict(:p => Int64(100), :q => Int64(200)), :running,
+                          Dict{Int64,Int64}(100 => Int64(7), 200 => Int64(99)))
+    s_before = deepcopy(s)
+    s2 = BennettVM.forward(instr, s)
+    @test s2.memory[100] == 99
+    @test s2.memory[200] == 7
+    @test s2.pc == 1
+    s3 = BennettVM.inverse(instr, s2, nothing)
+    @test s3 == s_before
+end
+
+@testset "MemorySwap is self-inverse (M2.13)" begin
+    # Two forwards should restore the original state (involution).
+    instr = BennettVM.MemorySwap(Int64(50), Int64(60))
+    s = BennettVM.IState(0, Dict{Symbol,Int64}(), :running,
+                          Dict{Int64,Int64}(50 => Int64(1), 60 => Int64(2)))
+    s_before = deepcopy(s)
+    s2 = BennettVM.forward(instr, s)
+    @test s2.memory[50] == 2
+    @test s2.memory[60] == 1
+    # Forward AGAIN — should restore
+    s3 = BennettVM.forward(instr, s2)
+    @test s3.memory[50] == 1
+    @test s3.memory[60] == 2
+    @test s3.pc == 2   # pc incremented twice
+end
+
+@testset "MemorySwap one-side-zero (M2.13)" begin
+    # Swap with an unset address: forward should move the existing
+    # value to the previously-unset slot and clear the originally-set
+    # slot.
+    instr = BennettVM.MemorySwap(Int64(10), Int64(20))
+    s = BennettVM.IState(0, Dict{Symbol,Int64}(), :running,
+                          Dict{Int64,Int64}(10 => Int64(42)))  # 20 unset
+    s_before = deepcopy(s)
+    s2 = BennettVM.forward(instr, s)
+    @test s2.memory[20] == 42
+    @test !haskey(s2.memory, 10)   # zero-init delete-on-other-side
+    s3 = BennettVM.inverse(instr, s2, nothing)
+    @test s3 == s_before
+end
+
+@testset "MemorySwap both-sides-zero (M2.13)" begin
+    # No-op semantically (both 0), but pc still advances.
+    instr = BennettVM.MemorySwap(Int64(10), Int64(20))
+    s = BennettVM.IState(0, Dict{Symbol,Int64}(), :running)  # empty memory
+    s_before = deepcopy(s)
+    s2 = BennettVM.forward(instr, s)
+    @test isempty(s2.memory)
+    @test s2.pc == 1
+    s3 = BennettVM.inverse(instr, s2, nothing)
+    @test s3 == s_before
+end
+
+@testset "MemorySwap constructor + runtime aliasing (M2.13)" begin
+    # Static rejection: literal addr1 == addr2
+    @test_throws ErrorException BennettVM.MemorySwap(Int64(5), Int64(5))
+    # Symbolic addr1 === addr2
+    @test_throws ErrorException BennettVM.MemorySwap(:p, :p)
+    # Legal cases
+    @test BennettVM.MemorySwap(:p, :q) isa BennettVM.MemorySwap
+    @test BennettVM.MemorySwap(Int64(1), Int64(2)) isa BennettVM.MemorySwap
+    @test BennettVM.MemorySwap(:p, Int64(99)) isa BennettVM.MemorySwap
+
+    # Runtime aliasing: Symbol addresses resolve to same value at run.
+    instr = BennettVM.MemorySwap(:p, :q)
+    s = BennettVM.IState(0, Dict(:p => Int64(7), :q => Int64(7)), :running)
+    @test_throws ErrorException BennettVM.forward(instr, s)
+end
