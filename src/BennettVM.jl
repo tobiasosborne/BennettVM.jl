@@ -79,6 +79,17 @@ include("ir/RState.jl")
 # messages) so MUST follow `IState.jl`. Concrete instruction subtypes
 # land at M2.7-M2.14. Not yet exported.
 include("ir/instructions.jl")
+# M2.5 — canonical BinaryOperator symbol set (`bennettvm-msl`). Defines
+# `BINARY_OPERATORS` (integer / bitwise / shift / divrem opcode symbols,
+# mirroring Bennett.jl's `_IR_BINOP_OPS`), `FP_BINARY_OPERATORS` (the
+# four IEEE-754 ops that arrive as `IRCall` to SoftFloat wrappers, NOT
+# as `IRBinOp`), their union `ALL_BINARY_OPERATORS`, and the
+# `is_binary_operator` predicate used by `ArithmeticAssignment`'s
+# constructor (M2.7) to reject typos at construction time. Depends on
+# nothing in this module; ordered after `instructions.jl` because its
+# downstream consumer is the `ArithmeticAssignment` concrete subtype.
+# Not yet exported.
+include("ir/operators.jl")
 include("lower_vm.jl")
 
 export VMProgram, lower_vm
