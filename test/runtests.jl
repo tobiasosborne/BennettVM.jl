@@ -14,4 +14,5 @@ using BennettVM
 
 @testset "BennettVM" begin
     include("test_handoff_smoke.jl")
+    include("test_istate.jl")
 end
