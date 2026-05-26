@@ -521,3 +521,375 @@ function inverse(instr::UnconditionalExit, s::IState, prev)::IState
     s.pc -= 1
     return s
 end
+
+# =============================================================================
+# M2.10 — ConditionalEntry / ConditionalExit  (bd `bennettvm-du4`)
+# =============================================================================
+
+"""
+    ConditionalEntry / ConditionalExit (M2.10)
+
+The fifth and sixth concrete `ControlInstruction` subtypes — rows 11
+and 12 of `docs/adr/0001-rc3-rvm-smoke.md` §Observations (RC3
+`ConditionalEntry` / `ConditionalExit`; candidate names `CondEntry` /
+`CondExit`). These complete the RSSA twelve-class control-flow group:
+M2.8 covered subroutine markers (Begin/End), M2.9 covered the
+*unconditional* basic-block markers, and **M2.10 covers the
+predicate-bearing pair** that makes branching reversible without a
+history tape.
+
+# φ-nodes appear at splits AND joins — this is the load-bearing lesson
+
+Classical SSA places φ-nodes only at **joins** — points where two
+predecessor blocks flow into one successor and the φ records which
+predecessor supplied each value. Mogensen 2016 §3 RSSA places
+φ-equivalents at **both splits AND joins**, because under the
+reverse dispatch:
+
+  * Forward execution sees a **split** at `ConditionalExit` — two
+    possible targets (`l1` / `l2`) chosen by the predicate `c`.
+  * Backward execution sees a **join** at `ConditionalExit` — control
+    came from either `l1` or `l2`, recovered via the very same `c`.
+  * Forward execution sees a **join** at `ConditionalEntry` — control
+    came from one of two predecessors (`l1` / `l2`); the predicate
+    tells us which.
+  * Backward execution sees a **split** at `ConditionalEntry` —
+    depart toward either `l1` or `l2` based on `c`.
+
+Because the predicate `c` is **the same SSA symbol** referenced by
+both halves of the Entry/Exit pair, and that symbol is **live in
+locals** at the moment of every transition, the pair is invertible
+*without a history record*. This is the structural reason RSSA does
+not need a per-instruction history tape (ADR 0001 §Observations
+Structural-Pattern point 1): join points "remember" the predecessor
+because the predicate value that selected the branch is still in
+scope when the dual dispatch arrives. ADR 0001 §Observations
+Structural-Pattern point 2 records the same fact:
+
+> φ-nodes appear at BOTH splits AND joins (Mogensen 2016 §3 —
+> directly confirmed). `ConditionalExit` is the split: predicate +
+> two target labels. `ConditionalEntry` is the join: predicate +
+> two source labels, and the entry asserts which source the control
+> came from. The assertion is what makes RSSA invertible — join
+> points are not "lossy" because they record the predicate.
+
+CLAUDE.md hallucination-risk callout: *"RSSA φ-nodes appear on
+splits AND joins."* This file is the place that fact is encoded; if
+you find yourself thinking "φ is just a join construct" you are
+applying the classical-SSA intuition to RSSA and will produce
+un-invertible IR.
+
+# Field-order rationale — mirror the RC3 source syntax
+
+The RC3 source forms (ADR 0001 §Observations table rows 11 / 12) are:
+
+  * `ConditionalEntry`: `l1(x,...)l2 <- c` — *"this block joins from
+    `l1` if `c` is true, else from `l2`"*. The label `l1` (true
+    predecessor) appears leftward of `l2` (false predecessor); both
+    sit *before* the `<-` arrow; the predicate `c` follows the arrow.
+  * `ConditionalExit`: `c -> l1(y,...)l2` — *"branch from this block
+    to `l1` if `c` is true, else to `l2`"*. The predicate `c` leads;
+    the arrow `->` separates it from the target pair; `l1` (true
+    target) sits leftward of `l2` (false target).
+
+The struct field order — `predecessor_true` before `predecessor_false`
+on `ConditionalEntry`, and `target_true` before `target_false` on
+`ConditionalExit` — is chosen to mirror this leftward-of pairing.
+The mnemonic "true-branch on the left" is **the same convention** as
+RC3's source form; do not flip it on a hunch.
+
+The predicate-symbol-as-a-`Symbol` (rather than embedded in the
+target / predecessor pair) is also deliberate: the predicate is a
+*reference* into `locals`, not a structural feature of the branch.
+At dispatch (M3.x), the interpreter consults `s.locals[condition]`
+and chooses between `target_true` / `target_false` (forward) or
+`predecessor_true` / `predecessor_false` (backward). The pair is
+positional; the symbol is by-name.
+
+# Forward / inverse semantics — pc-only at this layer
+
+The conditional branch's *dispatch* — consulting `s.locals[condition]`
+to pick the target (forward) or predecessor (backward) and relocating
+`pc` to the destination block's first instruction — is the **M3.x
+interpreter's** responsibility, using the M2.16 `LabelTable`. At the
+per-instruction layer (this file), `ConditionalEntry` and
+`ConditionalExit` are pc-only markers, matching the established
+M2.8 / M2.9 pattern:
+
+```
+forward(::ConditionalEntry, s) → s with s.pc += 1
+forward(::ConditionalExit,  s) → s with s.pc += 1
+inverse(::ConditionalEntry, s, _) → s with s.pc -= 1
+inverse(::ConditionalExit,  s, _) → s with s.pc -= 1
+```
+
+`prev` is unused on both inverses. These instructions are
+structurally injective at this layer because the predicate is live
+in `locals` at the moment of the transition — no history record is
+ever pushed for either class.
+
+This is intentionally the same pc-only pattern as the M2.8 / M2.9
+markers: the cross-block rewrite (Exit ↔ Entry pairing, label
+resolution, predicate-driven target selection) belongs at the IR-
+graph / interpreter layer, not at the per-instruction dispatch
+layer. A future agent tempted to bake `s.locals[condition]` lookup
+into `forward` here should stop: the per-instruction layer is local;
+the graph-level dispatch is the right home for the conditional
+dance.
+
+# Constructor validation (Rule 1)
+
+Light, scoped to the per-instruction layer:
+
+  * `params` (Entry) and `args` (Exit) **may be empty** —
+    control-flow-only conditional blocks (predicate-only, no data
+    passed) are well-formed RSSA programs.
+  * `params` / `args` **must contain unique symbols** — same RSSA
+    single-assignment-within-receiver / -sender rule as M2.9.
+  * `predecessor_true !== predecessor_false` (Entry) and
+    `target_true !== target_false` (Exit) — collapsing both branches
+    onto the same label is a degenerate `UnconditionalEntry` /
+    `UnconditionalExit` case and must be expressed using those
+    classes, not this one. Rejecting the collapse at construction
+    time prevents a downstream IR-graph validation pass (M2.15) from
+    silently treating a conditional as an unconditional.
+  * The predicate `condition` **must NOT appear** in `params`
+    (Entry) or `args` (Exit). The predicate is read from existing
+    `locals`, not freshly bound on entry / not freshly transferred
+    on exit. If `condition` shadowed a name in the param/arg list,
+    the dispatch ordering would be ambiguous: is the value read
+    before or after the binding? Forbidding the shadow at
+    construction time eliminates the ambiguity. (Cross-block
+    constraints — that the *same* `condition` symbol must appear
+    on the paired Entry and Exit, and that its type must be
+    boolean-coercible — are M2.15's responsibility.)
+
+Cross-block invariants (`Exit.target_*` ↔ `Entry.label` /
+predecessor-chain matching; `length(params) == length(args)` at
+every paired edge; predicate-symbol equality between paired Entry
+and Exit) are **not** enforced at this layer — they require seeing
+the whole `BasicBlock` graph and are M2.15's responsibility.
+
+# Structural inverse vs. dispatch-level inverse
+
+The *structural* inverse of a `ConditionalEntry` is a
+`ConditionalExit` (and vice versa) — running a conditional branch
+backwards swaps join-with-predicate for split-with-predicate, with
+the same predicate symbol and a positional swap of the target /
+predecessor pair. **That conversion happens at the IR-graph level**,
+in M2.15's `BasicBlock.reversed()` pass, which rewrites the
+instruction stream rather than re-dispatching the same instruction.
+At the per-instruction dispatch level (this file), both classes are
+`pc`-bumpers; they do not "become" each other under `inverse()`.
+
+Same caveat as M2.8 / M2.9: a future agent tempted to make
+`inverse(::ConditionalEntry, ...)` *return* a different instruction
+type, or mutate `locals` to "undo the predicate read", would be
+wrong. The dispatch layer is local; the graph-level rewrite is the
+right home for the Entry↔Exit flip.
+
+# Ref
+
+  * `docs/adr/0001-rc3-rvm-smoke.md` §Observations rows 11 and 12 —
+    the RC3 `ConditionalEntry` / `ConditionalExit` table entries
+    and the `reverse() → ConditionalExit` / `reverse() →
+    ConditionalEntry` decisions (load-bearing for M2.15).
+  * `docs/adr/0001-rc3-rvm-smoke.md` §Observations Structural-
+    Pattern point 2 — "φ-nodes appear at BOTH splits AND joins
+    (Mogensen 2016 §3 — directly confirmed)". The conceptual
+    grounding for this file.
+  * `docs/adr/0001-rc3-rvm-smoke.md` §Observations note 3 / 4 —
+    block-level instruction-count swap and the
+    conditional-entry/exit dispatch as the load-bearing primitive;
+    the LabelTable mechanism that resolves the predicate-driven
+    target / predecessor in both directions (M2.16 + M3.x).
+  * `bennettvm_prd.md` (PRD v4) §3.1 — RSSA instruction taxonomy
+    listing conditional block entry/exit as part of the twelve-
+    class set.
+  * `src/ir/instructions.jl` (M2.4) — defines `Instruction` and
+    `ControlInstruction` abstract types.
+  * `src/ir/control_instructions.jl` M2.9 block above — the
+    Uncond entry/exit pair this file completes the
+    conditional-flavoured counterpart to; the file-level
+    cohesion neighbour and the pc-only-dispatch template.
+  * CLAUDE.md hallucination-risk callout: *"RSSA φ-nodes appear on
+    splits AND joins."* — the textbook lesson this struct pair
+    embodies.
+"""
+
+"""
+    ConditionalEntry <: ControlInstruction
+
+Conditional basic-block entry marker (RC3 `l1(x,...)l2 <- c`; ADR
+0001 §Observations row 11). A join point with a live predicate: the
+block was entered from `predecessor_true` if `condition` evaluated
+true, otherwise from `predecessor_false`. The same `condition`
+symbol appears on the paired predecessor `ConditionalExit`,
+allowing backward dispatch to recover the predecessor without a
+history record. See this file's M2.10 block docstring for the
+"φ-nodes appear at splits AND joins" narrative and the field-order
+rationale.
+
+  * `label::Symbol` — this block's own identity. Matched against
+    the `target_true` / `target_false` field of each paired
+    predecessor `ConditionalExit` at the M3.x interpreter layer.
+  * `params::Vector{Symbol}` — SSA names of the formal parameters
+    bound on block entry (RC3 `BasicBlockReceiver` semantics).
+    Aligned positionally with each predecessor's
+    `ConditionalExit.args`. Empty vector legal.
+  * `predecessor_true::Symbol` — the predecessor block's label
+    when `condition` is true (RC3 `l1`). Field-order rationale:
+    "true-branch on the left", mirroring the RC3 source form
+    `l1(x,...)l2 <- c`.
+  * `predecessor_false::Symbol` — the predecessor block's label
+    when `condition` is false (RC3 `l2`). Must differ from
+    `predecessor_true` (else the block is a degenerate
+    `UnconditionalEntry`).
+  * `condition::Symbol` — SSA name of the predicate (lives in
+    `locals` at every transition). Must NOT appear in `params`
+    (shadowing forbidden — see Constructor-validation in the file
+    docstring).
+"""
+struct ConditionalEntry <: ControlInstruction
+    label::Symbol
+    params::Vector{Symbol}
+    predecessor_true::Symbol
+    predecessor_false::Symbol
+    condition::Symbol
+
+    function ConditionalEntry(label::Symbol,
+                              params::Vector{Symbol},
+                              predecessor_true::Symbol,
+                              predecessor_false::Symbol,
+                              condition::Symbol)
+        allunique(params) ||
+            error("ConditionalEntry: duplicate param names in $(params) ",
+                  "(SSA single-assignment-within-receiver violation — the ",
+                  "same SSA name cannot be bound twice on block entry)")
+        predecessor_true !== predecessor_false ||
+            error("ConditionalEntry: predecessor_true and predecessor_false ",
+                  "both equal $(predecessor_true) — a conditional join with ",
+                  "a single predecessor is degenerate; express it as an ",
+                  "UnconditionalEntry instead (M2.10 constructor invariant; ",
+                  "see file docstring)")
+        !(condition in params) ||
+            error("ConditionalEntry: condition symbol $(condition) shadows a ",
+                  "param in $(params) — the predicate must be read from ",
+                  "existing locals, not freshly bound on entry (M2.10 ",
+                  "constructor invariant; see file docstring)")
+        return new(label, params, predecessor_true, predecessor_false, condition)
+    end
+end
+
+"""
+    ConditionalExit <: ControlInstruction
+
+Conditional basic-block exit marker (RC3 `c -> l1(y,...)l2`; ADR
+0001 §Observations row 12). A split point with a live predicate:
+control departs to `target_true` if `condition` evaluates true,
+otherwise to `target_false`. The same `condition` symbol appears on
+the paired successor `ConditionalEntry`, allowing forward dispatch
+to record the predecessor implicitly (the predicate value at the
+exit is the same as the value re-read at the entry). See this
+file's M2.10 block docstring for the "φ-nodes appear at splits AND
+joins" narrative and the field-order rationale.
+
+  * `condition::Symbol` — SSA name of the predicate (lives in
+    `locals` at every transition). Must NOT appear in `args`
+    (shadowing forbidden — see Constructor-validation in the file
+    docstring).
+  * `target_true::Symbol` — the successor block's label when
+    `condition` is true (RC3 `l1`). Field-order rationale:
+    "true-branch on the left", mirroring the RC3 source form
+    `c -> l1(y,...)l2`.
+  * `target_false::Symbol` — the successor block's label when
+    `condition` is false (RC3 `l2`). Must differ from `target_true`
+    (else the block is a degenerate `UnconditionalExit`).
+  * `args::Vector{Symbol}` — SSA names whose values are passed to
+    the chosen successor's `params` (RC3 `BasicBlockSender`
+    semantics). Empty vector legal.
+"""
+struct ConditionalExit <: ControlInstruction
+    condition::Symbol
+    target_true::Symbol
+    target_false::Symbol
+    args::Vector{Symbol}
+
+    function ConditionalExit(condition::Symbol,
+                             target_true::Symbol,
+                             target_false::Symbol,
+                             args::Vector{Symbol})
+        allunique(args) ||
+            error("ConditionalExit: duplicate arg names in $(args) ",
+                  "(SSA single-assignment-within-sender violation — the ",
+                  "same SSA name cannot be sent twice from a block exit)")
+        target_true !== target_false ||
+            error("ConditionalExit: target_true and target_false both equal ",
+                  "$(target_true) — a conditional branch with a single target ",
+                  "is degenerate; express it as an UnconditionalExit instead ",
+                  "(M2.10 constructor invariant; see file docstring)")
+        !(condition in args) ||
+            error("ConditionalExit: condition symbol $(condition) shadows an ",
+                  "arg in $(args) — the predicate must be read from existing ",
+                  "locals, not freshly transferred on exit (M2.10 constructor ",
+                  "invariant; see file docstring)")
+        return new(condition, target_true, target_false, args)
+    end
+end
+
+"""
+    forward(instr::ConditionalEntry, s::IState) -> IState
+
+Bump `pc` by 1 and return `s`. `locals` and `status` untouched —
+the conditional join's predicate-driven predecessor recovery
+(consulting `s.locals[instr.condition]` to verify which of
+`predecessor_true` / `predecessor_false` the control arrived from)
+lives in M3.x's interpreter, NOT at this per-instruction layer
+(see this file's M2.10 block docstring).
+"""
+function forward(instr::ConditionalEntry, s::IState)::IState
+    # Cross-block dispatch via LabelTable + predicate lookup lands in
+    # M3.x's interpreter; this layer only advances the pc.
+    s.pc += 1
+    return s
+end
+
+"""
+    forward(instr::ConditionalExit, s::IState) -> IState
+
+Bump `pc` by 1 and return `s`. `locals` and `status` untouched —
+the conditional split's predicate-driven target selection
+(consulting `s.locals[instr.condition]` to choose `target_true` vs
+`target_false`) is M3.x's job; this layer only advances the pc.
+"""
+function forward(instr::ConditionalExit, s::IState)::IState
+    # Cross-block dispatch via LabelTable + predicate lookup lands in
+    # M3.x's interpreter; this layer only advances the pc.
+    s.pc += 1
+    return s
+end
+
+"""
+    inverse(instr::ConditionalEntry, s::IState, prev) -> IState
+
+Decrement `pc` by 1 and return `s`. `prev` is unused (Cond
+entry/exit are injective at the dispatch layer because the
+predicate is live in `locals` at the moment of the transition; no
+history record is ever pushed for them — see this file's M2.10
+block docstring on the pc-only / cross-block-dispatch-deferred-to-
+M3.x design).
+"""
+function inverse(instr::ConditionalEntry, s::IState, prev)::IState
+    s.pc -= 1
+    return s
+end
+
+"""
+    inverse(instr::ConditionalExit, s::IState, prev) -> IState
+
+Decrement `pc` by 1 and return `s`. `prev` is unused.
+"""
+function inverse(instr::ConditionalExit, s::IState, prev)::IState
+    s.pc -= 1
+    return s
+end

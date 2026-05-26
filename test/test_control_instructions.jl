@@ -167,3 +167,101 @@ end
     @test BennettVM.UnconditionalExit <: BennettVM.ControlInstruction
     @test BennettVM.UnconditionalExit <: BennettVM.Instruction
 end
+
+# -----------------------------------------------------------------------------
+# M2.10 — ConditionalEntry / ConditionalExit  (bd `bennettvm-du4`)
+# -----------------------------------------------------------------------------
+#
+# These tests pin (Rule 4):
+#
+#   1. **`ConditionalEntry` pc-only semantics** — forward bumps `pc`
+#      from 0 to 1, leaves `locals` (including the predicate `c`)
+#      untouched, leaves `status` `:running`; inverse restores the
+#      pre-forward state exactly under the content-comparing
+#      `Base.==` from M2.2.
+#   2. **`ConditionalExit` pc-only semantics** — same shape at a
+#      different starting pc (3 → 4 → 3) with a false-valued
+#      predicate to confirm the dispatch-layer behaviour is
+#      *predicate-independent* (the predicate-driven dispatch is
+#      M3.x's job; this file's forward/inverse must not branch on
+#      `c`'s value).
+#   3. **Constructor validation (Rule 1)** — six rejection cases:
+#      duplicate symbols in params/args; collapsed predecessor/
+#      target pair (degenerate-Uncond); predicate symbol shadowing
+#      a param/arg.
+#   4. **Type hierarchy** — both classes extend
+#      `ControlInstruction` (introduced at M2.4).
+#   5. **Field-order + paired-symbol narrative** — true-branch
+#      symbols sit at field positions matching the RC3 source form;
+#      the predicate symbol is the same on the paired Entry/Exit
+#      (here just confirmed positionally — the cross-block invariant
+#      lands at M2.15's `BasicBlock` validation pass).
+#
+# The "φ-on-splits-AND-joins" narrative is documented at the file /
+# section level in `src/ir/control_instructions.jl`'s M2.10 block
+# docstring (per the task brief — this is the most hallucination-
+# prone bead in the M2.x sequence). The tests below pin the
+# *structural* consequences of that narrative.
+
+@testset "ConditionalEntry (M2.10)" begin
+    instr = BennettVM.ConditionalEntry(:Lj, [:x], :Lt, :Lf, :c)
+    s = BennettVM.IState(0, Dict(:x => Int64(5), :c => Int64(1)), :running)
+    s_before = deepcopy(s)
+    s2 = BennettVM.forward(instr, s)
+    @test s2.pc == 1
+    @test s2.locals == s_before.locals
+    @test s2.status === :running
+    s3 = BennettVM.inverse(instr, s2, nothing)
+    @test s3 == s_before
+end
+
+@testset "ConditionalExit (M2.10)" begin
+    instr = BennettVM.ConditionalExit(:c, :Lt, :Lf, [:y])
+    s = BennettVM.IState(3, Dict(:y => Int64(42), :c => Int64(0)), :running)
+    s_before = deepcopy(s)
+    s2 = BennettVM.forward(instr, s)
+    @test s2.pc == 4
+    @test s2.locals == s_before.locals
+    @test s2.status === :running
+    s3 = BennettVM.inverse(instr, s2, nothing)
+    @test s3 == s_before
+end
+
+@testset "Cond constructor validation (M2.10)" begin
+    # Duplicate params/args rejected:
+    @test_throws ErrorException BennettVM.ConditionalEntry(:L, [:x, :x], :Lt, :Lf, :c)
+    @test_throws ErrorException BennettVM.ConditionalExit(:c, :Lt, :Lf, [:y, :y])
+    # Collapsed branches (would be Uncond) rejected:
+    @test_throws ErrorException BennettVM.ConditionalEntry(:L, [:x], :L_same, :L_same, :c)
+    @test_throws ErrorException BennettVM.ConditionalExit(:c, :L_same, :L_same, [:y])
+    # Predicate shadowing a param/arg rejected:
+    @test_throws ErrorException BennettVM.ConditionalEntry(:L, [:c], :Lt, :Lf, :c)
+    @test_throws ErrorException BennettVM.ConditionalExit(:c, :Lt, :Lf, [:c])
+end
+
+@testset "Cond type hierarchy + φ-on-splits-AND-joins narrative (M2.10)" begin
+    @test BennettVM.ConditionalEntry <: BennettVM.ControlInstruction
+    @test BennettVM.ConditionalEntry <: BennettVM.Instruction
+    @test BennettVM.ConditionalExit <: BennettVM.ControlInstruction
+    @test BennettVM.ConditionalExit <: BennettVM.Instruction
+
+    # Structural pairing assertion: any ConditionalExit can be
+    # "reversed" by swapping the target/predecessor pair (this is
+    # what M2.15's BasicBlock.reversed() will exploit; here we just
+    # confirm the field-positional symmetry — true-branch on the
+    # left in both Entry and Exit, mirroring the RC3 source form).
+    exit_ = BennettVM.ConditionalExit(:cond, :T1, :T2, [:a, :b])
+    @test exit_.target_true === :T1
+    @test exit_.target_false === :T2
+
+    entry = BennettVM.ConditionalEntry(:L, [:a, :b], :P1, :P2, :cond)
+    @test entry.predecessor_true === :P1
+    @test entry.predecessor_false === :P2
+
+    # The cross-bead invariant: the predicate symbol must agree
+    # between paired Entry and Exit (verifiable only at IR-graph
+    # validation time, M2.15). Here, just confirm we kept the
+    # convention.
+    @test entry.condition === :cond
+    @test exit_.condition === :cond
+end
