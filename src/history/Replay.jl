@@ -1,12 +1,17 @@
 """
-    Replay (M4.3) — `unstep!` via L3 checkpoint-replay
+    Replay (M4.3 + M4.4) — `unstep!` and `unrun!` via L3 checkpoint-replay
 
-The third concrete step in the PRD v4 §3.3 three-layer history
-implementation. Where M4.1 defined `CheckpointEntry` (the entry type)
-and M4.2 modified `step!` to push entries periodically (every K steps),
-M4.3 lands the *consumer*: a single-step backward primitive that finds
-the nearest checkpoint at-or-before the target step and replays forward
-deterministically to reconstruct the prior state.
+The third and fourth concrete steps in the PRD v4 §3.3 three-layer
+history implementation. Where M4.1 defined `CheckpointEntry` (the entry
+type) and M4.2 modified `step!` to push entries periodically (every K
+steps), M4.3 lands the single-backward-step *consumer* (`unstep!`):
+find the nearest checkpoint at-or-before the target step and replay
+forward deterministically to reconstruct the prior state. M4.4 lands
+the *loop-driver* companion (`unrun!`): repeatedly invoke `unstep!`
+until `s.step_count == 0`, then assert the structural exit invariant
+`isempty(s.history)` — the Bennett-1973 Stage-3 retrace's BennettVM
+realisation. Both functions are exported from this file; the M4.4
+prose lives below the M4.3 `unstep!` definition, just above `unrun!`.
 
 # What `unstep!` does (one backward step)
 
@@ -324,3 +329,280 @@ _entry_step(e::AbstractHistoryEntry) =
           "If this is an M6/M7 entry type, the introducing milestone ",
           "must define `_entry_step(::ThatType)` alongside the type. ",
           "Rule 1: fail loud, not silent.")
+
+# ============================================================================
+# M4.4 — `unrun!` full-reverse driver (bd `bennettvm-5jb`).
+#
+# Where M4.3 (`unstep!`) is the single-backward-step primitive, M4.4 is
+# the loop-driver companion: keep calling `unstep!` until the
+# interpreter is back at step 0. This is the direct analogue of M3.4's
+# `run!` — same kwarg-guarded loop shape, same Rule-1 fail-loud
+# boundary, same "RState left in place for inspection on guard fire"
+# discipline. Symmetry with `run!` is the design intent here: any
+# caller that thinks in terms of `run!` / `unrun!` as paired forward /
+# backward drivers gets exactly the same surface in both directions.
+#
+# ## The Bennett-1973 Stage-3 retrace lineage
+#
+# Bennett 1973 §"Discussion" (p. 529, col. 1, lines 19-25) — paraphrased
+# from `references/foundational/bennett-1973-logical-reversibility.pdf`:
+#
+#   "The third stage undoes the work of the first and consists of the
+#    inverses of all first-stage transitions with C's substituted for
+#    A's. In the final state C₁, the history tape is again blank and
+#    the other tapes contain the reconstructed input and the desired
+#    output."
+#
+# `unrun!` is the BennettVM specialisation of that Stage-3 retrace: at
+# the end of the loop, `s.history` is blank (`isempty(s.history)`) and
+# `s.current` is the reconstructed input (`s.current == s.initial`,
+# the M4.3-introduced step-0 anchor). The "C-state inverses" of Bennett
+# 1973 are M4.3's per-step `unstep!` (find-checkpoint + replay), one
+# per iteration of this loop.
+#
+# Notice that the retrace's two structural invariants — (i) history
+# blank, (ii) reconstructed input — are *both* needed for Bennett's
+# Stage-3 to be a clean inverse. M4.4 asserts (i) inside `unrun!`
+# (because it is the loop's structural exit condition and a missed-
+# truncation bug is exactly the kind of silent reversibility violation
+# Rule 1 forbids). M4.4 does NOT assert (ii); that semantic invariant
+# is M4.5's job to test from the outside, and folding it into `unrun!`
+# would reduce M4.5's round-trip test to "did unrun! throw?" — the
+# Rule-4 anti-pattern.
+#
+# ## Why `step_count > 0` is the loop predicate (not `!isempty(history)`)
+#
+# The spike's `unrun!` (`spike/src/Interpreter.jl:247-253`) used
+# `while !isempty(s.history)` as the loop predicate. That worked
+# because the spike's L3-equivalent pushed one history entry per step;
+# `history empty ⇔ step_count == 0` was guaranteed by construction.
+#
+# Phase 2's L3 layer (PRD v4 §3.3) decouples the two: with K=64 and 12
+# forward steps, `history` is empty but `step_count == 12`. The
+# "are we done?" signal is therefore `step_count`, not history
+# emptiness. Using `!isempty(history)` here would mis-fire — it would
+# exit the loop early when the last surviving checkpoint sits at step
+# 0 (impossible by the M4.2 step-0 carve-out, but the loop predicate
+# should not depend on that carve-out) and, more importantly, would
+# leave us at a non-zero `step_count` with `s.current` not equal to
+# `s.initial`, breaking the M4.5 round-trip exit invariant.
+#
+# `step_count > 0` is the right predicate because M4.3's `unstep!`
+# decrements `step_count` by exactly 1 per call, so the loop is
+# bounded by the initial `step_count` (well-defined termination).
+#
+# ## Why the structural post-condition assertion lives here
+#
+# After the loop terminates, `step_count == 0`. If `unstep!` is
+# correct, the truncation rule "pop entries with step > target" run at
+# `target = -1` on the final iteration would also drain the last entry
+# (step 0 entries are forbidden by M4.2's step-0 carve-out, so any
+# remaining entry has step >= 1 > 0 >= -1... wait, but the final
+# `unstep!` runs with `step_count = 1`, so `target = 0`, popping
+# entries with `step > 0` and retaining the impossible step-0 entry).
+# In other words, `isempty(history)` SHOULD be implied by
+# `step_count == 0` IF M4.3 is correct. The post-condition assertion
+# inside `unrun!` is the structural canary that fires when M4.3's
+# truncation logic has silently regressed — the load-bearing
+# invariant is `step_count == 0 ⇔ history empty`, and we pin it here
+# because pinning it inside `unstep!` is per-step (slow, and the
+# wrong scope: `unstep!` allows transient violations of this
+# biconditional mid-call between the truncate and the replay).
+#
+# ## Why NO manual status reset to `:running`
+#
+# A subtle smell to avoid. After the loop, `s.current` is the
+# (deepcopied) `s.initial`, which was constructed by `initial_state`
+# (`src/interpreter/Interpreter.jl` M3.1) with `status === :running`.
+# So `s.current.status === :running` will hold post-`unrun!`
+# *naturally* — there is no manual reset needed. Adding one would be a
+# correctness smell: the post-state of `unrun!` is determined by
+# `s.initial`, not by a side-channel reset. If a caller constructs a
+# degenerate RState with `initial.status === :error` (`initial_state`
+# would never produce one, but the M4.3 4-arg constructor does not
+# enforce a `:running` check on the initial), runs it a few steps,
+# then `unrun!`s, the post-state status MUST be `:error` — that's the
+# faithful inverse. A manual `:running` reset would lie about that.
+#
+# ## Why the max-iterations guard is binding
+#
+# PRD v4 §3.16 forbids silent infinite loops. If M4.3's `unstep!` ever
+# fails to decrement `step_count` (e.g., a hypothetical regression
+# where it errors-silently-and-returns-without-decrement), this loop
+# would spin forever; the guard converts that pathological case into
+# a loud Rule-1 raise with the offending step_count and history
+# length, leaving the RState mid-reverse so a future
+# debugger/`unstep!` audit can inspect it. The default value (10_000)
+# matches `run!`'s default — the symmetry is intentional: a program
+# that finished in N < 10_000 forward steps will not need more than
+# N backward steps to reverse, by M4.3's "decrement by 1 per call"
+# invariant.
+#
+# # Cross-references
+#
+#   * `references/foundational/bennett-1973-logical-reversibility.pdf`
+#     §"Discussion" p. 529 col. 1 — Stage-3 retrace; the canonical
+#     ancestor of this function. Table 1 (p. 528) shows the
+#     Compute/Output/Retrace three-stage decomposition; M4.4 is the
+#     retrace stage's BennettVM realisation.
+#   * `bennettvm_prd.md` (PRD v4) §3.3 — three-layer history; this
+#     function is L3's reverse-driver.
+#   * `bennettvm_prd.md` (PRD v4) §3.9 — `unrun!(rstate, prog) ::
+#     RState` signature.
+#   * `bennettvm_prd.md` (PRD v4) §3.16 — descriptive raise on guard
+#     fire; no silent infinite loops.
+#   * `references/reverse-debugging/ocallahan-2017-rr-deployability.pdf`
+#     §2.1 — the rr architecture M4.3 (this function's per-iteration
+#     primitive) is the BennettVM specialisation of.
+#   * `src/history/Replay.jl` `unstep!` (M4.3) — the per-iteration
+#     primitive. `unrun!`'s correctness rests on M4.3's correctness:
+#     `unstep!` MUST decrement `step_count` by exactly 1 and MUST
+#     leave `s.current` reflecting the step `target = step_count - 1`
+#     state.
+#   * `src/interpreter/Interpreter.jl` `run!` (M3.4) — the forward
+#     analogue whose kwarg-guarded loop shape this function mirrors.
+#   * `spike/src/Interpreter.jl:247-253` — the spike's `unrun!`,
+#     which used `while !isempty(history)` because its L3-equivalent
+#     pushed every step. The Phase-2 predicate change documented
+#     above is the lesson the L3 redesign forced.
+#   * `docs/impl-plan/phase2-impl-plan.md` M4.4 (lines 221-223) — the
+#     milestone spec.
+#   * CLAUDE.md Rule 1 (fail loud); Rule 4 (every test pins a known-
+#     correct value, never inside the function under test); Rule 11
+#     (literate docstring).
+
+"""
+    unrun!(s::RState, prog::VMProgram; max_unsteps::Int = 10_000)::RState
+
+Reverse the interpreter all the way back to step 0 — the inverse of
+`run!`. Repeatedly invokes `unstep!(s, prog)` until `s.step_count ==
+0`, then asserts the structural exit invariant `isempty(s.history)`
+(PRD v4 §3.9). The RState is mutated in place; the same RState is
+returned for chaining.
+
+The post-condition `s.current == s.initial` is NOT asserted inside
+this function: that semantic invariant is M4.5's job to test from the
+outside, and folding it in here would reduce the round-trip test to
+"did `unrun!` throw?" — the Rule-4 anti-pattern. The structural
+invariant `isempty(s.history)` IS asserted here because it is the
+loop's explicit exit condition: a violation indicates a bug in
+`unstep!`'s history-truncation logic (the load-bearing invariant being
+`step_count == 0 ⇔ history empty`).
+
+# Loop invariant
+
+Each iteration calls `unstep!(s, prog)`, which by M4.3's contract
+decrements `s.step_count` by exactly 1 and truncates any
+`s.history` entries whose `step` index exceeds the new target. The
+loop is bounded by the initial `s.step_count`, so termination is
+mechanical (no convergence argument needed).
+
+# Halt-state interaction
+
+A fully-run program has `s.current.status === :halted`. `unrun!`
+must reverse from that state; the path is transparent — the first
+iteration's `unstep!` call backs out of the halt boundary (M4.3
+restores a pre-halt snapshot whose `status === :running`), and
+subsequent iterations are pure `:running`-to-`:running` reversals.
+No manual status reset is needed; the final `s.current.status`
+emerges naturally from `s.initial.status` (which is `:running` when
+`s.initial` came from `initial_state`).
+
+# Arguments
+
+  * `s` — RState; mutated in place.
+  * `prog` — the VMProgram being reversed.
+  * `max_unsteps` — keyword; default 10_000. Mirror of `run!`'s
+    `max_steps` default. A correct `unstep!` decrements `step_count`
+    by 1 per call, so a program that ran forward in `N < max_unsteps`
+    steps reverses in the same number of iterations; the guard exists
+    to catch the pathological case where `unstep!` regresses
+    silently-without-decrement (Rule 1). On guard fire, the RState is
+    left mid-reverse for inspection — the partial reversal is NOT
+    rolled back.
+
+# Returns
+
+`s` (the same mutated RState). After return: `s.step_count == 0`,
+`isempty(s.history)`, and `s.current == s.initial` (the last
+property is implied by `unstep!`'s correctness; M4.5 tests it).
+
+# Errors
+
+`ErrorException` if either:
+
+  - The `max_unsteps` guard fires before `s.step_count` reaches 0.
+    Indicates a bug in `unstep!` (which MUST decrement `step_count`
+    by 1 per call). The RState is left mid-reverse.
+  - The post-condition `isempty(s.history)` is violated. Indicates a
+    bug in `unstep!`'s truncation logic. The diagnostic message
+    reports the remaining entries' step indices via `_entry_step`
+    (M4.3 dispatch helper; gracefully handles future M6/M7 entry
+    types).
+
+# Ref
+
+  * `references/foundational/bennett-1973-logical-reversibility.pdf`
+    §"Discussion" p. 529 col. 1 — Stage-3 retrace; the canonical
+    ancestor: "The third stage undoes the work of the first … the
+    history tape is again blank and the other tapes contain the
+    reconstructed input and the desired output."
+  * PRD v4 §3.3 (three-layer history), §3.9 (`unrun!` signature),
+    §3.16 (fail-loud on guard fire).
+  * `references/reverse-debugging/ocallahan-2017-rr-deployability.pdf`
+    §2.1 — the rr architecture (per-iteration primitive M4.3).
+  * `src/history/Replay.jl` `unstep!` (M4.3) — per-iteration
+    primitive.
+  * `src/interpreter/Interpreter.jl` `run!` (M3.4) — forward
+    analogue.
+  * `spike/RETROSPECTIVE.md` Q3 — the halt-state propagation lesson
+    motivating the "no manual `:running` reset" discipline above;
+    `run!`'s docstring in `src/interpreter/Interpreter.jl` cites the
+    same source for the symmetric forward-direction issue.
+  * CLAUDE.md Rule 1, Rule 4, Rule 11.
+"""
+function unrun!(s::RState, prog::VMProgram; max_unsteps::Int = 10_000)::RState
+    # The guard counter mirrors `run!`'s n; bound is max_unsteps. A
+    # correct `unstep!` decrements step_count by 1, so this loop runs
+    # at most the initial value of `s.step_count` (the count on entry
+    # to `unrun!`) times — always finite. The guard exists for the
+    # pathological "unstep! silently fails to decrement" case Rule 1
+    # forbids being silent about.
+    n = 0
+    while s.step_count > 0
+        n >= max_unsteps && error(
+            "unrun!: max_unsteps=", max_unsteps, " exceeded ",
+            "(step_count=", s.step_count, ", history length=",
+            length(s.history), "). RState left mid-reverse for ",
+            "inspection — the partial reversal has NOT been rolled ",
+            "back. This guard should NEVER fire for a correct ",
+            "unstep! implementation (each unstep! must decrement ",
+            "step_count by exactly 1); if it does, M4.3's algorithm ",
+            "has regressed. Increase max_unsteps if the program ",
+            "legitimately took >", max_unsteps, " forward steps. ",
+            "PRD v4 §3.16 (fail-loud) + Rule 1.")
+        unstep!(s, prog)
+        n += 1
+    end
+
+    # Structural post-condition. After the loop, step_count == 0; the
+    # load-bearing invariant is `step_count == 0 ⇔ history empty`. A
+    # violation here indicates that `unstep!`'s truncation logic has
+    # silently regressed (e.g., a `step >= target` rule slipping into
+    # what should be a `step > target` rule, or an off-by-one in the
+    # final iteration's target computation). The `_entry_step` call is
+    # M4.3's dispatch helper — it handles `CheckpointEntry` today and
+    # will gracefully handle M6/M7 entry types as they land, without
+    # this assertion needing to know about them.
+    isempty(s.history) || error(
+        "unrun!: structural post-condition violated — step_count ",
+        "reached 0 but s.history is non-empty (",
+        length(s.history), " entries remain at steps ",
+        [_entry_step(e) for e in s.history],
+        "). The load-bearing invariant `step_count == 0 ⇔ history ",
+        "empty` is broken; this indicates a bug in unstep!'s ",
+        "history-truncation logic (M4.3). PRD v4 §3.9 + Rule 1: ",
+        "reversibility violations are correctness bugs, not warnings.")
+
+    return s
+end

@@ -244,6 +244,6 @@ include("interpreter/Interpreter.jl")
 # citation. Exported alongside `step!` / `run!`.
 include("history/Replay.jl")
 
-export VMProgram, lower_vm, n_instructions, initial_state, is_halted, result, step!, run!, unstep!
+export VMProgram, lower_vm, n_instructions, initial_state, is_halted, result, step!, run!, unstep!, unrun!
 
 end # module BennettVM
