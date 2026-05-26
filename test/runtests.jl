@@ -27,4 +27,5 @@ using BennettVM
     include("test_label_table.jl")
     include("test_vmprogram.jl")
     include("test_ir_types.jl")
+    include("test_interpreter.jl")
 end

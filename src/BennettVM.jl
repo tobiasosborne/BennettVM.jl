@@ -184,7 +184,17 @@ include("ir/label_table.jl")
 # typed `VMProgram` value while M3.x is pending.
 include("ir/VMProgram.jl")
 include("lower_vm.jl")
+# M3.1 — `initial_state(prog, input)` (`bennettvm-afj`). Gateway to the
+# forward-only interpreter milestone (M3). Consumes a `VMProgram`
+# (M2.17), reads the entry block's `fwd_address` via `LabelTable`
+# lookup (M2.16), and constructs an `RState` wrapping a fresh `IState`
+# whose `locals` are populated from `input`. MUST follow every M2.x
+# include because it touches `VMProgram` / `LabelTable` / `BasicBlock` /
+# `BeginInstruction` / `IState` / `RState` / `AbstractHistoryEntry`
+# simultaneously. Exported so tests and the future M3.x dispatch loop
+# can call it as `BennettVM.initial_state(...)` or via `using BennettVM`.
+include("interpreter/Interpreter.jl")
 
-export VMProgram, lower_vm, n_instructions
+export VMProgram, lower_vm, n_instructions, initial_state
 
 end # module BennettVM
