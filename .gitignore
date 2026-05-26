@@ -4,18 +4,21 @@
 *.db
 .beads-credential-key
 
-# Implementation source clones (large; tracked only via CLONE-INFO.md)
+# Implementation source clones (large; per-clone provenance lives at
+# references/manifest/clones/<name>.md, alongside the SOURCES.md manifest).
+# Note: when an implementation is its own nested git repo (the usual
+# case — RC3, TOPPS-janus, jana, etc. each ship as standalone clones),
+# the parent repo cannot reach files INSIDE the nested .git. That is
+# why the per-clone provenance lives outside the implementation tree,
+# not inside it as a `<clone>/CLONE-INFO.md` file. Pre-existing
+# `!references/implementations/<x>/CLONE-INFO.md` allow-rules in this
+# .gitignore were structurally non-functional and have been removed
+# 2026-05-26 (see bd bennettvm-zoe review + bennettvm-n52).
 references/implementations/RC3/
 references/implementations/TOPPS-janus/
 references/implementations/jana/
 references/implementations/janus-vesta/
 references/implementations/evincarofautumn-janus/
-# Keep CLONE-INFO.md files tracked
-!references/implementations/RC3/CLONE-INFO.md
-!references/implementations/TOPPS-janus/CLONE-INFO.md
-!references/implementations/jana/CLONE-INFO.md
-!references/implementations/janus-vesta/CLONE-INFO.md
-!references/implementations/evincarofautumn-janus/CLONE-INFO.md
 
 # Playwright session artifacts (from acquisition sessions)
 .playwright/
@@ -24,3 +27,8 @@ references/implementations/evincarofautumn-janus/
 # Lean4-skills plugin scaffolding (SessionStart hook)
 .claude/docs/
 .claude/tools/
+
+# Julia Manifest carries machine-local dev-paths (Bennett.jl is dev'd
+# from ../Bennett.jl until it's registered). Each developer regenerates
+# their own Manifest via `Pkg.develop(path="../Bennett.jl"); Pkg.instantiate()`.
+Manifest.toml
