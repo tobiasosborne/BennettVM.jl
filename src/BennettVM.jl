@@ -69,6 +69,10 @@ include("ir/VMProgram.jl")
 # M2.1 — interpreter state atom (`bennettvm-e7o`). Not yet exported;
 # the public API surface stabilises in a later bead.
 include("ir/IState.jl")
+# M2.3 — history-bearing reversible-execution wrapper around `IState`
+# (`bennettvm-teu`). Depends on `IState`, so MUST follow `IState.jl`
+# in include order. Not yet exported.
+include("ir/RState.jl")
 include("lower_vm.jl")
 
 export VMProgram, lower_vm
