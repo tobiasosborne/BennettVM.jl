@@ -1,0 +1,17 @@
+# test/runtests.jl — canonical Julia test entry for BennettVM.jl.
+#
+# Per CLAUDE.md Rule 4 ("'Runs without errors' is not a passing test"),
+# every included file must assert against known-correct values, not just
+# "didn't throw". Per Rule 7, the entire suite runs in a single Julia
+# process — no parallelism between test files.
+#
+# Currently only the M0.3 Handoff-A smoke is wired up. M0.4 will add the
+# remaining motivating-case smokes (fdict, frtN, matrix_sum) once their
+# Bennett.jl `ParsedIR`s are nailed down for the ADR.
+
+using Test
+using BennettVM
+
+@testset "BennettVM" begin
+    include("test_handoff_smoke.jl")
+end
