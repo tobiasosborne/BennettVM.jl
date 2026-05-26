@@ -152,6 +152,20 @@ include("ir/memory_instructions.jl")
 # `Instruction` (from `instructions.jl`) and `IState` (from
 # `IState.jl`); MUST follow both. Not yet exported.
 include("ir/call_instruction.jl")
+# M2.15 — `BasicBlock` + `reversed(::BasicBlock)` (`bennettvm-jvh`). The
+# unit of RSSA program structure: a single straight-line code segment
+# bracketed by exactly one control-flow entry marker and exactly one
+# control-flow exit marker. Adds `structural_inverse(::Instruction)`
+# (the IR-graph-level instruction inverse, distinct from
+# `inverse(::Instruction, ::IState, prev)`) at module level for the six
+# non-control instruction subtypes, and inlines the block-label-aware
+# entry/exit rewrites (`_reverse_entry_to_exit` / `_reverse_exit_to_entry`)
+# for the six control-flow subtypes. MUST follow every M2.6-M2.14
+# include because the constructors and `structural_inverse` methods
+# dispatch on the concrete `Instruction` subtypes defined there. Not
+# yet exported (callers go through `BennettVM.BasicBlock` / `.reversed`
+# until the public API stabilises at a later bead).
+include("ir/basic_block.jl")
 include("lower_vm.jl")
 
 export VMProgram, lower_vm

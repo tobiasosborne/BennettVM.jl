@@ -23,4 +23,5 @@ using BennettVM
     include("test_control_instructions.jl")
     include("test_memory_instructions.jl")
     include("test_call_instruction.jl")
+    include("test_basic_block.jl")
 end
