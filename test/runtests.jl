@@ -21,4 +21,5 @@ using BennettVM
     include("test_arithmetic_assignment.jl")
     include("test_swap_instruction.jl")
     include("test_control_instructions.jl")
+    include("test_memory_instructions.jl")
 end

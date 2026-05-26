@@ -73,3 +73,50 @@ using BennettVM
     @test haskey(d, s2)
     @test d[s2] == 1
 end
+
+# # Why this second testset exists (M2.11 prep)
+#
+# M2.11 (`bennettvm-jew`) adds a `memory::Dict{Int64,Int64}` field to
+# `IState` so the three memory instructions (`MemoryAssignment` M2.11,
+# `MemoryExchange` M2.12, `MemorySwap` M2.13) have a heap to mutate.
+# The field is **content-equality-participating** by the same rule as
+# `locals`: distinct `Dict` instances with bit-identical key/value
+# content must compare `==` and hash to the same `UInt`. The tests
+# below pin that contract, and additionally pin:
+#
+#   1. The 3-arg constructor still works (every M2.1–M2.10 call site
+#      that passes only `pc, locals, status` continues to compile and
+#      receives an empty memory — backwards compatibility).
+#   2. The 4-arg constructor accepts an explicit `Dict{Int64,Int64}`
+#      and stores it verbatim.
+#   3. `==` / `hash` respect memory content (the M2.2 rationale
+#      generalised to the heap field).
+#
+# Ref: src/ir/IState.jl — the `memory` field docstring paragraph and
+#      the dual 3-arg / 4-arg inner constructors.
+# Ref: docs/adr/0001-rc3-rvm-smoke.md §Observations row 3 (`MemAssign`,
+#      the first instruction to touch memory).
+# Ref: CLAUDE.md Rule 4 — every @test pins a specific value.
+@testset "IState memory field (M2.11 prep)" begin
+    # 3-arg constructor: memory defaults to empty.
+    s1 = BennettVM.IState(0, Dict(:x => Int64(1)), :running)
+    @test s1.memory isa Dict{Int64,Int64}
+    @test isempty(s1.memory)
+
+    # 4-arg constructor: explicit populated memory survives intact.
+    m = Dict{Int64,Int64}(100 => 42, 200 => 99)
+    s2 = BennettVM.IState(0, Dict(:x => Int64(1)), :running, m)
+    @test s2.memory == m
+
+    # == respects memory content (the spike-Q2.1 Dict-identity rule
+    # generalised to the heap field). `copy(m)` is the load-bearing
+    # call: distinct Dict instances with identical content.
+    s3 = BennettVM.IState(0, Dict(:x => Int64(1)), :running, copy(m))
+    @test s2.memory !== s3.memory   # Distinct instances ...
+    @test s2 == s3                   # ... but content-equal IStates.
+    @test hash(s2) == hash(s3)       # ... and consistent hash.
+
+    # Mutation-proof: differing memory content makes IStates unequal.
+    s4 = BennettVM.IState(0, Dict(:x => Int64(1)), :running, Dict{Int64,Int64}())
+    @test s2 != s4
+end

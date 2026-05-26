@@ -55,6 +55,57 @@ struct only; `step!`/`unstep!` arrive later (M3.x), and `Base.==` /
   Stored as `Symbol` rather than an `@enum` for cheap printability and
   to match the spike's choice that survived retrospective Q4 review.
 
+- `memory::Dict{Int64,Int64}`. The addressable heap, as a sparse map
+  from `Int64` address to `Int64` cell value. This is the Phase-2
+  baseline memory model — the simplest thing that could possibly work
+  to give the three memory instructions (`MemoryAssignment` M2.11,
+  `MemoryExchange` M2.12, `MemorySwap` M2.13) a state to mutate.
+  Default is an empty `Dict`; most M2.x instructions (`ArithmeticAssignment`,
+  `SwapInstruction`, the six control-flow markers) don't touch it.
+
+  Why a `Dict`, not a `Vector{Int64}`. The address space is sparse:
+  in any realistic program — and certainly in the four motivating
+  cases of PRD v4 §3.6.2 — only a small subset of addressable
+  positions is ever written, often clustered far apart in the
+  address range (heap-allocated objects at distinct upstream
+  pointer bases, function locals spilled to the stack frame, etc.).
+  A `Vector{Int64}` would force us either to allocate the whole
+  reachable address range up front (`zeros(Int64, typemax(Int64))`
+  is impossible; even `zeros(Int64, 2^32)` is 32 GiB) or to
+  maintain a base-address bias and resize on every out-of-range
+  write — and resize is exactly the operation a reversible heap
+  cannot perform cleanly. The `Dict` sidesteps both: present keys
+  carry written values, absent keys default to `0` (the zero-init
+  convention, codified by the M2.11 memory instructions in their
+  `forward`/`inverse` methods). The Bennett.jl `MemSSA` / `globals`
+  model — a persistent-tree representation with snapshot semantics
+  — is the richer target that informs a later milestone; for M2.11–
+  M2.13 baseline we want the simplest representation that supports
+  read-and-write-back-via-modop, and `Dict{Int64,Int64}` is exactly
+  that.
+
+  Why `Int64` keys (the address-width choice). Bennett.jl produces
+  IR for an x86_64 LLVM target, where pointers are 64-bit. Matching
+  the upstream pointer width here means an `IRLoad` / `IRStore`
+  address lowered from Bennett.jl can be carried into BennettVM
+  without truncation or sign-extension. Phase-2 does NOT yet
+  parametrise the address width — narrower-pointer targets (32-bit,
+  16-bit embedded) will arrive with a typed-pointer milestone in a
+  later phase. Until then, every memory key is `Int64`, and that
+  matches the source IR.
+
+  Why `Int64` values. Same reason as the `locals` value type: every
+  scalar in M2.x is 64-bit (ADR 0001 §Observations, future-work
+  bit-width row). Cell-level typing — `Bool`, narrow int, FP via the
+  M_FP SoftFloat dispatch — arrives with the same milestone that
+  parametrises register widths.
+
+  The empty-default rule (set via the inner 3-arg constructor below)
+  matters for backwards compatibility: every existing `IState(pc,
+  locals, status)` call site in M2.x test files and lowering code
+  continues to compile and behave identically. Code that wants a
+  populated heap calls the 4-arg constructor explicitly.
+
 # Why mutable
 
 Declared `mutable struct` because `step!` and `unstep!` mutate `pc`,
@@ -84,6 +135,19 @@ mutable struct IState
     pc::Int
     locals::Dict{Symbol,Int64}
     status::Symbol
+    memory::Dict{Int64,Int64}
+
+    # 3-arg constructor: preserves every existing call site (M2.1
+    # through M2.10) — empty memory is the right default for any
+    # instruction that doesn't touch the heap.
+    IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol) =
+        new(pc, locals, status, Dict{Int64,Int64}())
+
+    # 4-arg constructor: explicit memory. Used by M2.11+ tests and by
+    # any lowering pass that materializes a heap snapshot up front.
+    IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
+           memory::Dict{Int64,Int64}) =
+        new(pc, locals, status, memory)
 end
 
 """
@@ -147,12 +211,14 @@ Ref: bennettvm_prd.md §3.10 (`Base.==`/`Base.hash` overrides are
 function Base.:(==)(a::IState, b::IState)
     a.pc == b.pc &&
     a.status === b.status &&
-    a.locals == b.locals   # Dict's overloaded ==, content-comparing.
+    a.locals == b.locals &&  # Dict's overloaded ==, content-comparing.
+    a.memory == b.memory     # M2.11: same content-comparing pattern.
 end
 
 function Base.hash(s::IState, h::UInt)
     h = hash(s.pc, h)
     h = hash(s.status, h)
     h = hash(s.locals, h)   # Dict's hash respects content.
+    h = hash(s.memory, h)   # M2.11: heap content participates in hash.
     return h
 end

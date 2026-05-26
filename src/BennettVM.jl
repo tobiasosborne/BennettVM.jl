@@ -127,6 +127,17 @@ include("ir/swap_instruction.jl")
 # Mogensen-RSSA paired entry/exit). Cross-block dispatch via
 # `LabelTable` lands in M3.x's interpreter.
 include("ir/control_instructions.jl")
+# M2.11 — first concrete memory instruction: `MemoryAssignment`
+# (`bennettvm-jew`). Row 3 of the ADR 0001 §Observations RSSA dispatch
+# table — RC3's `M[addr] ⊕= (lhs op rhs)` in-place memory-update form.
+# Depends on `Instruction` (from `instructions.jl`), `IState` (from
+# `IState.jl` — including the `memory::Dict{Int64,Int64}` field added
+# in this same milestone), `BINARY_OPERATORS` / `is_binary_operator`
+# (from `operators.jl`), and the operand-helper functions `_resolve`,
+# `_apply_binop`, `_apply_modop`, `dual_modop` (from
+# `arithmetic_assignment.jl`, reused per Law 2 rather than reinvented).
+# MUST follow all of them in include order. Not yet exported.
+include("ir/memory_instructions.jl")
 include("lower_vm.jl")
 
 export VMProgram, lower_vm
