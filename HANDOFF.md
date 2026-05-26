@@ -2,16 +2,33 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
-## Current state (2026-05-25)
+## Current state (2026-05-26)
 
-- **Phase:** **Phase 2 (production).** Flipped from Phase 1 on 2026-05-25.
-- **PRD:** `bennettvm_prd.md` is v4 (1223 LOC, hostile-reviewer-passed).
-  v3 archived at `docs/prd/bennettvm_prd_v3.md`.
-- **Open bd issue:** `bennettvm-phase2-epic` (created at Phase-2 open;
-  M0–M12 milestones from v4 §Part IX as child issues).
-- **Closed bd issue:** `bennettvm-pb2` (Phase-1 PRD-v4 epic, closed
-  2026-05-25 with this PRD as the deliverable).
-- **Most recent commit:** see `git log -1` — PRD v4 ratification.
+- **Phase:** **Phase 2 (production).**
+- **PRD:** `bennettvm_prd.md` is v4. v3 archived at `docs/prd/bennettvm_prd_v3.md`.
+- **Bennett.jl pin:** `877341e` (repinned 2026-05-26 from `5731cec`,
+  docs-only diff).
+- **Test suite:** **565 / 565 passing.** Single `julia --project=. -e
+  'using Pkg; Pkg.test()'`.
+- **Milestones complete (2026-05-26 orchestration session):**
+  - **M5** — RC3 `rvm` pre-read (build + sample run + instruction
+    taxonomy). ADR at `docs/adr/0001-rc3-rvm-smoke.md`.
+  - **M0** — Bennett.jl handoff smoke (Project.toml, src/BennettVM.jl
+    skeleton, lower_vm digest, regression-anchor test). ADR at
+    `docs/adr/0000-handoff-smoke.md`.
+  - **M2** — IR foundation (18 sub-beads): all 12 RSSA instruction
+    types (ArithmeticAssignment, SwapInstruction, MemoryAssignment,
+    MemoryInterchange, MemorySwap, CallInstruction, BeginInstruction,
+    EndInstruction, UnconditionalEntry/Exit, ConditionalEntry/Exit)
+    with forward/inverse + constructor validation + round-trip tests;
+    BasicBlock with structural_inverse + reversed(); LabelTable
+    with dual-address layout; VMProgram with cross-block container.
+  - **M3** — forward-only interpreter (8 sub-beads): initial_state,
+    is_halted, result, step!, run! with max-steps guard, cross-block
+    dispatch via LabelTable, args→params two-phase rename,
+    countdown(N) golden-master integration test against an
+    irreversible Julia reference (countdown_ref).
+- **Most recent commit:** see `git log -1`.
 - **Git tag:** `spike-0-archived` still marks the end of Phase 0. No new
   tag created for v4 ratification.
 - **Test suite:** spike `spike/` is frozen (789/789 passing, chmod -w);
@@ -19,9 +36,28 @@
 
 ## What you (next session) are picking up
 
-Phase 2 milestone M0 — but **gated by M5** (RC3 `rvm` pre-read; v4 §6 SC6).
-Do NOT start writing Phase-2 IR code before M5 is documented in
-`docs/adr/0001-rc3-rvm-smoke.md`.
+**M3 (forward interpreter) closed. M4 is the next milestone** — history
+layer 3 (checkpoint-replay), which is the first step toward `unrun!`
+and the reverse direction. After M4 comes M6 (history L1 — injective
+no-log), M7 (history L2 — delta min-cut), M8 (per-step inverse +
+property test).
+
+After the history layer is in, the four motivating cases (M_DICT,
+M_DYN, M_NESTED, M_UNBOUNDED — all P0) become the SC9 acceptance
+gate.
+
+Parallel-startable independent tracks:
+
+- **M1.1** (P1) — benchmark harness for history strategies. Independent
+  of M4-M8.
+- **M_OPCODE** (P1) — audit lower_vm against Bennett.jl's 17 IRInst
+  subtypes (only 6 are exercised so far via collatz_steps).
+- **M_FP.1** (P1) — ADR documenting SoftFloat-dispatch FP inheritance.
+
+### Earlier handoff (Phase-2 first session: M5 + M0) — DONE
+
+This section is preserved for historical reference; M5 and M0 closed
+2026-05-26.
 
 ### A. Phase-2 first session: M5 + M0 (recommended)
 
