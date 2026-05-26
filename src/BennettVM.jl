@@ -138,6 +138,20 @@ include("ir/control_instructions.jl")
 # `arithmetic_assignment.jl`, reused per Law 2 rather than reinvented).
 # MUST follow all of them in include order. Not yet exported.
 include("ir/memory_instructions.jl")
+# M2.14 — sixth concrete RSSA instruction: `CallInstruction`
+# (`bennettvm-dp1`). Row 6 of the ADR 0001 §Observations RSSA dispatch
+# table — RC3's `(x,...) := call/uncall l(y,...)` procedure-call form,
+# unified across the `:call` / `:uncall` directions under a single
+# struct with a `direction::Symbol` field (Structural-Pattern point 4
+# / decision-table row "Call/Uncall unification"). At this dispatch
+# layer the instruction is pc-only (matches the M2.8 / M2.9 / M2.10
+# control-flow-marker template); the recursive sub-execution lands in
+# M3.x once VMProgram (M2.17) and the LabelTable (M2.16) exist. The
+# `effective_call_direction` helper documents the XOR-of-directions
+# semantics here so the rationale lives alongside the data. Depends on
+# `Instruction` (from `instructions.jl`) and `IState` (from
+# `IState.jl`); MUST follow both. Not yet exported.
+include("ir/call_instruction.jl")
 include("lower_vm.jl")
 
 export VMProgram, lower_vm

@@ -1,0 +1,368 @@
+"""
+    CallInstruction (M2.14)
+
+The sixth concrete RSSA instruction in BennettVM's twelve-subclass
+taxonomy (`docs/adr/0001-rc3-rvm-smoke.md` §Observations, row 6:
+RC3 `CallInstruction` / candidate name `Call`). Implements the RC3
+procedure-call form
+
+    (x,...) := call/uncall l(y,...)
+
+where `targets` (`x,...`) is a list of *created* SSA names that receive
+the callee's outputs, `args` (`y,...`) is a list of *destroyed* SSA
+names whose values are passed to the callee, `callee` (`l`) is the
+subroutine label, and `direction ∈ {:call, :uncall}` is the source-
+level direction marker that the RC3 design unifies under a single
+class (ADR 0001 §Observations Structural-Pattern point 4 / decision
+table row "Call/Uncall unification").
+
+# Why one class, two directions
+
+ADR 0001 §Observations Structural-Pattern point 4 (and decision-table
+row "Call/Uncall unification") locks the RC3 design choice: rather
+than two distinct opcodes (`Call`, `Uncall`) — the spike-style design
+that fans out two structural primitives where one suffices — RC3
+collapses both forms into a single `CallInstruction` carrying a
+`direction::Direction` field. Phase-2 BennettVM follows the same
+pattern; the field here is a `Symbol` (`:call` or `:uncall`) for
+parity with `IState.status` and `ArithmeticAssignment.modop`'s
+small-finite-tag-set convention. The single-class design composes
+cleanly with the VM-level direction flag (`docs/adr/0001-rc3-rvm-smoke.md`
+§Observations decision-table row "Direction flag" — one per-VM
+`Direction` enum flipped at run start, NOT per-instruction), giving
+the XOR-of-directions semantics encoded in `effective_call_direction`
+below.
+
+# Scoping (CRITICAL) — what M2.14 does, and what M3.x does
+
+The bead text (`bennettvm-dp1` DESCRIPTION) reads: *"forward(call) and
+inverse(call) dispatch to the callee's run!/unrun! respectively;
+raises a descriptive error if callee is not registered."* That
+description is correct **for the eventual M3.x interpreter**, but it
+conflates two layers and would require infrastructure that does not
+yet exist at M2.14:
+
+  * The **callee registry** (label → BasicBlock list, with type-
+    checked parameter / return-value lists) lives on `VMProgram`
+    (M2.17 — `bennettvm-cm5` — not yet implemented).
+  * The **recursive sub-execution** that runs the callee's
+    BasicBlocks forward or backward lives in the M3.x interpreter
+    (`bennettvm-*` M3.1–M3.4 — not yet implemented).
+  * The **direction composition** that picks forward vs backward
+    callee execution from `(instr.direction, vm.direction)` is the
+    XOR-of-directions semantics captured by `effective_call_direction`
+    in this file.
+
+**M2.14 lays the type foundation only**: the struct + inner
+constructor (which Rule-1-validates the invariants that ARE local to
+the per-instruction layer), the pc-only `forward` / `inverse` methods
+that match the M2.8 / M2.9 / M2.10 control-flow-marker template, and
+the `effective_call_direction` helper that documents the eventual
+XOR-of-directions semantics now while the design is fresh. The actual
+subroutine invocation arrives with M3.x once the LabelTable / VMProgram
+machinery exists; trying to inline it here would require a forward
+reference to types that do not exist yet.
+
+This is intentionally the same pc-only-now / cross-instruction-rewrite-
+later pattern as the M2.8 `BeginInstruction` / `EndInstruction` pair
+(file-cohesion neighbours under `control_instructions.jl`); see those
+docstrings for the same "structural inverse vs. dispatch-level
+inverse" caveat.
+
+# XOR-of-directions semantics (encoded in `effective_call_direction`)
+
+The two direction flags — `instr.direction` (the *source-level*
+marker baked into the IR at lowering time) and `vm_direction` (the
+*runtime* flag flipped at `run!` / `unrun!` start) — compose
+multiplicatively. On runtime **forward** execution (`vm_direction
+=== :forward`):
+
+  * A `:call` instruction → callee runs **forward** (the obvious case).
+  * An `:uncall` instruction → callee runs **backward** (the
+    uncomputation pattern: the IR explicitly requests a reverse
+    pass even though the VM is going forward).
+
+On runtime **backward** execution (`vm_direction === :backward`):
+
+  * A `:call` instruction → callee runs **backward** (the VM is
+    reversing; every call site reverses).
+  * An `:uncall` instruction → callee runs **forward** (the VM
+    is reversing AND the IR explicitly asked for an
+    uncomputation; the two negations cancel).
+
+The mnemonic is "XOR of two booleans": `effective_dir = forward` iff
+exactly one of `instr.direction === :call` and `vm_direction ===
+:forward` is true, OR both are. (Concretely: `:call ⊕ :forward =
+:forward`; `:uncall ⊕ :forward = :backward`; `:call ⊕ :backward =
+:backward`; `:uncall ⊕ :backward = :forward`.)
+
+`effective_call_direction(instr, vm_direction)` returns the
+resulting `:forward` / `:backward` symbol. **M2.14 exports this
+helper for M3.x to use**; `CallInstruction`'s `forward` / `inverse`
+at the IState layer do not call it themselves (they only bump pc),
+but the helper documents the semantics now while the design is
+fresh — exactly the literate-programming convention CLAUDE.md
+Rule 11 calls for.
+
+# Constructor validation (Rule 1)
+
+The constructor rejects five categories of degenerate input at
+construction time:
+
+  1. `direction` not in `(:call, :uncall)` — typo or stale spike-
+     style `:reverse_call` / `:invert` symbol; reject with a clear
+     "expected :call or :uncall" message.
+  2. `targets` contains duplicates — the same SSA name materialised
+     twice on the LHS of `:=`; one value would be lost. Same RSSA
+     single-assignment-within-receiver rule as the M2.9
+     `UnconditionalEntry.params` and M2.7 `SwapInstruction.target1/2`
+     constraints.
+  3. `args` contains duplicates — the same SSA name destroyed twice;
+     ambiguous order of operations (which destruction "wins"?) and
+     a structural impossibility under SSA. Same rule as M2.9
+     `UnconditionalExit.args`.
+  4. Any symbol appears in BOTH `targets` and `args` — an SSA name
+     cannot be simultaneously created and destroyed by one
+     instruction. Same rule as M2.7 `SwapInstruction`'s
+     target/source overlap check.
+  5. `callee` appears in `targets` or `args` — the callee label
+     shadows an SSA name; the dispatch would be ambiguous (does the
+     `callee` Symbol refer to the label being called, or to the
+     local being created / destroyed?). Forbid the shadow at
+     construction time.
+
+Empty `targets` / `args` are **legal** — a no-arg / no-return
+subroutine is a well-formed RSSA program (a `void main()` analogue,
+or a pure side-effecting `procedure clear()` with no parameters or
+returns). The M2.9 `UnconditionalEntry` / `UnconditionalExit`
+constructors already establish this convention.
+
+Cross-instruction invariants — that `callee` names a label registered
+on the `VMProgram` (M2.17), that the callee's `BeginInstruction.params`
+has `length(args)` parameters of matching types, that the callee's
+`EndInstruction.returns` has `length(targets)` returns of matching
+types — are **not** enforced at this layer. They require seeing the
+whole `VMProgram` and are M2.17's responsibility (callee registry)
+and M3.x's responsibility (runtime dispatch).
+
+# Forward / inverse semantics — pc-only at this layer
+
+Per the scoping decision above, the dispatch-level forward / inverse
+are deliberately pc-only:
+
+```
+forward(::CallInstruction, s) → s with s.pc += 1
+inverse(::CallInstruction, s, _) → s with s.pc -= 1
+```
+
+`prev` is unused on `inverse`: the actual destruction of `args` and
+creation of `targets` (and the recursive sub-execution of the callee)
+lives at the M3.x interpreter layer, NOT here. The cross-instruction
+rewrite — flipping `:call` to `:uncall` under direction reversal —
+also belongs at the IR-graph / interpreter layer, exactly as M2.8
+Begin/End and M2.9/M2.10 entry/exit do; the per-instruction layer is
+local. A future agent tempted to bake the callee dispatch into
+`forward` should stop and re-read this docstring.
+
+# pc symmetry
+
+`forward` sets `s.pc += 1`; `inverse` sets `s.pc -= 1`. Matches the
+per-step ±1 symmetry of every M2.x instruction; the M3.x `RState`
+round-trip aligns frames by `pc` alone.
+
+# Ref
+
+  * `bennettvm_prd.md` (PRD v4) §3.1 — RSSA instruction taxonomy
+    (row 6 of the ADR 0001 §Observations twelve-class table:
+    procedure call / uncall).
+  * `docs/adr/0001-rc3-rvm-smoke.md` §Observations row 6 —
+    `CallInstruction` / `(x,...) := call/uncall l(y,...)` /
+    "`Direction` field flips; one class for both".
+  * `docs/adr/0001-rc3-rvm-smoke.md` §Observations Structural-Pattern
+    point 4 — "Procedure calls unify call and uncall under one class
+    with a `Direction` field. Reverse-of-call is reverse-of-uncall
+    — a single structural primitive."
+  * `docs/adr/0001-rc3-rvm-smoke.md` §Observations decision-table
+    rows "Direction flag" and "Call/Uncall unification" — the
+    one-per-VM direction flag pattern and the single-class
+    Call/Uncall design that this file inherits.
+  * RC3 source: `src/main/java/.../instances/CallInstruction.java`
+    — the analogue this class mirrors; the `reverse()` method
+    builds a fresh instance with `direction` flipped, which is the
+    cross-instruction-rewrite that lands at M2.15
+    `BasicBlock.reversed()` time, not at the per-instruction
+    dispatch layer (this file).
+  * `src/ir/swap_instruction.jl` (M2.7) — template for the inner-
+    constructor SSA-overlap check.
+  * `src/ir/control_instructions.jl` (M2.8/M2.9/M2.10) — the
+    pc-only-dispatch / cross-block-rewrite-deferred template this
+    file inherits for control-flow-marker semantics.
+  * CLAUDE.md Rule 1 — constructor validates inputs; degenerate
+    cases fail loud at construction time.
+  * CLAUDE.md Rule 11 — literate exposition; the
+    `effective_call_direction` helper is defined here (not at M3.x)
+    specifically to document the XOR-of-directions semantics while
+    the design is fresh.
+"""
+struct CallInstruction <: Instruction
+    targets::Vector{Symbol}    # x,...  — created; receive callee's outputs
+    callee::Symbol             # l — subroutine label
+    args::Vector{Symbol}       # y,... — destroyed; passed to callee
+    direction::Symbol          # :call | :uncall (source-level direction)
+
+    function CallInstruction(targets::Vector{Symbol},
+                             callee::Symbol,
+                             args::Vector{Symbol},
+                             direction::Symbol)
+        direction === :call || direction === :uncall ||
+            error("CallInstruction: invalid direction $(direction); ",
+                  "must be :call or :uncall (RC3 Direction set; ",
+                  "see ADR 0001 §Observations decision-table row ",
+                  "\"Call/Uncall unification\")")
+        allunique(targets) ||
+            error("CallInstruction: duplicate target names in $(targets) ",
+                  "(SSA single-assignment-within-receiver violation — the ",
+                  "same SSA name cannot be created twice on the LHS of ",
+                  "`(x,...) := call l(...)`)")
+        allunique(args) ||
+            error("CallInstruction: duplicate arg names in $(args) ",
+                  "(SSA single-assignment-within-sender violation — the ",
+                  "same SSA name cannot be destroyed twice as a call arg)")
+        for t in targets
+            if t in args
+                error("CallInstruction: symbol $(t) appears in BOTH ",
+                      "targets $(targets) and args $(args) — an SSA name ",
+                      "cannot be simultaneously created and destroyed by ",
+                      "one instruction (RSSA single-assignment rule)")
+            end
+        end
+        if callee in targets
+            error("CallInstruction: callee label $(callee) shadows a ",
+                  "target in $(targets) — the label being called cannot ",
+                  "also be an SSA name created by the call (dispatch ",
+                  "ambiguity); lowering must rename")
+        end
+        if callee in args
+            error("CallInstruction: callee label $(callee) shadows an ",
+                  "arg in $(args) — the label being called cannot also ",
+                  "be an SSA name destroyed by the call (dispatch ",
+                  "ambiguity); lowering must rename")
+        end
+        return new(targets, callee, args, direction)
+    end
+end
+
+"""
+    forward(instr::CallInstruction, s::IState) -> IState
+
+Bump `pc` by 1 and return `s`. `locals` and `status` untouched at this
+dispatch layer — the actual transfer of `args` into the callee's
+parameter slots, the recursive sub-execution of the callee's
+BasicBlocks (in the direction picked by `effective_call_direction`),
+and the harvesting of return values into `targets` all live in M3.x's
+interpreter. See this file's top-of-module M2.14 docstring for the
+scoping rationale.
+"""
+function forward(instr::CallInstruction, s::IState)::IState
+    # Recursive sub-execution of the callee (forward or backward,
+    # picked by `effective_call_direction(instr, vm.direction)`) lands
+    # in M3.x's interpreter once the VMProgram callee registry (M2.17)
+    # and LabelTable (M2.16) exist. This dispatch layer is local: bump
+    # pc only.
+    s.pc += 1
+    return s
+end
+
+"""
+    inverse(instr::CallInstruction, s::IState, prev) -> IState
+
+Decrement `pc` by 1 and return `s`. `prev` is unused at this dispatch
+layer — Call's reversibility is structural (the `direction` flip is a
+cross-instruction rewrite that lands at M2.15 `BasicBlock.reversed()`,
+and the recursive sub-execution lands at M3.x's interpreter). No
+history record is ever pushed for a `CallInstruction` at this layer;
+see this file's top-of-module M2.14 docstring on "structural inverse
+vs. dispatch-level inverse" — same pattern as M2.8 Begin/End and
+M2.9/M2.10 Uncond/Cond entry/exit.
+"""
+function inverse(instr::CallInstruction, s::IState, prev)::IState
+    s.pc -= 1
+    return s
+end
+
+"""
+    effective_call_direction(instr::CallInstruction, vm_direction::Symbol) -> Symbol
+
+Returns `:forward` or `:backward` — the direction in which the callee
+should execute, given the instruction's source-level direction
+(`instr.direction`) and the VM's current run direction (`vm_direction`).
+Captures the XOR-of-directions semantics from RC3's `RSSAVM.java`
+(`Direction` flag composition with per-instruction `:call`/`:uncall`
+marker; ADR 0001 §Observations Structural-Pattern point 4 and decision-
+table rows "Direction flag" + "Call/Uncall unification").
+
+# Truth table
+
+| `instr.direction` | `vm_direction` | Returns        |
+|-------------------|----------------|----------------|
+| `:call`           | `:forward`     | `:forward`     |
+| `:uncall`         | `:forward`     | `:backward`    |
+| `:call`           | `:backward`    | `:backward`    |
+| `:uncall`         | `:backward`    | `:forward`     |
+
+The mnemonic: `effective_dir = :forward` iff `instr.direction === :call`
+agrees with `vm_direction === :forward`, else `:backward`. (Concretely
+the XOR of two booleans; both-true and both-false produce `:forward`,
+mixed produces `:backward`.)
+
+# Where this helper is consumed
+
+`CallInstruction.forward` / `inverse` at the IState layer (this file)
+do NOT call this helper — at the per-instruction dispatch level the
+call is just a pc bump, and the actual callee invocation is M3.x's
+job. The helper is defined here, not at M3.x, **so that the XOR-of-
+directions semantics is documented at the same site as the
+`direction::Symbol` field** (CLAUDE.md Rule 11 — literate
+exposition: the rationale lives alongside the data, not in a
+faraway module). M3.x's interpreter will import this function and
+use it to pick which direction to run the callee's BasicBlocks.
+
+# Failure mode (Rule 1)
+
+If `vm_direction` is anything other than `:forward` or `:backward`,
+the function raises an `ErrorException`. The valid set is fixed by
+ADR 0001 decision-table row "Direction flag" (one per-VM
+`Direction` enum: `Forward` / `Backward`); an unexpected value
+indicates a caller bug — most likely a typo (`:fwd`, `:reverse`) or
+a stale spike-style tag (`:running` / `:halted`, confusing
+`vm_direction` with `IState.status`). Fail loud per Rule 1; do not
+silently default.
+
+# Ref
+
+  * `docs/adr/0001-rc3-rvm-smoke.md` §Observations Structural-Pattern
+    point 4 — "Procedure calls unify call and uncall under one class
+    with a `Direction` field. Reverse-of-call is reverse-of-uncall
+    — a single structural primitive."
+  * `docs/adr/0001-rc3-rvm-smoke.md` §Observations decision-table
+    row "Direction flag" — one per-VM `Direction` enum flipped at
+    run start, NOT per-instruction.
+  * RC3 source: `RSSAVM.java` — the `direction` field composes with
+    each `CallInstruction.direction` exactly as encoded here.
+"""
+function effective_call_direction(instr::CallInstruction,
+                                  vm_direction::Symbol)::Symbol
+    if instr.direction === :call && vm_direction === :forward
+        return :forward
+    elseif instr.direction === :uncall && vm_direction === :forward
+        return :backward
+    elseif instr.direction === :call && vm_direction === :backward
+        return :backward
+    elseif instr.direction === :uncall && vm_direction === :backward
+        return :forward
+    else
+        error("effective_call_direction: invalid vm_direction ",
+              "$(vm_direction); expected :forward or :backward (ADR ",
+              "0001 §Observations decision-table row \"Direction flag\")")
+    end
+end
