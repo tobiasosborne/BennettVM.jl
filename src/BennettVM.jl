@@ -200,8 +200,17 @@ include("lower_vm.jl")
 # terminator predicate, `result` extracts a defensive copy of the
 # halted locals dict with descriptive Rule-1 raise on non-halted
 # state. Exported alongside `initial_state`.
+#
+# M3.3 — `step!(s, prog)` single-instruction dispatch (`bennettvm-1hn`).
+# Forward-only at this milestone: resolves the instruction at the
+# current pc via the private `_instruction_at` flat-stream walker,
+# dispatches to the per-subtype `forward` method (M2.6–M2.14), and
+# transitions status to `:halted` on `EndInstruction`. No history push
+# yet — that arrives at M4, AFTER forward, per the spike Q3 ordering
+# lesson documented in this function's docstring. Exported alongside
+# `initial_state` / `is_halted` / `result`.
 include("interpreter/Interpreter.jl")
 
-export VMProgram, lower_vm, n_instructions, initial_state, is_halted, result
+export VMProgram, lower_vm, n_instructions, initial_state, is_halted, result, step!
 
 end # module BennettVM

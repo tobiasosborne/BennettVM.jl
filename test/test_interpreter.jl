@@ -235,3 +235,151 @@ end
         @test occursin(string(status), err.msg)
     end
 end
+
+# ---------------------------------------------------------------------
+# M3.3 — `step!` single-instruction dispatch (bd `bennettvm-1hn`).
+#
+# `step!(s::RState, prog::VMProgram)::RState` advances the interpreter
+# one instruction forward. The tests below pin:
+#
+#   1. **Three-step arithmetic walk** — a single-block program with a
+#      `BeginInstruction` entry, one `ArithmeticAssignment` body, and
+#      an `EndInstruction` exit. Each `step!` is asserted to advance
+#      pc by exactly 1; the arithmetic body's destroy-source /
+#      create-target / pc-bump semantics are visible mid-walk; the
+#      End step transitions status to `:halted`; calling `step!` once
+#      more on the halted state is a silent no-op (idempotency
+#      contract).
+#   2. **Flat-stream resolver `_instruction_at`** — a two-block program
+#      lets us verify the resolver returns the correct concrete
+#      `Instruction` subtype at every address in the flat
+#      `[entry, body..., exit]` layout and that out-of-range pc
+#      (both pc<1 and pc>n_instructions) raises descriptively
+#      (Rule 1).
+#   3. **Halted no-op** — `step!` called on an RState whose status is
+#      already `:halted` does NOT touch pc, status, or locals — the
+#      M3.4 run! loop relies on this idempotent shape.
+#
+# Per CLAUDE.md Rule 4, every test asserts an invariant against a
+# known-correct value (not just "didn't throw").
+# ---------------------------------------------------------------------
+
+@testset "step! single arithmetic instruction (M3.3)" begin
+    # A minimal one-block program: Begin → ArithAssign → End.
+    # The ArithmeticAssignment computes `x := n ⊕ (n ⊕ 0)` — i.e.,
+    # n XOR (n XOR 0) = 0 — chosen because the value is structurally
+    # forced and the lhs/source aliasing on `:n` exercises the
+    # destroy-source path explicitly (forward resolves lhs from
+    # `s.locals[:n]` BEFORE deleting `:n` per the M2.6 forward order).
+    bb = BennettVM.BasicBlock(
+        :main,
+        BennettVM.BeginInstruction(:main, [:n]),
+        BennettVM.Instruction[
+            # x := n ⊕ (n ⊕ 0); destroys :n, creates :x.
+            BennettVM.ArithmeticAssignment(:x, :n, :xor, :n, :xor, Int64(0)),
+        ],
+        BennettVM.EndInstruction(:main, [:x]),
+    )
+    vm = VMProgram([bb], BennettVM.LabelTable([bb]), :main, [64], [64])
+    rs = initial_state(vm, Dict(:n => Int64(7)))
+
+    # Step 1: BeginInstruction at pc=1 — pc → 2; locals unchanged;
+    # status stays :running.
+    step!(rs, vm)
+    @test rs.current.pc == 2
+    @test rs.current.locals[:n] == 7
+    @test rs.current.status === :running
+
+    # Step 2: ArithmeticAssignment at pc=2 — destroys :n, creates :x;
+    # pc → 3; status stays :running.
+    step!(rs, vm)
+    @test rs.current.pc == 3
+    @test !haskey(rs.current.locals, :n)
+    @test rs.current.locals[:x] == 7 ⊻ (7 ⊻ 0)
+    @test rs.current.status === :running
+
+    # Step 3: EndInstruction at pc=3 — pc → 4 (past the end of the
+    # 3-instruction flat stream); status transitions to :halted.
+    step!(rs, vm)
+    @test rs.current.pc == 4
+    @test rs.current.status === :halted
+
+    # Idempotency contract: step! on a halted state is a silent no-op.
+    pc_before = rs.current.pc
+    locals_before = copy(rs.current.locals)
+    step!(rs, vm)
+    @test rs.current.pc == pc_before
+    @test rs.current.status === :halted
+    @test rs.current.locals == locals_before
+
+    # `result` works on the halted RState — defensive copy of locals.
+    @test result(rs)[:x] == 7 ⊻ (7 ⊻ 0)
+end
+
+@testset "_instruction_at — flat stream resolution (M3.3)" begin
+    # Two-block program. Flat-stream layout:
+    #   pc=1: bb1.entry  (BeginInstruction)
+    #   pc=2: bb1.instructions[1]  (ArithmeticAssignment)
+    #   pc=3: bb1.exit   (UnconditionalExit)
+    #   pc=4: bb2.entry  (UnconditionalEntry)
+    #   pc=5: bb2.exit   (EndInstruction)
+    # Total flat-stream count = 5.
+    bb1 = BennettVM.BasicBlock(
+        :b1,
+        BennettVM.BeginInstruction(:b1, [:n]),
+        BennettVM.Instruction[
+            BennettVM.ArithmeticAssignment(:s, :n, :xor, :n, :xor, Int64(0)),
+        ],
+        BennettVM.UnconditionalExit(:b2, [:s]),
+    )
+    bb2 = BennettVM.BasicBlock(
+        :b2,
+        BennettVM.UnconditionalEntry(:b2, [:s]),
+        BennettVM.Instruction[],
+        BennettVM.EndInstruction(:b1, [:s]),
+    )
+    vm = VMProgram([bb1, bb2], BennettVM.LabelTable([bb1, bb2]), :b1,
+                   [64], [64])
+
+    @test BennettVM._instruction_at(vm, 1) isa BennettVM.BeginInstruction
+    @test BennettVM._instruction_at(vm, 2) isa BennettVM.ArithmeticAssignment
+    @test BennettVM._instruction_at(vm, 3) isa BennettVM.UnconditionalExit
+    @test BennettVM._instruction_at(vm, 4) isa BennettVM.UnconditionalEntry
+    @test BennettVM._instruction_at(vm, 5) isa BennettVM.EndInstruction
+    # Out-of-range bounds: pc < 1 and pc > flat count both raise
+    # descriptively (Rule 1).
+    @test_throws ErrorException BennettVM._instruction_at(vm, 0)
+    @test_throws ErrorException BennettVM._instruction_at(vm, 6)
+    @test_throws ErrorException BennettVM._instruction_at(vm, -1)
+end
+
+@testset "step! no-op on halted (M3.3)" begin
+    # RState whose status is already :halted — step! short-circuits
+    # without touching pc, status, or locals. The VMProgram passed in
+    # doesn't matter (step! never resolves the pc when status is
+    # non-running); we pass a minimal one-block program to satisfy
+    # the type contract.
+    s = BennettVM.IState(5, Dict(:x => Int64(1)), :halted)
+    r = BennettVM.RState(s, BennettVM.AbstractHistoryEntry[])
+    bb = BennettVM.BasicBlock(
+        :m,
+        BennettVM.BeginInstruction(:m, Symbol[]),
+        BennettVM.Instruction[],
+        BennettVM.EndInstruction(:m, Symbol[]),
+    )
+    vm = VMProgram([bb], BennettVM.LabelTable([bb]), :m, Int[], Int[])
+
+    step!(r, vm)
+    @test r.current.pc == 5         # unchanged (pc=5 is past program end;
+                                    # but step! never tried to resolve it)
+    @test r.current.status === :halted
+    @test r.current.locals[:x] == 1
+
+    # Same idempotency holds for :error status — Rule 1 / PRD v4 §3.16
+    # silent-no-op-when-not-:running contract.
+    s2 = BennettVM.IState(99, Dict{Symbol,Int64}(), :error)
+    r2 = BennettVM.RState(s2, BennettVM.AbstractHistoryEntry[])
+    step!(r2, vm)
+    @test r2.current.pc == 99
+    @test r2.current.status === :error
+end
