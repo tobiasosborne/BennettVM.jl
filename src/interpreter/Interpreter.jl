@@ -433,7 +433,7 @@ function _instruction_at(prog::VMProgram, pc::Int)
 end
 
 """
-    step!(s::RState, prog::VMProgram) -> RState
+    step!(s::RState, prog::VMProgram; checkpoint_interval::Int = 64) -> RState
 
 Advance the interpreter one instruction forward in `prog`. Returns the
 same `RState` (mutated in place); the return value is for chaining and
@@ -448,7 +448,11 @@ to satisfy the PRD v4 §3.11 signature `step!(rstate, prog) :: RState`.
      `is_halted(s)`, but a caller that defensively calls `step!` after
      the halt observes a no-op rather than a spurious dispatch on a
      past-the-end pc. Documented at the function level here so the
-     M3.4 loop can rely on the idempotent shape.
+     M3.4 loop can rely on the idempotent shape. The authoritative
+     source for this behavior is `spike/RETROSPECTIVE.md` Q2.4
+     (Phase-0 halt-state-propagation lessons): the spike's `step!`
+     adopted the same idempotent-on-halted shape, and the discipline
+     carried forward into Phase 2 unchanged.
   2. **Resolve the instruction at the current pc** via `_instruction_at`
      (above). Out-of-range pc raises descriptively (Rule 1).
   3. **Dispatch into `forward(instr, s.current)`** — the per-subtype
@@ -457,21 +461,25 @@ to satisfy the PRD v4 §3.11 signature `step!(rstate, prog) :: RState`.
      M2.11 MemoryAssignment, M2.14 CallInstruction). Each method
      mutates `s.current` in place — bumping `pc`, updating `locals` /
      `memory` as appropriate — and returns the same `IState`.
-  4. **Halt detection.** If `instr isa EndInstruction`, set
+  4. **Cross-block dispatch** (M3.6) for Uncond/Cond Exit.
+  5. **Halt detection.** If `instr isa EndInstruction`, set
      `s.current.status = :halted` AFTER the forward call has run. The
      `forward(::EndInstruction, ...)` method has already bumped `pc`
      past the End marker; the status transition signals to `run!`
      (M3.4) and to `is_halted` (M3.2) that no further `step!` calls
      should execute on this RState.
+  6. **Step-count + checkpoint push (M4.2).** Increment `s.step_count`,
+     then — if the new count is a positive multiple of
+     `checkpoint_interval` — push a `CheckpointEntry` capturing the
+     just-stepped state. See the M4.2 section below.
 
-# Ordering invariant — forward FIRST, history push (future) SECOND
+# Ordering invariant — forward FIRST, history push SECOND
 
-M3.3 is the **forward-only** step — there is no history operation
-yet; the L3-checkpoint / L2-delta / L1-injective layers (PRD v4 §3.3)
-arrive at M4. But the ordering convention is baked in here, in this
-docstring, against the moment M4 adds the push:
+The ordering convention is baked in here, in this docstring, and is
+now load-bearing (M4.2 actually pushes):
 
-> The history push MUST come AFTER `forward(...)`, not before.
+> The history push MUST come AFTER `forward(...)` AND after
+> cross-block dispatch AND after halt detection.
 
 The Phase-0 spike's `step!` originally pushed the pre-state snapshot
 BEFORE calling `forward`; an exception inside `forward` (a div-by-zero,
@@ -480,8 +488,9 @@ entry referring to a state that the IState never actually moved through.
 The corrupted history corrupted `unrun!` in turn, producing a phantom
 "reversibility violation" that took the spike's Pass-1 review cycle
 to track down. Pass-1F reordered the push to come AFTER `forward`,
-which is what fixed it. See `spike/RETROSPECTIVE.md` Q3 for the full
-account.
+which is what fixed it. See `spike/RETROSPECTIVE.md` Q2.2 for the
+deepcopy-semantics + ordering account (Q3 for the Pass-1F reorder
+narrative).
 
 The status-transition-on-End rule is itself an instance of the
 forward-FIRST principle: we set `:halted` AFTER `forward(::EndInstruction)`
@@ -503,68 +512,182 @@ halt transition (RC3 `RSSAVM.java:585-590` — the `instances.End`
 visitor sets the VM's halted flag) and is the design point ratified
 by PRD v4 §3.11.
 
+# M4.2 — Checkpoint push
+
+`checkpoint_interval::Int = 64` (kwarg, default per PRD v4 §3.3
+placeholder). When `s.step_count` (post-increment) is a positive
+multiple of `checkpoint_interval`, `step!` pushes a `CheckpointEntry`
+onto `s.history` capturing the post-step `s.current` and the
+just-incremented count. The L3 history layer of PRD v4 §3.3.
+
+**`K = 1` is a forensic-test mode, NOT a production configuration.**
+Passing `checkpoint_interval = 1` reproduces the §3.3-prohibited
+per-step full-snapshot pattern (every successful step pushes a deep-
+copied `IState`) — the worst point on the time-space curve PRD v4
+§3.3 explicitly rejects. It exists in the interface so the M4.2 test
+suite can exercise post-step state capture exhaustively; downstream
+callers (M5 bridge, M9 scheduler, M4.5 round-trip harness) must NOT
+use K=1 in production runs.
+
+**When the push fires.** The first push is at step `K` (i.e., after
+the K-th successful step), the second at step `2K`, the third at
+`3K`, and so on. Step 0 — the *initial* state, before any forward
+step has run — is **not** checkpointed; M4.3's `unstep!` finds the
+nearest checkpoint at or before the current step and replays
+forward, so the initial state is reachable by replay from "no
+checkpoint, run from initial_state". The Step-0 carve-out is M4.3's
+concern.
+
+**What state is captured.** The post-step `s.current` (after
+`forward`, after cross-block dispatch, after halt detection) and the
+post-increment `s.step_count`. Capturing the *post* state means a
+replay from this checkpoint resumes immediately PAST the captured
+step — exactly the rr-style "checkpoint = resumption point"
+convention. M4.3's `unstep!` will rely on this: to recover the state
+at step `k`, find the largest checkpoint at step `j <= k`, restore,
+and replay forward `k - j` times.
+
+**Why the deepcopy lives inside `CheckpointEntry`'s constructor, not
+here.** `CheckpointEntry(snapshot, step)` already deep-copies its
+`snapshot` argument as part of its constructor contract (see
+`src/history/CheckpointEntry.jl` §"Why deep-copy in the constructor"
+and `spike/RETROSPECTIVE.md` Q2.2). A second deepcopy here would be
+wasteful and confusing — and would violate Law 2 ("reuse before
+reinvention") at the *type-contract* level. The single deepcopy is
+the right shape.
+
+**Why `step_count` is incremented in `step!`, not in `run!`.** Two
+reasons. (1) `step!` itself reads the just-incremented count to
+decide whether to push a `CheckpointEntry` — moving the increment to
+`run!` would mean `step!` couldn't make that decision without a
+parameter the caller might forget. (2) `step!` is the only place
+that *knows* whether the just-attempted forward succeeded (the
+early-return on non-`:running`, an exception in `forward`, …).
+Putting the counter on `RState` and incrementing it here is what
+makes "the count tracks successful steps and only successful steps"
+expressible as a local invariant. See `src/ir/RState.jl` §"Why
+`step_count` here, not in `run!`'s local scope" for the
+field-placement rationale.
+
+**Increment ordering — only on success.** The increment happens only
+*after* `forward` + cross-block + halt-detection have all completed
+without raising. The early-return path (status !== :running, before
+any work) does NOT increment; an exception in `forward` does NOT
+increment (the exception propagates and `step!` returns without
+reaching the increment). This preserves the "every increment
+corresponds to one successful forward step" invariant that M4.3's
+decrement-on-`unstep!` will rely on.
+
+**`checkpoint_interval` validation.** A non-positive
+`checkpoint_interval` is rejected with a descriptive error before
+the dispatch begins (Rule 1). `K=0` would cause a `DivideError` at
+`step_count % checkpoint_interval`; `K<0` would silently never fire
+the push (because `step_count > 0` and `step_count % K` would be
+negative in Julia for negative K — well-defined but useless).
+Failing loud at the boundary beats every alternative.
+
 # Ref
 
   * `bennettvm_prd.md` (PRD v4) §3.11 — `step!(rstate, prog) :: RState`
-    signature and forward-only scope at M3.3.
-  * `spike/RETROSPECTIVE.md` Q3 — the forward-before-push ordering
-    bug that fell out of Pass-1 review and was fixed by Pass-1F's
-    reorder. The lesson is documented here proactively against the
-    M4 history-bearing reshape.
+    signature.
+  * `bennettvm_prd.md` (PRD v4) §3.3 — three-layer history; L3 is
+    periodic full-state checkpoints + deterministic forward replay;
+    "every 64 retained-snapshot-equivalent steps" is the placeholder
+    default K.
+  * `spike/RETROSPECTIVE.md` Q2.2 — deepcopy semantics + the
+    forward-before-push ordering invariant; the "deepcopy inside
+    CheckpointEntry's constructor" decision pattern that lets
+    `step!` stay free of explicit copying.
+  * `spike/RETROSPECTIVE.md` Q3 — the Pass-1F reorder of forward-then-
+    push fixing a corrupted-history bug. The lesson is encoded in
+    this docstring's ordering invariant section above.
+  * `src/history/CheckpointEntry.jl` (M4.1) — the entry type pushed,
+    and the deepcopy contract that lets `step!` defer the copy.
+  * `src/ir/RState.jl` (M2.3 / M4.2) — the `step_count` field this
+    function mutates.
   * `src/ir/instructions.jl` (M2.4) — the generic `forward` fallback
     that catches any user-defined `Instruction` subtype outside the
     twelve-class sealed set.
   * `src/ir/control_instructions.jl` (M2.8) — `EndInstruction` and
     its pc-bumping `forward` method; the halt-marker the End-detection
     clause above keys on.
-  * CLAUDE.md Rule 1 (out-of-range pc / unknown instruction fail
-    loud); Rule 11 (literate docstring); Rule 4 (the M3.3 tests
-    that pin this behavior assert known-correct pc / locals /
-    status values, not just "didn't throw").
+  * CLAUDE.md Rule 1 (out-of-range pc / unknown instruction / K<=0
+    fail loud); Rule 11 (literate docstring); Rule 4 (the M3.3 and
+    M4.2 tests pin known-correct pc / locals / status / count /
+    history-length values, not just "didn't throw").
 """
-function step!(s::RState, prog::VMProgram)::RState
+function step!(s::RState, prog::VMProgram;
+               checkpoint_interval::Int = 64)::RState
     # (1) Silent no-op gate. The `===` comparison matches the M2.1
     # IState.status convention (identity on interned symbols). Returning
     # early here makes `step!` idempotent on a non-running state, which
     # is what lets the M3.4 `run!` loop reach for an `is_halted` check
     # at the *top* of the loop without worrying about a stray dispatch.
+    # No step_count increment on this path (the brief's increment-only-
+    # on-success rule — M4.2).
     s.current.status === :running || return s
 
-    # (2) Resolve the instruction at the current pc. Out-of-range pc
+    # (2) Validate `checkpoint_interval` at the boundary. Rule 1 / fail
+    # loud: K=0 would `DivideError` at the modulo check below; K<0 is
+    # well-defined Julia (Julia's `%` follows the sign of the dividend
+    # for negative divisors) but silently useless — `step_count > 0`
+    # combined with a negative K never matches `% K == 0` for K=-1 but
+    # always matches for K=-step_count, an unpredictable footgun the
+    # caller cannot reason about. The validation lives AFTER the early
+    # return so a halted RState (whose status flips through `step!`
+    # without consuming K) is not gated on the kwarg being sensible.
+    checkpoint_interval > 0 ||
+        error("step!: checkpoint_interval must be positive, got ",
+              checkpoint_interval,
+              ". A non-positive K disables periodic checkpointing in ",
+              "a way the caller cannot reason about (K=0 would ",
+              "DivideError; K<0 fires unpredictably). PRD v4 §3.3 ",
+              "places no upper bound on K — pass `typemax(Int)` to ",
+              "suppress pushes entirely. PRD v4 §3.16 (fail-loud ",
+              "boundary) requires this validation at the entry to ",
+              "step!, not deeper in the call stack.")
+
+    # (3) Resolve the instruction at the current pc. Out-of-range pc
     # raises in `_instruction_at` (Rule 1).
     instr = _instruction_at(prog, s.current.pc)
 
-    # (3) Dispatch into `forward`. The per-subtype methods (M2.6–M2.14)
+    # (4) Dispatch into `forward`. The per-subtype methods (M2.6–M2.14)
     # mutate `s.current` in place — pc, locals, memory as appropriate.
     # Any unknown Instruction subtype falls through to the M2.4 generic
-    # fallback, which raises with state context (Rule 1).
+    # fallback, which raises with state context (Rule 1). If `forward`
+    # throws, the exception propagates and `step_count` is NOT
+    # incremented (the brief's "no increment on exception" rule).
     forward(instr, s.current)
 
-    # (4) Cross-block dispatch on Uncond/Cond Exit (M3.6). The per-
-    # subtype `forward(::UnconditionalExit, ...)` and
-    # `forward(::ConditionalExit, ...)` methods only bump pc by 1 at
-    # the per-instruction layer (control_instructions.jl M2.9 / M2.10
-    # docstring §"Forward / inverse semantics — pc-only"); the
-    # block-boundary relocation (consulting `prog.label_table` to
-    # land pc on the destination block's first body instruction) and
-    # the args→params positional rename are this layer's
-    # responsibility. The forward() pc-bump is OVERWRITTEN by
-    # `_dispatch_to_block!` — keeping the uniform "always call
-    # forward()" shape at this dispatch site costs one wasted
-    # increment per cross-block step but means the step! body never
-    # has to special-case which instructions skip forward(). See the
-    # M3.6 cross-block dispatch §"Why overwrite, not skip" comment
-    # on `_handle_cross_block_dispatch!`.
+    # (5) Cross-block dispatch on Uncond/Cond Exit (M3.6). See M3.6
+    # docstring §"What this layer adds on top of forward()" for the
+    # full rationale on why this overwrites forward()'s pc bump.
     _handle_cross_block_dispatch!(s, prog, instr)
 
-    # (5) Halt detection on EndInstruction. AFTER forward has run, so
-    # that an exception in forward leaves status as `:running` and the
-    # RState unchanged from before the step — the same atomicity the
-    # M4 forward-FIRST history-push ordering will rely on (see
-    # docstring §"Ordering invariant"). Per RC3 RSSAVM.java:585-590,
-    # the main-routine End marker is the halt signal.
+    # (6) Halt detection on EndInstruction. AFTER forward + cross-block
+    # has run, so the IState is in its post-step shape (pc has been
+    # bumped, locals / memory updated).
     if instr isa EndInstruction
         s.current.status = :halted
+    end
+
+    # (7) M4.2 — Step-count increment + periodic checkpoint push. Both
+    # happen only on this success path: the early-return at (1) skips
+    # this entirely (count unchanged), and any exception thrown by
+    # `forward` / `_handle_cross_block_dispatch!` propagates past this
+    # block (count unchanged, history unchanged).
+    #
+    # The push captures the POST-step IState (s.current after forward +
+    # dispatch + halt) and the POST-increment step_count, matching the
+    # rr-style "checkpoint = resumption point" convention M4.3 will
+    # consume. The deepcopy is inside CheckpointEntry's constructor
+    # (`src/history/CheckpointEntry.jl` §"Why deep-copy in the
+    # constructor"); doing it a second time here would be redundant
+    # and confusing — see this function's docstring §"Why the deepcopy
+    # lives inside CheckpointEntry's constructor".
+    s.step_count += 1
+    if s.step_count % checkpoint_interval == 0 && s.step_count > 0
+        push!(s.history, CheckpointEntry(s.current, s.step_count))
     end
 
     return s
@@ -887,7 +1010,9 @@ end
 #      known-correct value, not just "didn't throw").
 
 """
-    run!(s::RState, prog::VMProgram; max_steps::Int = 10_000) -> RState
+    run!(s::RState, prog::VMProgram;
+         max_steps::Int = 10_000,
+         checkpoint_interval::Int = 64) -> RState
 
 Repeatedly `step!` until `is_halted(s)`, or until `max_steps`
 steps have been taken — whichever first. Errors descriptively if
@@ -906,12 +1031,26 @@ current pc, and the current status — so a debugger can pick up
 where execution stopped, AND the RState is left in its mid-run
 state so `unrun!` (M4+) can roll it back.
 
+# M4.2 — `checkpoint_interval` forwarding
+
+The `checkpoint_interval::Int = 64` kwarg is forwarded verbatim to
+every `step!` call. Default (64) matches PRD v4 §3.3's placeholder.
+Pass `typemax(Int)` to suppress periodic checkpoint pushes entirely
+(useful for tests that exercise non-history aspects of `run!`); a
+non-positive value raises descriptively inside `step!` (Rule 1).
+This is the M4.2 plumbing that lets the caller — `unrun!` (M4.4),
+tests, the M5 Handoff-A bridge — choose the L3 history density
+without re-implementing the loop driver. See `step!` docstring
+§"M4.2 — Checkpoint push" for the per-step push semantics.
+
 # Arguments
 
   * `s` — RState; mutated in place.
   * `prog` — the VMProgram being executed.
   * `max_steps` — keyword; default 10_000. Pick higher for unbounded-
     loop programs like `collatz_steps(::Int8)`.
+  * `checkpoint_interval` — keyword; default 64. Forwarded to every
+    `step!` call.
 
 # Returns
 
@@ -920,17 +1059,22 @@ state so `unrun!` (M4+) can roll it back.
 # Errors
 
 `ErrorException` if `step!` doesn't reach `:halted` within `max_steps`
-iterations.
+iterations. Also raises (via `step!`) if `checkpoint_interval <= 0`.
 
 # Ref
 
   * PRD v4 §3.16 — descriptive error on max-steps exceed; no silent
     partial returns.
-  * `src/interpreter/Interpreter.jl` M3.3 — `step!`, `is_halted`.
+  * PRD v4 §3.3 — the three-layer history scheme; default
+    `checkpoint_interval = 64` matches the §3.3 placeholder.
+  * `src/interpreter/Interpreter.jl` M3.3 / M4.2 — `step!`,
+    `is_halted`, the per-step push semantics.
   * `spike/RETROSPECTIVE.md` Q3 — silent-partial-return failure mode.
   * CLAUDE.md Rule 1 (fail loud); Rule 11 (literate docstring).
 """
-function run!(s::RState, prog::VMProgram; max_steps::Int = 10_000)
+function run!(s::RState, prog::VMProgram;
+              max_steps::Int = 10_000,
+              checkpoint_interval::Int = 64)
     n = 0
     while !is_halted(s)
         n >= max_steps && error(
@@ -938,7 +1082,7 @@ function run!(s::RState, prog::VMProgram; max_steps::Int = 10_000)
             "(pc=$(s.current.pc), status=$(s.current.status)). ",
             "The RState is left mid-run for inspection / unrun!. ",
             "Increase max_steps or check for non-termination.")
-        step!(s, prog)
+        step!(s, prog; checkpoint_interval=checkpoint_interval)
         n += 1
     end
     return s

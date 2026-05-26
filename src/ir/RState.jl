@@ -89,11 +89,49 @@ construction) crossed with the Phase-0 retrospective (full snapshots
 are the worst point on the time-space curve and exist in the spike
 specifically so v4 could refute them).
 
+# Why `step_count` here, not in `run!`'s local scope (M4.2)
+
+`RState` carries a persistent `step_count::Int` field, incremented by
+`step!` on each successful forward step (and, at M4.3, decremented by
+`unstep!` on each successful backward step). The natural alternative
+— a local counter inside `run!`'s while-loop — was rejected for two
+reasons:
+
+  1. **`step!` itself reads the counter.** M4.2's `step!` consults
+     `step_count % checkpoint_interval == 0` to decide whether to push
+     a `CheckpointEntry`. A `run!`-local counter would force every
+     caller of `step!` (test harnesses, the M5 Handoff-A bridge, the
+     M9 pebble-scheduler post-pass) to thread the count through —
+     exactly the kind of cross-cutting plumbing PRD v4 §3.9 reserves
+     against by sinking interpreter state into `RState`.
+  2. **The counter must survive across `step!`/`unstep!` boundaries.**
+     M4.3's `unstep!` will decrement the count on each successful
+     backward step; the load-bearing M4.5 round-trip invariant
+     `unrun!(run!(s, prog)) == initial(s)` requires that after a
+     full backward sweep, `step_count == 0` once more (along with
+     `isempty(history)` and `current == initial.current`). A counter
+     scoped to one call of `run!` would lose the connection to the
+     matching `unrun!` and silently regress that invariant.
+
+The Phase-0 spike's `step!` (`spike/RETROSPECTIVE.md` Q5
+§"History representation lessons") avoided the question by using
+`length(history)` as a proxy for "how many steps have I taken" — a
+shortcut that only works because the spike pushed an entry on every
+non-injective step. M4.2's periodic-checkpoint scheme breaks that
+identity (the count grows even when no entry is pushed), so a
+dedicated field is required. PRD v4 §3.3's L1 (no log) and L2 (delta
+on a subset of steps) make the divergence between "step count" and
+"history length" permanent — every Phase-2 history layer needs a
+separate counter.
+
 # Cross-references
 
 - PRD v4 §3.9 ("API and naming conventions"): `RState` MUST be declared
   `mutable struct` and MUST contain `current::IState` plus
   `history::Vector{T}` for an implementation-defined entry type `T`.
+- PRD v4 §3.3 ("History mechanism"): the three-layer scheme whose
+  M4.x layer is where `step_count` first becomes load-bearing
+  (periodicity gate at every Kth step).
 - PRD v4 §3.3 ("History mechanism"): three history layers; this file
   defines the supertype they all share.
 - `spike/RETROSPECTIVE.md` Q1 ("`RState` must be `mutable struct`,
@@ -136,14 +174,31 @@ abstract type AbstractHistoryEntry end
 
 """
     RState(current::IState, history::Vector{AbstractHistoryEntry})
+    RState(current::IState, history::Vector{AbstractHistoryEntry}, step_count::Int)
 
-See the top-of-file docstring for the full rationale. Two fields:
+See the top-of-file docstring for the full rationale. Three fields:
 
   - `current::IState` — the live snapshot the next `step!` / `unstep!`
     will operate on.
   - `history::Vector{AbstractHistoryEntry}` — the reversibility tape;
     concrete entries are appended forward by `step!` and consumed
     backward by `unstep!`. Empty after a full `unrun!`.
+  - `step_count::Int` — running count of successful forward `step!`
+    calls executed on this `RState` (added at M4.2). See the
+    top-of-file section "Why `step_count` here, not in `run!`'s local
+    scope" for the rationale.
+
+# Why two constructors
+
+The 2-arg constructor is preserved verbatim — every M2.x / M3.x site
+that built an `RState(istate, AbstractHistoryEntry[])` keeps working
+without touching its call shape; the `step_count` defaults to 0. The
+3-arg constructor takes the count explicitly and is the form M4.3's
+`unstep!` will use when it manufactures an `RState` whose `step_count`
+is the just-decremented value. This mirrors the M2.1 `IState` 3-arg
+(memory defaulted) / 4-arg (memory explicit) pattern at
+`src/ir/IState.jl:143-150`, so a reader cross-referencing the two
+files sees the same "default-then-explicit" style.
 
 `mutable struct` — see top-of-file "Why mutable" and `spike/
 RETROSPECTIVE.md` Q1.
@@ -151,14 +206,30 @@ RETROSPECTIVE.md` Q1.
 mutable struct RState
     current::IState
     history::Vector{AbstractHistoryEntry}
+    step_count::Int
+
+    # 2-arg constructor (M2.3 back-compat): step_count defaults to 0.
+    # Every pre-M4.2 call site that built an RState — initial_state at
+    # `src/interpreter/Interpreter.jl`, every M2.3 / M3.x test fixture —
+    # uses this form and continues to compile unchanged.
+    RState(current::IState, history::Vector{AbstractHistoryEntry}) =
+        new(current, history, 0)
+
+    # 3-arg constructor (M4.2): explicit step_count. M4.3's `unstep!`
+    # is the principal consumer — it will construct an `RState` whose
+    # step_count is the decremented value after popping a checkpoint.
+    RState(current::IState, history::Vector{AbstractHistoryEntry},
+           step_count::Int) =
+        new(current, history, step_count)
 end
 
 """
     Base.:(==)(a::RState, b::RState) -> Bool
 
 Structural equality on `RState`: defined field-by-field, delegating
-to the `IState` `==` override (M2.2, `src/ir/IState.jl`) for `current`
-and to `Base.:(==)(::AbstractVector, ::AbstractVector)` for `history`.
+to the `IState` `==` override (M2.2, `src/ir/IState.jl`) for `current`,
+to `Base.:(==)(::AbstractVector, ::AbstractVector)` for `history`, and
+to scalar `Int` equality for `step_count`.
 
 # Why this exists at M2.3 rather than later
 
@@ -176,15 +247,29 @@ when both are empty), exactly the failure mode M2.2 closes for
 `IState`. Heading the trap off now costs one line; finding it later
 costs an interpreter-debugging session.
 
+# Why `step_count` must participate (M4.2)
+
+Two `RState`s with identical `current` and identical `history` but
+different `step_count` are **not** equal. They cannot be: M4.3's
+`unstep!` consults `step_count` to decide whether the *next* backward
+step needs to find a checkpoint, and the M4.5 round-trip invariant
+`unrun!(run!(s, prog)) == initial(s)` pins the post-`unrun!` count to
+0. Including `step_count` in `==` is what makes that invariant
+expressible as a single `==` check rather than a three-clause AND
+the caller has to remember to write out.
+
 Ref: `spike/RETROSPECTIVE.md` Q2.1.
 Ref: `src/ir/IState.jl` (the M2.2 override this mirrors).
 """
 function Base.:(==)(a::RState, b::RState)
-    a.current == b.current && a.history == b.history
+    a.current == b.current &&
+        a.history == b.history &&
+        a.step_count == b.step_count
 end
 
 function Base.hash(s::RState, h::UInt)
     h = hash(s.current, h)
     h = hash(s.history, h)
+    h = hash(s.step_count, h)
     return h
 end
