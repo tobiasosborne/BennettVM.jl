@@ -56,8 +56,18 @@ milestones (M0.2–M0.4, then M2.x) populate this module.
 """
 module BennettVM
 
-# Currently empty — populated by M0.2 (lower_vm stub) and M2.x
-# (IR types). Each addition lands as its own atomic commit with a
-# closed bd issue; this docstring is the durable index.
+# Bennett.jl is consumed *by type only* through `Bennett.ParsedIR`
+# (Handoff A; PRD v4 §3.7; Rule 14). `import` (not `using`) keeps the
+# dependency surface explicit: every reference to upstream Bennett.jl
+# names in this package appears as `Bennett.<Name>`, making the
+# Handoff-A contract visually auditable.
+import Bennett
+
+# M0.2 — stub IR carrier + lowering entry point. Real `VMProgram`
+# (M2.17) and real `lower_vm` (M3.x) replace these in place.
+include("ir/VMProgram.jl")
+include("lower_vm.jl")
+
+export VMProgram, lower_vm
 
 end # module BennettVM
