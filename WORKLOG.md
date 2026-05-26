@@ -7,6 +7,120 @@
 
 ---
 
+## Session 4 — 2026-05-26 — M4 closed (history layer L3 complete)
+
+**Agents:** Opus 4.7 orchestrator; per-bead delegation pattern — Opus for
+coding passes, Sonnet for hostile review passes. Sequential Julia per
+Rule 7.
+
+**Result:** All five M4 sub-beads closed in one session. M4 (history layer
+L3: checkpoint-replay) is complete. **Tests: 565 → 990 passing (+425).**
+Five atomic commits, each fully provenanced.
+
+### Bead-by-bead
+
+- **M4.1 (`bennettvm-v1t`) — `CheckpointEntry` history entry type.**
+  Commit `cbd6644`. New file `src/history/CheckpointEntry.jl`. Immutable
+  struct, deep-copy constructor (encapsulates spike Q2.2 lesson at the
+  type boundary), explicit `Base.==` and `Base.hash` overrides. 31 new
+  tests. Hostile review caught a Q2.1↔Q2.2 citation defect (the
+  orchestrator's brief had propagated the same error); fixed pre-commit.
+  Memory-isolation test added as a non-blocking observation fix.
+
+- **M4.2 (`bennettvm-n26`) — `step!` pushes CheckpointEntry every K steps.**
+  Commit `a325be5`. RState gains `step_count::Int` field (3-arg
+  constructor for M4.3's replay arithmetic). `step!` and `run!` gain
+  `checkpoint_interval::Int = 64` kwarg. Push fires post-forward,
+  post-cross-block, post-halt-detection (the spike Q3 ordering preserved).
+  84 new tests. Hostile review caught TWO blocking defects: D1 missing
+  `&& step_count > 0` guard (which would have broken M4.3's replay),
+  D2 missing sentinel test for the documented mutation-proof claim.
+  Both fixed pre-commit; 3 non-blocking observations also addressed.
+
+- **M4.3 (`bennettvm-3do`) — `unstep!` via checkpoint restore + replay.**
+  Commit `9f6cda7`. New file `src/history/Replay.jl`. RState gains
+  `initial::IState` field (chosen over phantom step-0 anchor to preserve
+  PRD invariant `isempty(history)` post-full-reversal). Five-step
+  algorithm: precondition → find-nearest ≤ target → restore-with-
+  deepcopy → truncate-future-history → replay forward with
+  `checkpoint_interval=typemax(Int)`. 103 new tests. Hostile review
+  ACCEPT no blocking defects. Filed `bennettvm-kuq` as P2 follow-up
+  for an asymmetric dispatch between search and truncation loops
+  (`isa CheckpointEntry` vs `_entry_step` polymorphism) — only
+  matters when M6/M7 entry types land.
+
+- **M4.4 (`bennettvm-5jb`) — `unrun!` full reversal.**
+  Commit `36e2cd3`. Added to `src/history/Replay.jl`. Loop predicate is
+  `s.step_count > 0` (Phase-2 design property: the "fully reversed"
+  signal moved from history-emptiness to step_count, because L3's
+  s.initial fallback means empty-history-but-step_count>0 is reachable).
+  Max-iterations guard mirrors `run!`'s pattern. Post-loop structural
+  assertion `isempty(s.history) || error(...)` per bead spec. Explicitly
+  rejects manual status-reset to `:running` (pinned by a "corrupted
+  initial.status" test). 66 new tests. Hostile review CONDITIONALLY
+  ACCEPT — 3 cosmetic observations (typo, stale file docstring title,
+  missing spike Q3 citation) — all fixed pre-commit.
+
+- **M4.5 (`bennettvm-n2g`) — M4 milestone capstone round-trip test.**
+  Commit `61c47cd`. New file `test/test_roundtrip.jl`. Tests-only; no
+  production code touched. 10 testsets, 141 new assertions, including
+  the load-bearing per-step inverse pattern (spike Q3 lesson:
+  after-each-unstep! state must match the forward-captured snapshot at
+  that step_count, catching mid-stream corruption the aggregate test
+  would mask). K values exercised: {1, 2, 4, 7, 16, 64, typemax(Int)}.
+  Test 1 vs golden-master countdown_ref. Test 8 diversifies with a
+  single-block program (no cross-block dispatch). M4.1-M4.4 holds up
+  on FIRST RUN — no integration bug surfaced.
+
+### Decisions / load-bearing design points
+
+- **`initial::IState` field on RState, NOT phantom step-0 anchor in
+  history.** Considered both. The phantom-anchor approach would have
+  contaminated `isempty(history)` post-reversal — a PRD invariant the
+  spike's `unrun!` already pins. The separate field keeps the structural
+  signal clean: unstep! at step_count=1 → fall through to s.initial,
+  no special-case handling in unrun!'s loop predicate.
+
+- **Replay during unstep! uses `checkpoint_interval = typemax(Int)`** to
+  suppress spurious checkpoint pushes mid-replay. Safe because M4.2's
+  `% K == 0 && step_count > 0` guard never fires when K = typemax.
+
+- **K=1 is documented as forensic-test mode, not production.** A K=1
+  configuration reproduces the §3.3-prohibited per-step snapshot
+  pattern. Documented in `step!`'s docstring and exercised in the M4.5
+  K-sweep so the system PROVES it works at K=1 without invoking K=1
+  in any production code path.
+
+- **Double-defended deepcopy.** Both ends of the snapshot lifecycle
+  deep-copy: M4.1's constructor (push side) and M4.3's restore step
+  (pop/read side). A future maintainer who drops one defense still
+  has the other. The hostile reviewer verified this via a probe that
+  removed the restore-side deepcopy — the per-step inverse test (M4.5
+  test 4) turned RED as the mutation-proof matrix predicted.
+
+### Tracker reconciliation at session start
+
+At the top of the session, `bd ready` was lying: M5.1 was surfacing
+ready, but the HANDOFF and git log showed M5/M0/M2/M3 all closed in the
+prior session (2026-05-26 day-1). 31 stale beads — closed them in a
+batch with reasoned reasons before claiming M4.1. The takeaway: closing
+beads is not optional at session end; orchestrators must enforce.
+
+### What's next
+
+M4 closes the L3 history strategy. **M6 is up next** — history layer L1
+(injective no-log). M6.1 introduces an `is_injective(::Type{<:Instruction})`
+trait; injective instructions (SwapInstruction, control-flow markers,
+MemoryInterchange/MemorySwap, ArithmeticAssignment when modop=`:xor`)
+skip the history push entirely. Then M7 (L2 delta min-cut) gates on
+M6. M8 (per-step inverse property test) gates on M7.
+
+After the history layers are complete, the four SC9 motivating cases
+(M_DICT, M_DYN, M_NESTED, M_UNBOUNDED — all P0) become the acceptance
+gate.
+
+---
+
 ## Session 2 — 2026-05-25 — Phase 1 close: PRD v4 authored
 
 **Agents:** Opus 4.7 orchestrator; 4 parallel Sonnet research subagents

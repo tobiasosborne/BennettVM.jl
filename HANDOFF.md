@@ -2,7 +2,72 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
-## Current state (2026-05-26)
+## Current state (2026-05-26 — Session 4 close)
+
+- **Phase:** **Phase 2 (production).**
+- **PRD:** `bennettvm_prd.md` is v4.
+- **Bennett.jl pin:** `877341e` (unchanged this session).
+- **Test suite:** **990 / 990 passing.** `julia --project=. -e 'using Pkg; Pkg.test()'`.
+- **Setup gotcha:** Manifest.toml is gitignored (per-machine). Fresh
+  clones MUST run `julia --project=. -e 'using Pkg; Pkg.develop(path="../Bennett.jl"); Pkg.instantiate()'`
+  before tests pass.
+- **M4 (history layer L3: checkpoint-replay) — CLOSED this session.**
+  All five sub-beads:
+  - **M4.1** `cbd6644` — `CheckpointEntry <: AbstractHistoryEntry`,
+    deep-copy constructor + structural ==/hash. New file
+    `src/history/CheckpointEntry.jl`.
+  - **M4.2** `a325be5` — `step!` pushes CheckpointEntry every K steps.
+    RState gains `step_count::Int`. `step!` / `run!` gain
+    `checkpoint_interval::Int = 64` kwarg. `&& step_count > 0` guard
+    is load-bearing for M4.3's replay arithmetic.
+  - **M4.3** `9f6cda7` — `unstep!(s, prog)` via find-nearest-checkpoint
+    + restore-deepcopy + truncate + replay-forward. New file
+    `src/history/Replay.jl`. RState gains `initial::IState` field.
+  - **M4.4** `36e2cd3` — `unrun!(s, prog; max_unsteps=10_000)` loops
+    unstep! until `step_count == 0`, asserts `isempty(history)` as
+    structural post-condition. NO manual status reset.
+  - **M4.5** `61c47cd` — M4 milestone capstone round-trip test.
+    10 testsets, 141 new assertions, per-step inverse pattern from
+    spike Q3. K ∈ {1, 2, 4, 7, 16, 64, typemax(Int)}.
+
+## What you (next session) are picking up
+
+**M6 — history layer L1 (injective no-log) — is the next milestone.**
+
+M6.1 introduces an `is_injective(::Type{<:Instruction})::Bool` trait;
+specializations for `SwapInstruction`, all `ControlInstruction`
+subtypes, `MemoryInterchange`, `MemorySwap`, `ArithmeticAssignment` when
+`modop === :xor`. M6.2 modifies `step!` to skip the checkpoint push for
+injective instructions. M6.3 wires the matching `inverse`
+reconstruction. M6.4 round-trip test with zero history entries.
+
+After M6: M7 (L2 delta min-cut, Enzyme-style), M8 (per-step inverse
+property test). Then the four P0 SC9 motivating cases (M_DICT, M_DYN,
+M_NESTED, M_UNBOUNDED).
+
+### Open observation flagged this session
+
+- `bennettvm-kuq` (P2): `unstep!` search loop uses
+  `entry isa CheckpointEntry` while the truncation loop uses the
+  polymorphic `_entry_step()` helper. Asymmetric. Only matters when
+  M6/M7 entry types arrive; the M6 implementer should resolve when
+  they touch Replay.jl.
+
+### Session 4 notes
+
+- 31 stale beads (M5/M0/M2/M3 sub-beads) were closed at session start
+  to reconcile the tracker with `git log` reality.
+- M4.5's hostile review was in progress in the background when the
+  session was paused. The reviewer's mutation probe to
+  `src/history/Replay.jl` (removing the restore-side deepcopy) was
+  caught and reverted on `git status` BEFORE the M4.5 commit. The
+  probe DID empirically confirm one matrix entry (restore-side
+  deepcopy → M4.5 test 4 RED). Full M4.5 hostile review can be
+  resumed next session if any latent doubt remains.
+
+### Earlier state (preserved for history)
+
+## Old state (pre-Session-4, retained for diff context)
 
 - **Phase:** **Phase 2 (production).**
 - **PRD:** `bennettvm_prd.md` is v4. v3 archived at `docs/prd/bennettvm_prd_v3.md`.
