@@ -1,0 +1,16 @@
+name = "BennettVM"
+uuid = "97720cdd-394e-4c54-9ae1-cb2223a2d5bf"
+authors = ["Tobias Osborne <tobias.j.osborne@gmail.com>"]
+version = "0.1.0-dev"
+
+[deps]
+Bennett = "d4e5f6a7-b8c9-4d0e-a1b2-c3d4e5f6a7b8"
+
+[compat]
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
