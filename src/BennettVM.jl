@@ -114,6 +114,18 @@ include("ir/swap_instruction.jl")
 # metadata. Depends on `ControlInstruction` (from `instructions.jl`,
 # M2.4) and `IState` (from `IState.jl`, M2.1); MUST follow both. Not
 # yet exported.
+#
+# M2.9 — next two concrete control-flow instructions, defined in the
+# SAME file by intentional cohesion: `UnconditionalEntry` and
+# `UnconditionalExit` (`bennettvm-08q`). Rows 9 and 10 of the ADR 0001
+# §Observations RSSA dispatch table — basic-block entry / exit
+# markers (RC3 `l(x,...) <-` / `-> l(y,...)`). These are the block-
+# level analogues of the M2.8 subroutine markers; see the M2.9 block
+# docstring in `control_instructions.jl` for the bead-vs-ADR
+# reconciliation (the bead text mis-cited BobISA source-label
+# encoding; the ADR decision-table row "Source-label jumps" is NO,
+# Mogensen-RSSA paired entry/exit). Cross-block dispatch via
+# `LabelTable` lands in M3.x's interpreter.
 include("ir/control_instructions.jl")
 include("lower_vm.jl")
 

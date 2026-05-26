@@ -93,3 +93,77 @@ end
     s5 = BennettVM.inverse(ei, s4, nothing)
     @test s5 == s_before
 end
+
+# -----------------------------------------------------------------------------
+# M2.9 — UnconditionalEntry / UnconditionalExit  (bd `bennettvm-08q`)
+# -----------------------------------------------------------------------------
+#
+# These tests pin (Rule 4):
+#
+#   1. **`UnconditionalEntry` pc-only semantics** — forward bumps
+#      `pc` from 3 to 4, leaves `locals` untouched, leaves
+#      `status` `:running`; inverse restores the pre-forward state
+#      exactly under the content-comparing `Base.==` from M2.2.
+#   2. **`UnconditionalExit` pc-only semantics** — same shape at a
+#      different starting pc (5 → 6 → 5).
+#   3. **Constructor validation** — duplicate symbols in `params`
+#      / `args` raise `ErrorException` (Rule 1); empty vectors are
+#      accepted.
+#   4. **Type hierarchy** — both classes extend
+#      `ControlInstruction` (introduced at M2.4).
+#
+# The "bead-vs-ADR reconciliation" — that `UnconditionalEntry`
+# does NOT carry a predecessor-label field — is enforced
+# structurally by the field definitions in
+# `src/ir/control_instructions.jl`. No separate test is needed:
+# the struct's accessible fields are `label` and `params` only,
+# and Julia will throw on any attempted access to a non-existent
+# `predecessor` field. The reconciliation note lives in the
+# source docstring (per the task brief).
+
+@testset "UnconditionalEntry (M2.9)" begin
+    instr = BennettVM.UnconditionalEntry(:L1, [:x, :y])
+    s = BennettVM.IState(3, Dict(:x => Int64(7), :y => Int64(9)), :running)
+    s_before = deepcopy(s)
+    s2 = BennettVM.forward(instr, s)
+    @test s2.pc == 4
+    @test s2.locals == s_before.locals
+    @test s2.status === :running
+    s3 = BennettVM.inverse(instr, s2, nothing)
+    @test s3 == s_before
+end
+
+@testset "UnconditionalExit (M2.9)" begin
+    instr = BennettVM.UnconditionalExit(:L_next, [:a, :b])
+    s = BennettVM.IState(5, Dict(:a => Int64(1), :b => Int64(2)), :running)
+    s_before = deepcopy(s)
+    s2 = BennettVM.forward(instr, s)
+    @test s2.pc == 6
+    @test s2.locals == s_before.locals
+    @test s2.status === :running
+    s3 = BennettVM.inverse(instr, s2, nothing)
+    @test s3 == s_before
+end
+
+@testset "Uncond constructor validation (M2.9)" begin
+    # Duplicate symbols rejected (Rule 1):
+    @test_throws ErrorException BennettVM.UnconditionalEntry(:L, [:x, :x])
+    @test_throws ErrorException BennettVM.UnconditionalExit(:L, [:a, :a])
+    # Empty lists OK (control-flow-only blocks are well-formed):
+    @test BennettVM.UnconditionalEntry(:L0, Symbol[]) isa
+        BennettVM.UnconditionalEntry
+    @test BennettVM.UnconditionalExit(:L_end, Symbol[]) isa
+        BennettVM.UnconditionalExit
+    # Singletons OK:
+    @test BennettVM.UnconditionalEntry(:L1, [:x]) isa
+        BennettVM.UnconditionalEntry
+    @test BennettVM.UnconditionalExit(:L1, [:a]) isa
+        BennettVM.UnconditionalExit
+end
+
+@testset "Uncond type hierarchy (M2.9)" begin
+    @test BennettVM.UnconditionalEntry <: BennettVM.ControlInstruction
+    @test BennettVM.UnconditionalEntry <: BennettVM.Instruction
+    @test BennettVM.UnconditionalExit <: BennettVM.ControlInstruction
+    @test BennettVM.UnconditionalExit <: BennettVM.Instruction
+end
