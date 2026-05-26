@@ -66,6 +66,9 @@ import Bennett
 # M0.2 — stub IR carrier + lowering entry point. Real `VMProgram`
 # (M2.17) and real `lower_vm` (M3.x) replace these in place.
 include("ir/VMProgram.jl")
+# M2.1 — interpreter state atom (`bennettvm-e7o`). Not yet exported;
+# the public API surface stabilises in a later bead.
+include("ir/IState.jl")
 include("lower_vm.jl")
 
 export VMProgram, lower_vm
