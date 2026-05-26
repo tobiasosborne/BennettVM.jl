@@ -18,4 +18,5 @@ using BennettVM
     include("test_rstate.jl")
     include("test_dispatch.jl")
     include("test_operators.jl")
+    include("test_arithmetic_assignment.jl")
 end

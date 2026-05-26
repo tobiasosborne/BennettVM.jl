@@ -90,6 +90,13 @@ include("ir/instructions.jl")
 # downstream consumer is the `ArithmeticAssignment` concrete subtype.
 # Not yet exported.
 include("ir/operators.jl")
+# M2.6 — first concrete RSSA instruction: `ArithmeticAssignment`
+# (`bennettvm-lff`). Implements RC3's `x := y ⊕ (lhs op rhs)` form with
+# the three-element modop set {:xor, :add, :sub} locked in ADR 0001.
+# Depends on `Instruction` (from `instructions.jl`), `IState` (from
+# `IState.jl`), and `BINARY_OPERATORS` / `is_binary_operator` (from
+# `operators.jl`), so MUST follow all three. Not yet exported.
+include("ir/arithmetic_assignment.jl")
 include("lower_vm.jl")
 
 export VMProgram, lower_vm
