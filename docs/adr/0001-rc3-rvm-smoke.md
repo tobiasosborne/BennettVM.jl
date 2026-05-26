@@ -361,4 +361,165 @@ program; capture verbatim transcript; observe dispatch behavior; file
 
 ## § Observations
 
-*To be authored by M5.3.*
+**Bead:** `bennettvm-7bl` (M5.3). **Date:** 2026-05-26.
+
+### Goal
+
+The §Build and §Sample-run sections proved RC3 runs and round-trips.
+§Observations is the design-lessons section: enumerate the
+authoritative RSSA instruction taxonomy as RC3 implements it, map
+each subclass to a candidate Phase-2 Julia name, and flag the
+divergence points that BennettVM's IR (M2) must consciously decide
+about — *with our own keyboard*, not just from the papers.
+
+Source-survey was performed by a read-only Sonnet research subagent
+on 2026-05-26 (transcript appended to bead `bennettvm-7bl` for
+audit). All paths and line numbers below were verified.
+
+### Authoritative RSSA instruction taxonomy
+
+**RC3 exposes 12 concrete instruction subclasses** (confirming the
+impl plan and PRD v4 §3.1's "~12" claim — exact). The abstract
+parent is `rc3.rssa.instances.Instruction` (sealed, file
+`compiler/src/main/java/rc3/rssa/instances/Instruction.java:18-19`).
+Control-flow subclasses extend the sealed abstract
+`ControlInstruction` (in `instances/ControlInstruction.java`).
+Dispatch lives in the `RSSAExecutor` inner class of
+`compiler/src/main/java/rc3/rssa/vm/RSSAVM.java:531-735`.
+
+| # | RC3 class | Category | Form (verbatim from samples) | Reversible via | Candidate Phase-2 Julia name |
+|---|---|---|---|---|---|
+| 1 | `ArithmeticAssignment` | Arithmetic update | `x := y ⊕ (R1 ⊙ R2)` | Operator inversion (XOR↔XOR, ADD↔SUB) on `reverse()` | `ArithAssign` |
+| 2 | `SwapInstruction` | Register exchange | `x, y := z, w` | Self-inverse via target↔source swap | `RegSwap` |
+| 3 | `MemoryAssignment` | Memory in-place update | `M[x] ⊕= y ⊙ z` | Modification-operator invert on `reverse()` | `MemAssign` |
+| 4 | `MemoryInterchangeInstruction` | Register ↔ memory exchange | `x := M[y] := z` | `left`↔`right` swap on `reverse()` | `MemExchange` |
+| 5 | `MemorySwapInstruction` | Memory ↔ memory swap | `M[x] <-> M[y]` | Self-inverse | `MemSwap` |
+| 6 | `CallInstruction` | Procedure call | `(x,...) := call/uncall l(y,...)` | `Direction` field flips; one class for both | `Call` |
+| 7 | `BeginInstruction` | Subroutine entry | `begin l(x,...)` | `reverse() → EndInstruction` | `SubBegin` |
+| 8 | `EndInstruction` | Subroutine exit | `end l(y,...)` | `reverse() → BeginInstruction` | `SubEnd` |
+| 9 | `UnconditionalEntry` | Block entry | `l(x,...) <-` | `reverse() → UnconditionalExit` | `UncondEntry` |
+| 10 | `UnconditionalExit` | Block jump-out | `-> l(y,...)` | `reverse() → UnconditionalEntry` | `UncondExit` |
+| 11 | `ConditionalEntry` | Block φ-merge with predicate | `l1(x,...)l2 <- c` | `reverse() → ConditionalExit` | `CondEntry` |
+| 12 | `ConditionalExit` | Block branch with predicate | `c -> l1(y,...)l2` | `reverse() → ConditionalEntry` | `CondExit` |
+
+The candidate Julia names are tentative — to be locked at M2.1 (the
+first IR-type bead). They preserve RC3's "Entry/Exit" duality and
+the "Cond/Uncond" prefix, dropping `Instruction` from each name
+(Julia idiom: the struct type already encodes "this is an X").
+
+The visitor / operand classes — `BinaryOperand`, `Atom`, `Constant`,
+`Variable`, `MemoryAccess`, `RValue`, `Value` — are **operands**, not
+instructions. They appear in `RSSAVisitor` for tree traversal but
+`RSSAExecutor.visitVoid(BinaryOperand)` (RSSAVM.java:551-553) is a
+no-op; evaluation is delegated to `EvaluationVisitor`. **Future M2.x
+agents: do not add an "instruction-13" for BinaryOperand.**
+
+### Structural pattern (the load-bearing design lessons)
+
+1. **Reversibility is structural, not historical.** Every concrete
+   instruction class implements `reverse()` by constructing a fresh
+   instance with role-swapped fields and (where applicable) an
+   inverted modification operator. The inverse is cached lazily via
+   `invert()`. There is **no history tape inside RSSA semantics**.
+   The instruction list is always stored in forward orientation; the
+   VM flips a `Direction` flag and calls `instr.invert()` before
+   dispatch. **Lesson for BennettVM:** the IR layer can use this same
+   trick. The history tape (§3.3) is a *Julia-source* concession, not
+   an RSSA-layer requirement.
+
+2. **φ-nodes appear at BOTH splits AND joins** (Mogensen 2016 §3 —
+   directly confirmed). `ConditionalExit` is the split: predicate +
+   two target labels. `ConditionalEntry` is the join: predicate +
+   two **source** labels, and **the entry asserts** which source the
+   control came from. The assertion is what makes RSSA invertible —
+   join points are not "lossy" because they record the predicate.
+
+3. **Memory access is exchange-only** (Vieri 1995 / Pendulum — also
+   confirmed). There is no destructive load class. Memory access is
+   one of: `MemoryAssignment` (in-place reversible update;
+   modification operator must be invertible — `XOR ↔ XOR`,
+   `ADD ↔ SUB`); `MemoryInterchangeInstruction` (register
+   ↔ memory exchange — destroys one source register, creates one
+   fresh register from the old cell); or `MemorySwapInstruction`
+   (memory ↔ memory swap, self-inverse). Phase-2 IR must enforce
+   the same.
+
+4. **Procedure calls unify call and uncall under one class** with a
+   `Direction` field. Reverse-of-call is reverse-of-uncall — a single
+   structural primitive. This is cleaner than spike-style separate
+   `Call` / `Uncall` opcodes; Phase-2 should follow RC3 here.
+
+5. **Arithmetic doesn't store its source value.** `ArithmeticAssignment`
+   `x := y ⊕ (R1 ⊙ R2)` is reversed by `y := x ⊖ (R1 ⊙ R2)` — the
+   destination becomes the new source on reversal. No per-instruction
+   log entry is needed. The reason no history is needed *inside*
+   RSSA: every instruction destroys exactly as many SSA variables as
+   it creates, in a use-discipline-controlled way; the values needed
+   to reverse are always live in registers at the moment of reversal.
+
+### Divergences from the textbook callouts (CLAUDE.md hallucination risks)
+
+These are the points where RC3's actual design contradicts the
+shorthand callouts in `CLAUDE.md`'s "Hallucination-risk callouts".
+**Read carefully — these are exactly the items where future M2.x
+sub-agents could pattern-match a textbook lesson incorrectly.**
+
+- **Unconditional jumps do NOT encode the source label.** CLAUDE.md
+  callout: *"BobISA jumps encode the source label."* True in BobISA
+  (Axelsen-Yokoyama 2011 / Thomsen-Axelsen-Glück 2012). **Not true in
+  RC3.** `UnconditionalExit` carries only the target label `l`; the
+  predecessor recovery is delegated to the paired `Entry` instruction
+  at the destination, which checks `lastLabel` in the VM (RSSAVM.java
+  lines 595-597 and 720-721). RC3 is following **Mogensen RSSA**, not
+  BobISA. **Phase-2 must decide explicitly** which design to inherit.
+  Recommendation (carry to M2.x design): inherit RSSA's
+  paired-entry/exit pattern, because BennettVM consumes Julia's
+  irreversible control-flow graph and lowering to source-label-encoded
+  jumps would require a much larger transformation pass. File:
+  `instances/UnconditionalExit.java`.
+
+- **`MemoryInterchangeInstruction` is register ↔ memory, NOT memory
+  ↔ memory.** CLAUDE.md callout: *"PISA memory access is always an
+  exchange."* True in spirit (no destructive load) but the operand
+  asymmetry — variable ↔ memory cell — is a Mogensen-specific design
+  point. Memory ↔ memory swap is a separate instruction
+  (`MemorySwapInstruction`, #5). Phase-2 IR should preserve this
+  separation rather than unifying under one "exchange" primitive.
+
+- **`MemoryAssignment` has NO SSA variable lifecycle** — it
+  reads/writes a memory cell in place via a reversible modification
+  operator (XOR, ADD, …). The reversibility is *operator-level*, not
+  *variable-level*. Phase-2 must ensure the modification operators
+  exposed are all invertible; RC3 enforces this via
+  `ModificationOperator.invert()`. **Concretely:** Phase-2 cannot
+  expose a `MemAssign` with `op = MUL` unless mul-by-constant is
+  guaranteed (and even then, only for known-invertible constants).
+
+- **No surprises around Bennett-1973 vs 1989, "VM is not the quantum
+  target", or floating-point. ** RC3's `Int`-only memory and lack of
+  pebble-game lowering keep it well clear of the Phase-2 risk surface
+  for those callouts.
+
+### Phase-2 design implications (load-bearing for M2.x)
+
+These are the concrete decisions M2.1 (the first IR-type bead) must
+make, derived from this survey:
+
+| Decision | Recommendation | Source |
+|---|---|---|
+| Instruction abstract hierarchy | `abstract type Instruction end` with `abstract type ControlInstruction <: Instruction end` mirroring RC3's sealed hierarchy. | RC3 `instances/Instruction.java`, `ControlInstruction.java` |
+| Inverse representation | Lazy structural `Base.inv(::Instruction)` returning a fresh struct with role-swapped fields. NO history-tape entry per arithmetic op. | RC3 `instr.invert()` cache pattern |
+| Direction flag | One per-VM `Direction` enum (`Forward`/`Backward`); flipped at run start, not per-instruction. | RC3 RSSAVM.java `direction` field |
+| Φ-node placement | At joins AND splits. `CondEntry` carries source labels + predicate; `CondExit` carries target labels + predicate. | Mogensen 2016 §3 / RC3 `Conditional{Entry,Exit}` |
+| Memory access primitives | Three distinct types — `MemAssign`, `MemExchange`, `MemSwap`. Do NOT unify. | RC3 `Memory{Assignment, Interchange, Swap}Instruction` |
+| Modification operator invertibility | Enum of invertible operators only (`XOR`, `ADD`, `SUB`). Reject `MUL`/`DIV` unless statically invertible. | RC3 `ModificationOperator.invert()` |
+| Call/Uncall unification | One `Call` struct with `direction::Direction` field. | RC3 `CallInstruction` |
+| Source-label jumps | NO. Use paired entry/exit with `lastLabel`-style runtime check. | RC3 `Unconditional{Entry,Exit}`; diverges from BobISA |
+
+### Exit criterion (M5.3)
+
+Per `bennettvm-7bl`: "Map RC3 instruction subclasses to Phase-2 Julia
+naming; identify divergence points." **Met.** The taxonomy is
+locked, divergences are documented, and M2.x has a concrete decision
+table to work from. M5 (RC3 pre-read) is complete; M0 (Bennett.jl
+handoff smoke) is unblocked.
