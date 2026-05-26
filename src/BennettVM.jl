@@ -166,6 +166,17 @@ include("ir/call_instruction.jl")
 # yet exported (callers go through `BennettVM.BasicBlock` / `.reversed`
 # until the public API stabilises at a later bead).
 include("ir/basic_block.jl")
+# M2.16 — dual-address label table: `LabelEntry` + `LabelTable`
+# (`bennettvm-vab`). RC3 `LabelEntry.java:7` port. The structural data
+# carrier that lets RSSA control flow reverse WITHOUT a history tape
+# (PRD v4 §3.1, §3.2): per block label, store both the forward arrival
+# address (entry-instruction index in the flat stream) and the
+# backward arrival address (exit-instruction index). MUST follow
+# `basic_block.jl` because `LabelTable(::Vector{BasicBlock})` scans
+# block bodies to compute the `1 + length(body) + 1` per-block
+# instruction count. Consumed by `VMProgram` at M2.17. Not yet
+# exported.
+include("ir/label_table.jl")
 include("lower_vm.jl")
 
 export VMProgram, lower_vm
