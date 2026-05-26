@@ -3,10 +3,27 @@
 Per PRD v3 §7.5 and CLAUDE.md Rule 14, BennettVM.jl pins Bennett.jl
 during initial development to insulate against frontend churn.
 
-**Pinned SHA:** `5731cec22a1fd29efe02d4dc21c2a57e655ecb47`
-**Pinned date:** 2026-05-23
+**Pinned SHA:** `877341ec388004a69636ac4530d4d9abf2439486`
+**Pinned date:** 2026-05-26 (repinned from `5731cec22a1fd29efe02d4dc21c2a57e655ecb47` of 2026-05-23)
 **Bennett.jl HEAD commit at pin time:**
-`worklog/075: cumulative measurement + 1eyg hotfix retrospective`
+`Bennett-7kzr + Bennett-jefu: docs refresh — README architectural limits + drift fixes`
+
+## Repin rationale (2026-05-26)
+
+`git diff --stat 5731cec…ecb47 877341e…9486` shows ONLY docs/beads
+deltas. Zero `src/` changes. Specifically:
+
+- `CLAUDE.md`: 10-line delta.
+- `README.md`: 53-line delta (architectural-limits documentation).
+- `worklog/075_…md`: new file, retrospective.
+- `.beads/`: routine tracker churn.
+
+`ParsedIR` (`Bennett.jl/src/ir_types.jl`), `IRBasicBlock`, `IRInst`,
+the LLVM extractor, `lower_circuit`, `target=:circuit` dispatch — all
+unchanged at the source level. Phase-2 integration (Handoff A) is
+therefore unaffected; repin is safe.
+
+Bd issue `bennettvm-18b` closes with this commit.
 
 ## Phase-0 scope
 
@@ -33,9 +50,9 @@ a less-reversible IR) is PRD v4 open question §VIII.2.
 
 ```bash
 cd ../Bennett.jl
-git rev-parse 5731cec22a1fd29efe02d4dc21c2a57e655ecb47   # must resolve
-git log --oneline 5731cec -1
-# expected: 5731cec worklog/075: cumulative measurement + 1eyg hotfix retrospective
+git rev-parse 877341ec388004a69636ac4530d4d9abf2439486   # must resolve
+git log --oneline 877341e -1
+# expected: 877341e Bennett-7kzr + Bennett-jefu: docs refresh — README architectural limits + drift fixes
 ```
 
 If the SHA is unreachable (Bennett.jl history rewrite, GC), file a
