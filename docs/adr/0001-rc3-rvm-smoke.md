@@ -205,7 +205,159 @@ Per the bead `bennettvm-zoe`: "`docs/adr/0001-rc3-rvm-smoke.md`
 
 ## § Sample-run
 
-*To be authored by M5.2 (`bennettvm-7jm`).*
+**Bead:** `bennettvm-7jm` (M5.2). **Date:** 2026-05-26.
+
+### Goal
+
+Run an RSSA program through `rvm` forward, then backward, and confirm
+the dispatch behavior. The point is not "does the math work" — RC3 is
+a published, tested artifact — but to *observe with our own keyboard*
+the property that motivates BennettVM's existence:
+
+> **A program whose source language is reversible-by-construction can
+> be executed forward AND backward by the same VM with no history
+> tape.** (Yokoyama–Glück 2007 PEPM.)
+
+BennettVM's Phase-2 source language (Julia subset, via Bennett.jl
+`ParsedIR`) is NOT reversible-by-construction. Hence Phase-2 needs a
+history layer (§3.3) that RC3 does not need. Confirming this contrast
+in the smoke run grounds the entire history-layer design.
+
+### Setup
+
+```bash
+export JAVA_HOME=$HOME/.sdkman/candidates/java/17.0.19-tem
+export PATH=$JAVA_HOME/bin:$PATH
+export JAVA_TOOL_OPTIONS="--enable-preview"     # see §Notes below
+cd references/implementations/RC3
+```
+
+Without `JAVA_TOOL_OPTIONS="--enable-preview"`, the runtime aborts
+with `UnsupportedClassVersionError: Preview features are not enabled
+for rc3/rssa/pass/LabelTable (class file version 61.65535)`. The
+`rc3`/`rvm` launcher scripts pass `--enable-preview` at *compile* time
+(via `compiler/pom.xml:163`) but not at *runtime* (the scripts
+invoke `java -jar …`). Setting the env var is the cleanest
+non-mutation workaround. **Future M5.x agents: this is permanent for
+RC3 at this pin; do not rediscover this from the stack trace.**
+
+### Program under test
+
+`programs/rssa/factorial.rrssa` (R-RSSA, the conditional-as-XOR
+variant). The program computes `factorial(5) = 120` via a single
+backward-counted loop over `n`, with `result` accumulating the
+product. Parameter annotations bake the input: `x=5, result=0`.
+
+### Forward run
+
+```
+$ ./rvm --print-main --count-instructions programs/rssa/factorial.rrssa
+```
+
+```
+Variables at end of 'forward.main' subroutine:
+x = 0
+result = 120
+
+Listing called subroutines/labels and number of executed instructions:
+- fw.factorial: 3
+- fw.main: 3
+- fw.Lfactorial_1: 6
+- fw.Lfactorial_2: 8
+- fw.Lfactorial_3: 24
+- fw.Lfactorial_4: 2
+Total executed instructions: 46
+```
+
+End-state: `x=0, result=120`. Janus uses **variable-destroying
+moves**: `x` is consumed by the loop and ends at `0` after counting
+down; `result` accumulates the answer. This is RSSA's hallmark — not
+just SSA reversibility, but the eraser-free use-discipline that makes
+RSSA invertible without a history tape.
+
+### Backward run
+
+```
+$ ./rvm --bw --print-main --count-instructions programs/rssa/factorial.rrssa
+```
+
+```
+Variables at end of 'backward.main' subroutine:
+x = 5
+result = 0
+
+Listing called subroutines/labels and number of executed instructions:
+- bw.factorial: 2
+- bw.main: 3
+- bw.Lfactorial_1: 3
+- bw.Lfactorial_2: 24
+- bw.Lfactorial_3: 8
+- bw.Lfactorial_4: 6
+Total executed instructions: 46
+```
+
+End-state: `x=5, result=0`. The original input is exactly recovered.
+
+### Observations from the transcript
+
+1. **Round-trip exactness.** Forward (`x=5, result=0`) → final
+   (`x=0, result=120`) → backward final (`x=5, result=0`). Bit-exact.
+   No history tape exists in `rvm`'s state; reverse-direction
+   execution is *the same code interpreted by the dual transition
+   relation*. This is the Yokoyama–Glück 2007 property.
+
+2. **Identical total instruction count: 46 forward, 46 backward.**
+   RSSA has no "undo" instructions — the same instructions execute in
+   the opposite order under the dual relation. The work is symmetric.
+   *Lesson for BennettVM:* History-layer-3 (checkpoint-replay) should
+   target this property as the ceiling — at most 2× forward work to
+   reach an arbitrary step backward, *not* a per-step inverse-op cost.
+
+3. **Block-level instruction count swap.** The leading blocks of the
+   forward dispatch (Lfactorial_3: 24 fw / 8 bw) and the trailing
+   blocks (Lfactorial_2: 8 fw / 24 bw) swap their instruction counts.
+   This is the dual-direction control-flow dispatch: RSSA
+   `conditional-entry` and `conditional-exit` instructions consult
+   the LabelTable to determine the predecessor block in either
+   direction. The "from-label" of forward execution becomes the
+   "to-label" of backward, and vice-versa. *Lesson for BennettVM:*
+   our IR must carry the dual-address label information for every
+   joining/splitting block (Mogensen 2016 §3 — φ on splits AND joins).
+
+4. **Conditional-entry/exit dispatch is the load-bearing primitive.**
+   `Lfactorial_3 <- result_2 == 1` (from the source) is the
+   conditional entry: backward into Lfactorial_3 from Lfactorial_1
+   when `result == 1`. `n_2 == 0 -> Lfactorial_4(...)Lfactorial_2` is
+   the conditional exit: forward from current block to Lfactorial_4
+   when `n == 0`, otherwise Lfactorial_2. The dispatcher uses these
+   predicates symmetrically — the predicate value at each transition
+   is what makes the LabelTable resolve unambiguously in *both*
+   directions. This is the design pattern PRD v4 §3.1 references and
+   M5.3 will map into Phase-2 Julia naming.
+
+5. **No allocations growth proportional to step count.** The
+   `--count-instructions` output enumerates per-block tallies but the
+   VM state is just register slots + the heap. There is no `History`
+   structure of size O(steps). Contrast with the Phase-0 spike, which
+   pushed a full `IState` snapshot per instruction.
+
+### Notes
+
+- The R-RSSA variant (file extension `.rrssa`) is RC3's
+  conditional-as-XOR encoding of RSSA. The differences from plain
+  `.rssa` matter for instruction-level reading (M5.3) but not for the
+  round-trip property; both variants are reversible-by-construction.
+- `rvm` reports wall time around 138/142 ms for fw/bw on factorial(5);
+  most of this is JVM startup, not interpretation. Not a meaningful
+  performance signal; included only for transparency.
+- `programs/rssa/instructions/` contains one-instruction-per-file
+  samples that will be used in M5.3 for the dispatch taxonomy.
+
+### Exit criterion (M5.2)
+
+Per `bennettvm-7jm`: "Run rvm forward+backward on a sample RSSA
+program; capture verbatim transcript; observe dispatch behavior; file
+§Sample-run."  **Met.**
 
 ## § Observations
 
