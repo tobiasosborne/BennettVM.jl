@@ -73,6 +73,12 @@ include("ir/IState.jl")
 # (`bennettvm-teu`). Depends on `IState`, so MUST follow `IState.jl`
 # in include order. Not yet exported.
 include("ir/RState.jl")
+# M2.4 — dispatch skeleton: abstract `Instruction` / `ControlInstruction`
+# / `RValue` plus generic `forward` / `inverse` fallbacks
+# (`bennettvm-qkd`). Depends on `IState` (used in fallback error
+# messages) so MUST follow `IState.jl`. Concrete instruction subtypes
+# land at M2.7-M2.14. Not yet exported.
+include("ir/instructions.jl")
 include("lower_vm.jl")
 
 export VMProgram, lower_vm

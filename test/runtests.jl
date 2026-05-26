@@ -16,4 +16,5 @@ using BennettVM
     include("test_handoff_smoke.jl")
     include("test_istate.jl")
     include("test_rstate.jl")
+    include("test_dispatch.jl")
 end
