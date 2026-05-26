@@ -33,4 +33,5 @@ using BennettVM
     include("test_checkpoint_push.jl")
     include("test_unstep.jl")
     include("test_unrun.jl")
+    include("test_roundtrip.jl")
 end
