@@ -217,10 +217,14 @@ Numbered, non-negotiable. Re-read after compaction.
 
 13. **Beads is the only persistent tracker.** `bd create / update /
     claim / close`. No `TodoWrite`, no markdown TODO lists.
-    `TaskCreate` is permitted for **in-session** sub-step tracking
-    only (inherited cft-anyons convention). Run `bd ready` at session
-    start; `bd close <id> ...` at the end. Cross-device sync via
-    `.beads/issues.jsonl` snapshots (the cft-anyons / Feynfeld
+    `TaskCreate` is permitted for in-session progress tracking when
+    useful (user directive 2026-05-26; supersedes the earlier
+    "in-session sub-step tracking only" qualifier and the blanket
+    prohibition in the auto-generated Beads Issue Tracker block
+    below). Beads remains the only *persistent* tracker; TaskCreate
+    is for ephemeral state inside one session. Run `bd ready` at
+    session start; `bd close <id> ...` at the end. Cross-device sync
+    via `.beads/issues.jsonl` snapshots (the cft-anyons / Feynfeld
     pattern), not via Dolt push. Never `bd init --force`.
 
 14. **No Bennett.jl source mutation without explicit user approval.**
@@ -619,7 +623,7 @@ bd close <id>         # Complete work
 
 ### Rules
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Use `bd` for persistent task tracking — do NOT use TodoWrite or markdown TODO lists. `TaskCreate` is permitted for ephemeral in-session tracking (see Rule 13).
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 
