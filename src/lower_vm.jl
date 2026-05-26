@@ -115,5 +115,13 @@ function lower_vm(parsed::Bennett.ParsedIR; opts=nothing)::VMProgram
     println("  args         = ", arg_widths)
     println("  returns      = ", return_widths)
 
-    return VMProgram(n_blocks, n_instructions, arg_widths, return_widths)
+    # M2.17 reshape: VMProgram no longer stores `n_blocks` /
+    # `n_instructions` as fields. The digest STDOUT above carries the
+    # regression-anchor numbers (M0.3); the returned `VMProgram` uses
+    # the empty-blocks digest-stub convenience constructor, which
+    # populates `arg_widths` / `return_widths` (the authentic
+    # ParsedIR-handoff metadata) and defaults `blocks` / `label_table`
+    # / `entry_label` to empty / empty / `:main` until M3.x's full
+    # lowering pass lands.
+    return VMProgram(arg_widths, return_widths)
 end

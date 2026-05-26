@@ -63,9 +63,6 @@ module BennettVM
 # Handoff-A contract visually auditable.
 import Bennett
 
-# M0.2 — stub IR carrier + lowering entry point. Real `VMProgram`
-# (M2.17) and real `lower_vm` (M3.x) replace these in place.
-include("ir/VMProgram.jl")
 # M2.1 — interpreter state atom (`bennettvm-e7o`). Not yet exported;
 # the public API surface stabilises in a later bead.
 include("ir/IState.jl")
@@ -177,8 +174,17 @@ include("ir/basic_block.jl")
 # instruction count. Consumed by `VMProgram` at M2.17. Not yet
 # exported.
 include("ir/label_table.jl")
+# M2.17 — the real `VMProgram` (`bennettvm-tot`). Replaces the M0.2
+# digest stub; now references `BasicBlock` (M2.15) and `LabelTable`
+# (M2.16), so MUST follow both in include order. Defines
+# `n_instructions(::VMProgram)` (top-level) and overloads
+# `Base.length` / `Base.show` for the new shape. The M0.2 convenience
+# constructor `VMProgram(arg_widths, return_widths)` is preserved as
+# the bridge that lets `lower_vm` (still a digest stub) produce a
+# typed `VMProgram` value while M3.x is pending.
+include("ir/VMProgram.jl")
 include("lower_vm.jl")
 
-export VMProgram, lower_vm
+export VMProgram, lower_vm, n_instructions
 
 end # module BennettVM

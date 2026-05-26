@@ -25,4 +25,5 @@ using BennettVM
     include("test_call_instruction.jl")
     include("test_basic_block.jl")
     include("test_label_table.jl")
+    include("test_vmprogram.jl")
 end

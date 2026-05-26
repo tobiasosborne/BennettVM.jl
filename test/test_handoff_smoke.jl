@@ -39,10 +39,22 @@
 #
 # # What is intentionally NOT asserted
 #
-# Anything past the four digest fields. The M0.2 `VMProgram` is a stub
-# (`src/ir/VMProgram.jl`); the real per-block structure lands at M2.7
-# and beyond. Asserting more here would couple this test to design
-# decisions that PRD v4 §3 still defers.
+# Anything past the digest STDOUT and the two metadata fields
+# `arg_widths` / `return_widths`. The M0.2 `lower_vm` is still a
+# digest-only stub (`src/lower_vm.jl`); the real per-block
+# population lands at M3.x. Asserting more here would couple this
+# test to design decisions that PRD v4 §3 still defers.
+#
+# # M2.17 reshape note
+#
+# M2.17 reshaped `VMProgram`: the M0.2 stub fields `n_blocks` and
+# `n_instructions` were removed in favor of the real RSSA-derived
+# shape (`blocks::Vector{BasicBlock}`, `label_table::LabelTable`,
+# `entry_label::Symbol`, plus the preserved `arg_widths` and
+# `return_widths` metadata). The block/instruction-count regression
+# anchors live in the digest STDOUT assertions below; the struct
+# field assertions now check the M3.x-pending empty-blocks shape
+# (because `lower_vm` is still a digest-only stub).
 #
 # Ref: /home/tobias/Projects/Bennett.jl/src/Bennett.jl:65 (export)
 #      /home/tobias/Projects/Bennett.jl/src/extract/entry.jl:41 (signature)
@@ -108,21 +120,20 @@ end
     digest = read(pipe.out, String)
     close(pipe.out)
 
-    # (c) Assert on every digest field against a known-correct value.
-    #     These four numbers are the M0.3 regression anchor; see the
-    #     file-header docstring for the rebaselining contract.
+    # (c) Assert on the digest contents against known-correct values.
+    #     The block/instruction-count regression anchors are checked
+    #     in the digest STDOUT assertions further down (M2.17 reshape:
+    #     these numbers no longer live as struct fields). The struct
+    #     field assertions here pin the M3.x-pending empty-blocks
+    #     shape that the digest-stub `lower_vm` returns, plus the
+    #     authentic `arg_widths` / `return_widths` ParsedIR-handoff
+    #     metadata that survived the reshape.
     @test result isa VMProgram
-    @test result.n_blocks == 3
-    @test result.n_instructions == 17
+    @test isempty(result.blocks)                 # lower_vm M0.2 stub returns empty blocks
+    @test length(result.label_table) == 0
+    @test result.entry_label === :main
     @test result.arg_widths == [8]
     @test result.return_widths == [8]
-
-    # Loop-bearing sanity: collatz_steps has a while loop, so the
-    # ParsedIR must decompose into more than one basic block. This is
-    # the qualitative invariant the bead asks for; the `== 3` check
-    # above is the quantitative refinement of the same property.
-    @test result.n_blocks > 1
-    @test result.n_instructions > 0
 
     # Digest format: the strings `"lower_vm digest:"` and
     # `"blocks       = "` are the grep-friendly anchors M0.2 chose
