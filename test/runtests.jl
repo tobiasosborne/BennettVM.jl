@@ -31,4 +31,5 @@ using BennettVM
     include("test_forward_interpreter.jl")
     include("test_checkpoint_entry.jl")
     include("test_checkpoint_push.jl")
+    include("test_unstep.jl")
 end

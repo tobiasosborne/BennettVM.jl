@@ -89,6 +89,42 @@ construction) crossed with the Phase-0 retrospective (full snapshots
 are the worst point on the time-space curve and exist in the spike
 specifically so v4 could refute them).
 
+# Why `initial::IState` here, not a step-0 anchor entry on history (M4.3)
+
+`RState` carries a persistent `initial::IState` field — a deep-copied
+snapshot of the IState captured at `initial_state` construction time.
+This is the "anchor" M4.3's `unstep!` falls back to when no
+`CheckpointEntry` on `s.history` is at-or-before the backward target
+step. Two natural alternatives were considered and rejected:
+
+  1. **Push a step-0 anchor entry into `history` at construction.**
+     A `CheckpointEntry(initial_istate, 0)` at `s.history[1]` would
+     give `unstep!` a uniform "nearest-checkpoint" lookup without a
+     special "no checkpoint found" branch — but it violates PRD v4
+     §3.3's L3 push-policy invariant (the step-0 carve-out: M4.2's
+     `step_count > 0` guard exists precisely so step 0 is **not**
+     checkpointed; see `src/interpreter/Interpreter.jl` §"M4.2 —
+     Checkpoint push" and `test/test_checkpoint_push.jl` D2 sentinel
+     test) AND it violates the M4.4 `unrun!` exit invariant
+     `isempty(s.history) after full reversal`. A phantom step-0
+     anchor would force M4.4 to special-case-pop it; the separate
+     field keeps both semantics clean.
+  2. **Recompute the initial state from a stored input dict.** Would
+     require storing the input dict on RState (it isn't on M2.1
+     IState — IState only has the post-coercion `locals`). A
+     separate `initial::IState` field is the cheapest correct
+     option: one deepcopy at construction, zero indirection at
+     `unstep!` time.
+
+The deepcopy at construction matters: M2.1's `IState` is a
+`mutable struct` with two `Dict` fields, and storing the live IState
+by reference here would let subsequent `step!` calls mutate
+`s.initial.locals` through the alias — corrupting the anchor exactly
+the way M4.1's `CheckpointEntry` constructor's deepcopy was designed
+to prevent (`spike/RETROSPECTIVE.md` Q2.2 — the same Dict-aliasing
+trap, one level up). M4.3's `unstep!` also deepcopies at the restore
+site; both ends defend.
+
 # Why `step_count` here, not in `run!`'s local scope (M4.2)
 
 `RState` carries a persistent `step_count::Int` field, incremented by
@@ -175,8 +211,9 @@ abstract type AbstractHistoryEntry end
 """
     RState(current::IState, history::Vector{AbstractHistoryEntry})
     RState(current::IState, history::Vector{AbstractHistoryEntry}, step_count::Int)
+    RState(current::IState, history::Vector{AbstractHistoryEntry}, step_count::Int, initial::IState)
 
-See the top-of-file docstring for the full rationale. Three fields:
+See the top-of-file docstring for the full rationale. Four fields:
 
   - `current::IState` — the live snapshot the next `step!` / `unstep!`
     will operate on.
@@ -187,18 +224,28 @@ See the top-of-file docstring for the full rationale. Three fields:
     calls executed on this `RState` (added at M4.2). See the
     top-of-file section "Why `step_count` here, not in `run!`'s local
     scope" for the rationale.
+  - `initial::IState` — anchor snapshot pinned at construction (added
+    at M4.3). M4.3's `unstep!` falls back to this when no
+    `CheckpointEntry` at or before the backward target exists. See
+    top-of-file section "Why `initial::IState` here, not a step-0
+    anchor entry on history" for the rationale.
 
-# Why two constructors
+# Why three constructors
 
-The 2-arg constructor is preserved verbatim — every M2.x / M3.x site
-that built an `RState(istate, AbstractHistoryEntry[])` keeps working
-without touching its call shape; the `step_count` defaults to 0. The
-3-arg constructor takes the count explicitly and is the form M4.3's
-`unstep!` will use when it manufactures an `RState` whose `step_count`
-is the just-decremented value. This mirrors the M2.1 `IState` 3-arg
-(memory defaulted) / 4-arg (memory explicit) pattern at
-`src/ir/IState.jl:143-150`, so a reader cross-referencing the two
-files sees the same "default-then-explicit" style.
+The 2-arg and 3-arg constructors are preserved verbatim — every
+pre-M4.3 call site that built an `RState(istate, …)` or
+`RState(istate, …, step_count)` continues to compile unchanged.
+**Both legacy constructors default `initial` to `deepcopy(current)`**
+— the only sensible default — if no initial is specified, the
+current IS the initial (the snapshot AT construction time, frozen
+against any subsequent `step!` mutation through the
+`current`-aliased Dict fields; spike Q2.2 / `src/history/
+CheckpointEntry.jl` §"Why deep-copy in the constructor"). The 4-arg
+form is the "honest" constructor used by future code that wants
+explicit control over the anchor (e.g., M5 Handoff-A code that
+needs to construct an RState whose anchor is something other than
+its starting `current`). This mirrors the M2.1 `IState` 3-arg /
+4-arg "default-then-explicit" pattern at `src/ir/IState.jl:143-150`.
 
 `mutable struct` — see top-of-file "Why mutable" and `spike/
 RETROSPECTIVE.md` Q1.
@@ -207,20 +254,39 @@ mutable struct RState
     current::IState
     history::Vector{AbstractHistoryEntry}
     step_count::Int
+    initial::IState
 
-    # 2-arg constructor (M2.3 back-compat): step_count defaults to 0.
-    # Every pre-M4.2 call site that built an RState — initial_state at
+    # 2-arg constructor (M2.3 back-compat): step_count defaults to 0,
+    # initial defaults to deepcopy(current). Every pre-M4.2 call site
+    # that built an RState — initial_state at
     # `src/interpreter/Interpreter.jl`, every M2.3 / M3.x test fixture —
-    # uses this form and continues to compile unchanged.
+    # uses this form and continues to compile unchanged. The deepcopy
+    # on `initial` is the M4.3 defense-in-depth pin (spike Q2.2):
+    # without it, subsequent `step!` calls mutating `s.current.locals`
+    # would corrupt `s.initial` via Dict-aliasing.
     RState(current::IState, history::Vector{AbstractHistoryEntry}) =
-        new(current, history, 0)
+        new(current, history, 0, deepcopy(current))
 
-    # 3-arg constructor (M4.2): explicit step_count. M4.3's `unstep!`
-    # is the principal consumer — it will construct an `RState` whose
-    # step_count is the decremented value after popping a checkpoint.
+    # 3-arg constructor (M4.2 back-compat): explicit step_count, initial
+    # still defaults to deepcopy(current). Preserves every M4.2 test
+    # fixture (e.g., `test/test_checkpoint_push.jl` D2 sentinel test's
+    # `RState(istate, [], -1)` shape) unchanged.
     RState(current::IState, history::Vector{AbstractHistoryEntry},
            step_count::Int) =
-        new(current, history, step_count)
+        new(current, history, step_count, deepcopy(current))
+
+    # 4-arg constructor (M4.3): explicit initial. No defensive deepcopy
+    # of `initial` here — the caller has explicitly opted into providing
+    # the anchor object, and the default-constructor sites that DO need
+    # the defense already pay for it. This matches the
+    # `CheckpointEntry(snapshot, step)` pattern at
+    # `src/history/CheckpointEntry.jl`: the constructor deepcopies its
+    # snapshot argument; the analogous defense here lives in the 2-arg
+    # and 3-arg constructors where the caller has not made an explicit
+    # statement of intent.
+    RState(current::IState, history::Vector{AbstractHistoryEntry},
+           step_count::Int, initial::IState) =
+        new(current, history, step_count, initial)
 end
 
 """
@@ -258,18 +324,33 @@ step needs to find a checkpoint, and the M4.5 round-trip invariant
 expressible as a single `==` check rather than a three-clause AND
 the caller has to remember to write out.
 
+# Why `initial` must participate (M4.3)
+
+Same rule, one level up. Two `RState`s with identical
+`current`/`history`/`step_count` but different `initial` are NOT
+equal — M4.3's `unstep!` reversal targets diverge as soon as the
+backward walk crosses the last checkpoint, because the two
+`unstep!`s would replay forward from different starting snapshots
+and produce different `current`. Including `initial` in `==` keeps
+the field's load-bearing role visible in equality: a future test
+that constructs two RStates via the 4-arg explicit-initial
+constructor and expects them to compare equal must be passing the
+*same* anchor.
+
 Ref: `spike/RETROSPECTIVE.md` Q2.1.
 Ref: `src/ir/IState.jl` (the M2.2 override this mirrors).
 """
 function Base.:(==)(a::RState, b::RState)
     a.current == b.current &&
         a.history == b.history &&
-        a.step_count == b.step_count
+        a.step_count == b.step_count &&
+        a.initial == b.initial
 end
 
 function Base.hash(s::RState, h::UInt)
     h = hash(s.current, h)
     h = hash(s.history, h)
     h = hash(s.step_count, h)
+    h = hash(s.initial, h)
     return h
 end

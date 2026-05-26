@@ -235,7 +235,19 @@ function initial_state(prog::VMProgram, input::AbstractDict)::RState
     # the three layers PRD v4 §3.3 prescribes (L1 injective, L2 delta,
     # L3 checkpoint); the empty vector here will receive whatever
     # concrete entry types future `step!` calls push.
-    return RState(istate, AbstractHistoryEntry[])
+    #
+    # M4.3 — explicit `initial` anchor via the 4-arg constructor. The
+    # `deepcopy(istate)` here is defense-in-depth against the spike
+    # Q2.2 Dict-aliasing trap: the M4.3 RState constructor's 2-arg
+    # back-compat form ALSO deepcopies the current into `initial`, so
+    # this site is technically redundant — but defending at both sites
+    # means a future code change that drops one defense still has the
+    # other. The same belt-and-braces discipline `CheckpointEntry`
+    # uses (deepcopy inside its constructor) and that M4.3's `unstep!`
+    # uses at the restore site (deepcopy when reading FROM the anchor
+    # / a checkpoint snapshot). Two cheap copies at construction beat
+    # one missed deepcopy debugged at the round-trip-test failure.
+    return RState(istate, AbstractHistoryEntry[], 0, deepcopy(istate))
 end
 
 """

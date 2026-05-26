@@ -228,7 +228,22 @@ include("lower_vm.jl")
 # M4 `unrun!` can roll it back. Exported alongside the rest of the M3
 # surface.
 include("interpreter/Interpreter.jl")
+# M4.3 — `unstep!` via L3 checkpoint-replay (`bennettvm-3do`). The
+# backward primitive that consumes the periodic `CheckpointEntry`s
+# M4.2's `step!` pushes: find the nearest checkpoint at or before the
+# target step, restore its (deep-copied) snapshot into `s.current`,
+# truncate later entries off `s.history`, and replay `step!` forward
+# to the target with `checkpoint_interval = typemax(Int)` so no
+# spurious pushes fire during replay. Depends on `RState` (M2.3 +
+# M4.3's `initial::IState` field — the fallback anchor when no
+# checkpoint exists at or before target), `CheckpointEntry` (M4.1 —
+# the entry type whose snapshot is restored), and `step!` (M4.2 — the
+# replay primitive); MUST follow `interpreter/Interpreter.jl` in
+# include order because the replay loop calls `step!`. The rr-style
+# architecture (O'Callahan et al 2017 §2.1) is the canonical
+# citation. Exported alongside `step!` / `run!`.
+include("history/Replay.jl")
 
-export VMProgram, lower_vm, n_instructions, initial_state, is_halted, result, step!, run!
+export VMProgram, lower_vm, n_instructions, initial_state, is_halted, result, step!, run!, unstep!
 
 end # module BennettVM
