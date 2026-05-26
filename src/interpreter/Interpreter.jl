@@ -540,7 +540,24 @@ function step!(s::RState, prog::VMProgram)::RState
     # fallback, which raises with state context (Rule 1).
     forward(instr, s.current)
 
-    # (4) Halt detection on EndInstruction. AFTER forward has run, so
+    # (4) Cross-block dispatch on Uncond/Cond Exit (M3.6). The per-
+    # subtype `forward(::UnconditionalExit, ...)` and
+    # `forward(::ConditionalExit, ...)` methods only bump pc by 1 at
+    # the per-instruction layer (control_instructions.jl M2.9 / M2.10
+    # docstring §"Forward / inverse semantics — pc-only"); the
+    # block-boundary relocation (consulting `prog.label_table` to
+    # land pc on the destination block's first body instruction) and
+    # the args→params positional rename are this layer's
+    # responsibility. The forward() pc-bump is OVERWRITTEN by
+    # `_dispatch_to_block!` — keeping the uniform "always call
+    # forward()" shape at this dispatch site costs one wasted
+    # increment per cross-block step but means the step! body never
+    # has to special-case which instructions skip forward(). See the
+    # M3.6 cross-block dispatch §"Why overwrite, not skip" comment
+    # on `_handle_cross_block_dispatch!`.
+    _handle_cross_block_dispatch!(s, prog, instr)
+
+    # (5) Halt detection on EndInstruction. AFTER forward has run, so
     # that an exception in forward leaves status as `:running` and the
     # RState unchanged from before the step — the same atomicity the
     # M4 forward-FIRST history-push ordering will rely on (see
@@ -551,6 +568,250 @@ function step!(s::RState, prog::VMProgram)::RState
     end
 
     return s
+end
+
+# ============================================================================
+# M3.6 — cross-block dispatch (bd `bennettvm-yx3`).
+#
+# Extends `step!` so that the two non-fall-through control-flow exits —
+# `UnconditionalExit` and `ConditionalExit` — actually transfer control
+# to the destination block instead of stepping into the next flat-stream
+# instruction. The per-instruction `forward()` methods on these classes
+# only bump pc by 1 (control_instructions.jl M2.9 / M2.10), which is
+# correct for straight-line programs (where the next block's entry
+# happens to sit at pc+1 in the flat layout) but wrong for any program
+# whose blocks are reordered, or whose conditional branches actually
+# branch.
+#
+# ## What this layer adds on top of forward()
+#
+#   1. Resolves the destination block via `prog.label_table[target]`,
+#      where `target` is `UnconditionalExit.target` or, for the
+#      conditional case, `target_true` / `target_false` selected by
+#      `s.locals[condition]`.
+#   2. Performs the args→params positional rename: the sender's `args`
+#      are removed from `locals` and re-inserted under the receiver's
+#      `params` names. The rename is two-phase (capture-then-assign) so
+#      that the identity case `args == params` is a structural no-op
+#      rather than a delete-then-fail KeyError. See
+#      `_rename_args_to_params!`.
+#   3. Sets `s.current.pc = target_entry.fwd_address + 1` — i.e., one
+#      past the destination block's entry marker. The marker itself is
+#      a no-op-on-data (its `forward()` only bumps pc — see M2.9 / M2.10
+#      docstrings); we have already done the rename here, so dispatching
+#      `step!` again on the marker would either be a wasted iteration
+#      OR a double-rename bug. Skipping it is the simpler, less error-
+#      prone choice.
+#
+# ## Why "overwrite forward()'s pc" rather than "skip forward()"
+#
+# Two designs were considered:
+#   (a) In step!, special-case `UnconditionalExit` / `ConditionalExit`
+#       BEFORE calling forward(); do the rename + pc-set ourselves and
+#       skip the forward() call entirely.
+#   (b) Always call forward() (uniformity), let
+#       `_handle_cross_block_dispatch!` OVERWRITE pc afterward for the
+#       two control-flow-exit cases.
+#
+# We chose (b). The motivation is the same "uniform dispatch shape"
+# that drives `step!`'s post-condition halt detection: the M4 history-
+# bearing reshape (PRD v4 §3.3) will want to wrap the forward() call in
+# a try-catch + push! pattern, and special-casing two instruction
+# subtypes BEFORE that wrapper would force the same wrapper to live in
+# two places (forward branch + skip branch) by M4. The cost of (b) is
+# one wasted pc increment per cross-block step; the benefit is that
+# step!'s body is a single, linearly-readable sequence of
+# (forward → cross-block → halt-detection) calls regardless of which
+# instruction class fires.
+#
+# ## Args/params arity mismatch is a Rule-1 failure
+#
+# `_rename_args_to_params!` errors loudly if `length(args) != length(params)`.
+# At Phase 2 a cross-block arity mismatch must not exist in a well-formed
+# IR — M2.18's `validate(::VMProgram)` pass (when it lands) will catch
+# it at construction time. But UNTIL that pass exists, the dispatch
+# layer is the last line of defense; failing silently here would
+# produce a `KeyError` mid-block when the receiver-block's body first
+# reads `:p`-but-`:p`-was-never-bound. The error message names both
+# argument lists.
+#
+# Ref: bennettvm_prd.md (PRD v4) §3.11 — step! dispatch must do cross-
+#      block control transfer for Uncond/Cond Exit.
+# Ref: src/ir/control_instructions.jl M2.9 / M2.10 docstrings — the
+#      pc-only convention at the per-instruction layer, deferring
+#      cross-block dispatch to M3.x.
+# Ref: src/ir/label_table.jl M2.16 §"Flat-instruction layout" — the
+#      `fwd_address` semantics this layer reads.
+# Ref: CLAUDE.md hallucination-risk callout "BobISA jumps encode the
+#      source label" — BennettVM uses paired-entry dispatch via
+#      LabelTable, not source-label encoding; this is the layer that
+#      consumes the LabelTable.
+
+"""
+    _handle_cross_block_dispatch!(s::RState, prog::VMProgram, instr::Instruction)
+
+If `instr` is a `UnconditionalExit` or `ConditionalExit`, perform the
+cross-block control transfer: resolve the destination block via
+`prog.label_table`, rename `args` → destination's `params`, and set
+`s.current.pc` to one past the destination's entry marker. Otherwise
+a no-op (the per-instruction `forward()` already advanced pc
+correctly).
+
+For `ConditionalExit`, the destination is selected by reading
+`s.current.locals[instr.condition]`: nonzero → `target_true`,
+zero → `target_false`. The predicate symbol is **not consumed** by
+this dispatch — it remains in `locals` because RSSA's invertibility
+argument depends on the predicate being live across the transition
+(M2.10 §"φ-nodes appear at splits AND joins"; backward dispatch via
+M4+'s `unstep!` will re-read the same symbol to recover the
+predecessor). If a future M9 pebble pass needs the predicate
+consumed at the Exit and re-emitted at the matching Entry, that
+should land as a structural rewrite at IR-graph level, not a runtime
+mutation here.
+
+# Ref
+
+  * `src/ir/control_instructions.jl` (M2.10) — ConditionalExit fields
+    `condition` / `target_true` / `target_false` / `args`.
+  * `src/ir/control_instructions.jl` (M2.9) — UnconditionalExit fields
+    `target` / `args`.
+"""
+function _handle_cross_block_dispatch!(s::RState, prog::VMProgram,
+                                       instr::Instruction)
+    if instr isa UnconditionalExit
+        _dispatch_to_block!(s, prog, instr.target, instr.args)
+    elseif instr isa ConditionalExit
+        # Nonzero predicate selects target_true; zero selects
+        # target_false. IState.locals is Dict{Symbol,Int64}, so the
+        # comparison is well-defined integer-vs-zero (no Bool
+        # type-system needed at this milestone — Phase 0 retrospective
+        # Q6 note on UnaryOp :not). The CLAUDE.md "Bool-typed regs"
+        # caveat: until a type system lands, "true" is "nonzero" by
+        # the same convention as C / LLVM IR.
+        cond_val = s.current.locals[instr.condition]
+        target = cond_val != 0 ? instr.target_true : instr.target_false
+        _dispatch_to_block!(s, prog, target, instr.args)
+    end
+    # All other instruction types: forward() already bumped pc to the
+    # next flat-stream slot, which IS the correct destination for
+    # straight-line / non-branching control flow.
+    return s
+end
+
+"""
+    _dispatch_to_block!(s::RState, prog::VMProgram, target::Symbol,
+                        args::Vector{Symbol})
+
+Transfer control to the block labelled `target`, passing the values
+currently bound to `args` (positionally) to that block's entry-marker
+`params` list. Sets `s.current.pc` to one past the destination's
+entry marker (`fwd_address + 1`), bypassing the entry's `forward()`
+call because we have already performed the rename ourselves.
+
+# What "the destination's entry-marker params" means
+
+The destination block's `entry::ControlInstruction` is one of
+`BeginInstruction` (subroutine main), `UnconditionalEntry`
+(basic-block-rooted main / unconditional join), or `ConditionalEntry`
+(predicated join). All three carry a `params::Vector{Symbol}` field;
+the rename uses that list as the receiving side.
+
+Any other `ControlInstruction` subtype reaching the destination's
+entry slot is rejected loudly — Rule 1 / PRD v4 §3.16. The
+`BasicBlock` constructor (M2.15) already guarantees the entry slot
+holds one of the three entry-direction subtypes, so this error is a
+defensive catch-all for a future Instruction subtype that breaks
+the M2.15 invariant.
+
+# Ref
+
+  * `src/ir/label_table.jl` (M2.16) — `LabelEntry.fwd_address` is the
+    1-based flat-stream index of the destination block's entry
+    instruction; `fwd_address + 1` is the first body instruction.
+  * `src/ir/control_instructions.jl` (M2.8 / M2.9 / M2.10) — the
+    three entry-direction subtypes with `params::Vector{Symbol}`.
+"""
+function _dispatch_to_block!(s::RState, prog::VMProgram, target::Symbol,
+                             args::Vector{Symbol})
+    target_entry = prog.label_table[target]
+    target_block = prog.blocks[target_entry.block_index]
+
+    entry_instr = target_block.entry
+    if entry_instr isa UnconditionalEntry
+        _rename_args_to_params!(s.current.locals, args, entry_instr.params)
+    elseif entry_instr isa ConditionalEntry
+        _rename_args_to_params!(s.current.locals, args, entry_instr.params)
+    elseif entry_instr isa BeginInstruction
+        # Begin's params are the subroutine's formals; cross-block
+        # dispatch arriving here is the main-routine call (the M2.14
+        # CallInstruction surface is the proper Phase-2 home for full
+        # subroutine semantics, but a plain Uncond/Cond Exit landing
+        # on a Begin block — e.g., a main-rooted CFG where main was
+        # encoded with a BeginInstruction rather than an
+        # UnconditionalEntry — must also bind positionally).
+        _rename_args_to_params!(s.current.locals, args, entry_instr.params)
+    else
+        error("_dispatch_to_block!: target block :", target,
+              " has unexpected entry type ", typeof(entry_instr),
+              " — must be one of UnconditionalEntry, ConditionalEntry, ",
+              "or BeginInstruction (the M2.15 BasicBlock constructor ",
+              "enforces this; a value reaching here indicates a broken ",
+              "invariant somewhere upstream).")
+    end
+
+    # pc lands ONE PAST the entry marker (so the next step! dispatches
+    # on the first body instruction). The entry marker is a no-op-on-
+    # data; running its forward() here would either waste a step or —
+    # worse — duplicate the args→params rename. See this file's M3.6
+    # §"What this layer adds on top of forward()" comment, item 3.
+    s.current.pc = target_entry.fwd_address + 1
+    return s
+end
+
+"""
+    _rename_args_to_params!(locals::Dict{Symbol,Int64},
+                            args::Vector{Symbol},
+                            params::Vector{Symbol})
+
+Positional rename: for `i` in `1:length(args)`, the value at
+`locals[args[i]]` is moved to `locals[params[i]]`. Two-phase
+(capture all values, delete all args, then assign all params) so
+that the identity case `args == params` is a no-op rather than a
+delete-then-fail KeyError, AND so that renames that re-use names
+across the boundary (e.g., `args=[:x,:y]`, `params=[:y,:x]`) work
+correctly without intermediate stomping.
+
+Arity mismatch (`length(args) != length(params)`) raises an
+`ErrorException` (Rule 1 — until M2.18's `validate(::VMProgram)`
+pass lands, the dispatch layer is the last line of defense).
+
+# Ref
+
+  * CLAUDE.md Rule 1 — fail loud on arity mismatch.
+  * M2.18 (not yet landed) — the cross-block invariant pass that
+    will catch the same mismatch at construction time.
+"""
+function _rename_args_to_params!(locals::Dict{Symbol,Int64},
+                                 args::Vector{Symbol},
+                                 params::Vector{Symbol})
+    length(args) == length(params) ||
+        error("_rename_args_to_params!: args/params arity mismatch — ",
+              "args=", args, " (length ", length(args), ") vs ",
+              "params=", params, " (length ", length(params), "). ",
+              "A cross-block edge with mismatched sender/receiver ",
+              "arity is malformed RSSA; M2.18's validate pass will ",
+              "catch this at construction time once it lands.")
+    # Two-phase: capture, delete, assign. Necessary for the identity
+    # case (args == params) and for the cross-permutation case
+    # (args = [:x,:y], params = [:y,:x]).
+    values = Int64[locals[a] for a in args]
+    for a in args
+        delete!(locals, a)
+    end
+    for (p, v) in zip(params, values)
+        locals[p] = v
+    end
+    return locals
 end
 
 # ============================================================================

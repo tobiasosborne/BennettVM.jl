@@ -495,3 +495,171 @@ end
     @test rs.current.pc == pc_before
     @test is_halted(rs)
 end
+
+# ---------------------------------------------------------------------
+# M3.6 — cross-block dispatch (bd `bennettvm-yx3`).
+#
+# `step!` extension: after `forward(::UnconditionalExit, ...)` or
+# `forward(::ConditionalExit, ...)`, the pc is relocated to the
+# destination block's first body instruction (i.e., one past the entry
+# marker), and the sender's `args` are positionally renamed into the
+# receiver's `params`.
+#
+# The tests below pin:
+#
+#   1. **Unconditional cross-block dispatch** — a two-block program
+#      where bb1 exits unconditionally to bb2 (with args=[:m] →
+#      params=[:m_in]) runs to halt, the args/params rename
+#      destroys the sender's names and creates the receiver's, and
+#      the final result is well-defined.
+#   2. **Conditional cross-block dispatch — both branches** — a
+#      three-block program (start + tbr + fbr) where `start` exits
+#      to `tbr` if the condition is nonzero and `fbr` otherwise.
+#      Run twice with the predicate set to each value; verify the
+#      correct branch's body is the one executed.
+#   3. **`_rename_args_to_params!` identity case** — args == params
+#      passes through unchanged. The two-phase rename's capture-
+#      delete-assign is exactly the discipline that makes this work
+#      (a one-phase implementation would silently lose values when
+#      the same Symbol appears on both sides).
+#   4. **`_rename_args_to_params!` rename case** — args != params
+#      destroys old names and creates new ones with the same values.
+#   5. **`_rename_args_to_params!` arity mismatch** — Rule 1 raise
+#      on `length(args) != length(params)`.
+#
+# Per CLAUDE.md Rule 4, every test asserts an invariant against a
+# known-correct value (not just "didn't throw").
+# ---------------------------------------------------------------------
+
+@testset "cross-block UnconditionalExit (M3.6)" begin
+    # bb1: Begin(:b1, [:n]) → ArithAssign(:m := :n ⊕ (:n ⊕ 0)) → UncondExit(:b2, [:m])
+    # bb2: UncondEntry(:b2, [:m_in]) → ArithAssign(:r := :m_in ⊕ (:m_in ⊕ 0)) → End(:b1, [:r])
+    # The rename :m → :m_in fires across the cross-block edge.
+    bb1 = BennettVM.BasicBlock(:b1,
+        BennettVM.BeginInstruction(:b1, [:n]),
+        BennettVM.Instruction[
+            BennettVM.ArithmeticAssignment(:m, :n, :xor, :n, :xor, Int64(0)),
+        ],
+        BennettVM.UnconditionalExit(:b2, [:m]))
+    bb2 = BennettVM.BasicBlock(:b2,
+        BennettVM.UnconditionalEntry(:b2, [:m_in]),
+        BennettVM.Instruction[
+            BennettVM.ArithmeticAssignment(:r, :m_in, :xor, :m_in, :xor, Int64(0)),
+        ],
+        BennettVM.EndInstruction(:b1, [:r]))
+    vm = VMProgram([bb1, bb2], BennettVM.LabelTable([bb1, bb2]), :b1,
+                   [64], [64])
+    rs = initial_state(vm, Dict(:n => Int64(99)))
+
+    run!(rs, vm)
+    @test is_halted(rs)
+    # :n was renamed to :m via the body of bb1 (xor identity), then
+    # :m → :m_in across the cross-block edge, then :m_in → :r via
+    # bb2's body (xor identity again). Final result preserves 99.
+    @test rs.current.locals[:r] == 99 ⊻ (99 ⊻ 0)
+    @test !haskey(rs.current.locals, :n)
+    @test !haskey(rs.current.locals, :m)
+    @test !haskey(rs.current.locals, :m_in)
+end
+
+@testset "cross-block ConditionalExit — true and false branches (M3.6)" begin
+    # Three-block program. `start` exits conditionally on :c:
+    #   :c != 0 → :tbr (true branch)
+    #   :c == 0 → :fbr (false branch)
+    # Each branch performs a different arithmetic operation so the
+    # final result distinguishes which branch ran.
+    #
+    # Note on ConditionalEntry constructor: predecessor_true and
+    # predecessor_false MUST differ (M2.10 constructor invariant);
+    # the runtime does not enforce predecessor labels exist as
+    # blocks (that's M2.18's cross-block validation pass), so we
+    # use distinct labels (`:start` and a sentinel `:nonexistent_b`)
+    # to satisfy the constructor without needing a third upstream
+    # block.
+    bb_start = BennettVM.BasicBlock(:start,
+        BennettVM.BeginInstruction(:start, [:n, :c]),
+        BennettVM.Instruction[],
+        BennettVM.ConditionalExit(:c, :tbr, :fbr, [:n]))
+    # The two branches produce DISTINCT output values so the test
+    # discriminates which branch actually ran (a true/false swap in
+    # the dispatch would invert the observed value at the @test):
+    #   true branch:  r := n_in ⊕ (n_in ⊕ 100) = 100
+    #   false branch: r := n_in ⊕ (n_in ⊕ 200) = 200
+    bb_t = BennettVM.BasicBlock(:tbr,
+        BennettVM.ConditionalEntry(:tbr, [:n_in], :start, :nonexistent_b, :c),
+        BennettVM.Instruction[
+            BennettVM.ArithmeticAssignment(:r, :n_in, :xor, :n_in, :xor, Int64(100)),
+        ],
+        BennettVM.EndInstruction(:tbr, [:r]))
+    bb_f = BennettVM.BasicBlock(:fbr,
+        BennettVM.ConditionalEntry(:fbr, [:n_in], :start, :nonexistent_b, :c),
+        BennettVM.Instruction[
+            BennettVM.ArithmeticAssignment(:r, :n_in, :xor, :n_in, :xor, Int64(200)),
+        ],
+        BennettVM.EndInstruction(:fbr, [:r]))
+
+    vm = VMProgram([bb_start, bb_t, bb_f],
+                   BennettVM.LabelTable([bb_start, bb_t, bb_f]),
+                   :start, [64, 64], [64])
+
+    # Branch :c = 1 (true) — should go to :tbr; expected r == 100.
+    rs_t = initial_state(vm, Dict(:n => Int64(42), :c => Int64(1)))
+    run!(rs_t, vm)
+    @test is_halted(rs_t)
+    @test rs_t.current.locals[:r] == 100
+
+    # Branch :c = 0 (false) — should go to :fbr; expected r == 200.
+    rs_f = initial_state(vm, Dict(:n => Int64(42), :c => Int64(0)))
+    run!(rs_f, vm)
+    @test is_halted(rs_f)
+    @test rs_f.current.locals[:r] == 200
+
+    # Sanity: the predicate :c is NOT consumed by the dispatch —
+    # it should still be in locals after the branch fires.
+    # (Per M3.6 _handle_cross_block_dispatch! docstring: the
+    # predicate remains live to preserve RSSA invertibility.)
+    @test rs_t.current.locals[:c] == 1
+    @test rs_f.current.locals[:c] == 0
+end
+
+@testset "_rename_args_to_params! identity case (M3.6)" begin
+    # args == params: net-no-op on the dict's key set, values
+    # preserved. The two-phase capture-delete-assign discipline is
+    # what makes this work (a one-phase delete-then-assign would
+    # KeyError because the values are gone before the assign reads
+    # them).
+    locals = Dict(:x => Int64(1), :y => Int64(2))
+    BennettVM._rename_args_to_params!(locals, [:x, :y], [:x, :y])
+    @test locals == Dict(:x => Int64(1), :y => Int64(2))
+end
+
+@testset "_rename_args_to_params! rename case (M3.6)" begin
+    # Distinct args/params: old names destroyed, new names created
+    # with values preserved positionally.
+    locals = Dict(:a => Int64(7), :b => Int64(11))
+    BennettVM._rename_args_to_params!(locals, [:a, :b], [:x, :y])
+    @test locals == Dict(:x => Int64(7), :y => Int64(11))
+    @test !haskey(locals, :a)
+    @test !haskey(locals, :b)
+end
+
+@testset "_rename_args_to_params! permutation case (M3.6)" begin
+    # Cross-permutation (args = [:x,:y], params = [:y,:x]) is the
+    # case the two-phase rename specifically protects: a one-phase
+    # implementation would stomp :x when params[1] = :y is assigned
+    # because :y was already a key. The capture-then-assign shape
+    # avoids the stomp.
+    locals = Dict(:x => Int64(10), :y => Int64(20))
+    BennettVM._rename_args_to_params!(locals, [:x, :y], [:y, :x])
+    @test locals == Dict(:y => Int64(10), :x => Int64(20))
+end
+
+@testset "_rename_args_to_params! arity mismatch (M3.6)" begin
+    # Rule 1: arity mismatch fails loud, not silent. M2.18's
+    # validate pass (when it lands) will catch this at construction
+    # time; until then, the dispatch layer is the last line of
+    # defense.
+    locals = Dict(:a => Int64(1))
+    @test_throws ErrorException BennettVM._rename_args_to_params!(
+        locals, [:a], [:x, :y])
+end
