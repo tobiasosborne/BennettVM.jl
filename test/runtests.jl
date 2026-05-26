@@ -29,4 +29,5 @@ using BennettVM
     include("test_ir_types.jl")
     include("test_interpreter.jl")
     include("test_forward_interpreter.jl")
+    include("test_checkpoint_entry.jl")
 end

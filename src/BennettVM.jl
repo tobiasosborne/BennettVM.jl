@@ -70,6 +70,16 @@ include("ir/IState.jl")
 # (`bennettvm-teu`). Depends on `IState`, so MUST follow `IState.jl`
 # in include order. Not yet exported.
 include("ir/RState.jl")
+# M4.1 — L3 history entry: `CheckpointEntry <: AbstractHistoryEntry`
+# (`bennettvm-v1t`). Periodic full-state `IState` snapshot + step
+# index, the safety-net layer of the PRD v4 §3.3 three-layer history
+# scheme. Depends on `IState` (the snapshot field type, from
+# `ir/IState.jl`) and `AbstractHistoryEntry` (the supertype, defined
+# in `ir/RState.jl`), so MUST follow both in include order. The push-
+# every-K-steps gating that makes this "periodic" (and therefore not
+# the prohibited full-per-step-snapshot mechanism) lives in M4.2's
+# `step!` modification, not in this file. Not yet exported.
+include("history/CheckpointEntry.jl")
 # M2.4 — dispatch skeleton: abstract `Instruction` / `ControlInstruction`
 # / `RValue` plus generic `forward` / `inverse` fallbacks
 # (`bennettvm-qkd`). Depends on `IState` (used in fallback error
