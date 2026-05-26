@@ -105,6 +105,16 @@ include("ir/arithmetic_assignment.jl")
 # Depends on `Instruction` (from `instructions.jl`) and `IState`
 # (from `IState.jl`); MUST follow both. Not yet exported.
 include("ir/swap_instruction.jl")
+# M2.8 — first two concrete control-flow instructions: `BeginInstruction`
+# and `EndInstruction` (`bennettvm-n3c`). Rows 7 and 8 of the ADR 0001
+# §Observations RSSA dispatch table — subroutine entry / exit markers
+# (RC3 `begin l(x,...)` / `end l(y,...)`). Parameter / return-value
+# transfer is `CallInstruction`'s job (M2.14); these markers reduce, at
+# the dispatch layer, to pc bumpers carrying the label + signature as
+# metadata. Depends on `ControlInstruction` (from `instructions.jl`,
+# M2.4) and `IState` (from `IState.jl`, M2.1); MUST follow both. Not
+# yet exported.
+include("ir/control_instructions.jl")
 include("lower_vm.jl")
 
 export VMProgram, lower_vm
