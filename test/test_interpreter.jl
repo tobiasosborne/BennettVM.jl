@@ -383,3 +383,115 @@ end
     @test r2.current.pc == 99
     @test r2.current.status === :error
 end
+
+# ---------------------------------------------------------------------
+# M3.4 — `run!` loop with max-steps guard (bd `bennettvm-fbh`).
+#
+# `run!(s::RState, prog::VMProgram; max_steps=10_000)::RState` is the
+# canonical forward driver: a while-loop calling `step!` until
+# `is_halted(s)`, with a max-steps guard that errors descriptively on
+# divergence (PRD v4 §3.16; Rule 1).
+#
+# The tests below pin:
+#
+#   1. **Simple straight-line program** — Begin → Arith → End runs to
+#      halt and the locals dict shows the arithmetic actually happened
+#      (not just "didn't throw"). Rule 4 discipline.
+#   2. **Chaining contract** — the same RState passed in is the RState
+#      returned (`===`), matching PRD v4 §3.11's "mutated in place;
+#      return value for chaining" convention.
+#   3. **Max-steps guard fires loudly** — a program with more flat-
+#      stream instructions than the guard allows raises an
+#      `ErrorException` whose message names the max_steps value, the
+#      current pc, and the status (so the failure mode is diagnosable
+#      from the message alone; Rule 1). NOT a silent return.
+#   4. **Pre-halted no-op** — running `run!` on an already-`:halted`
+#      RState changes nothing: same pc, still halted. The loop's
+#      `!is_halted` head-check returns immediately without entering
+#      the body.
+#
+# Per CLAUDE.md Rule 4, every test asserts an invariant against a
+# known-correct value, not just "didn't throw".
+# ---------------------------------------------------------------------
+
+@testset "run! simple straight-line program (M3.4)" begin
+    bb = BennettVM.BasicBlock(:main,
+        BennettVM.BeginInstruction(:main, [:n]),
+        BennettVM.Instruction[
+            BennettVM.ArithmeticAssignment(:x, :n, :xor, :n, :xor, Int64(0)),
+        ],
+        BennettVM.EndInstruction(:main, [:x]))
+    vm = VMProgram([bb], BennettVM.LabelTable([bb]), :main, [64], [64])
+    rs = initial_state(vm, Dict(:n => Int64(42)))
+
+    run!(rs, vm)
+    @test is_halted(rs)
+    @test rs.current.locals[:x] == 42 ⊻ (42 ⊻ 0)
+end
+
+@testset "run! returns same RState for chaining (M3.4)" begin
+    bb = BennettVM.BasicBlock(:m, BennettVM.BeginInstruction(:m, Symbol[]),
+                              BennettVM.Instruction[],
+                              BennettVM.EndInstruction(:m, Symbol[]))
+    vm = VMProgram([bb], BennettVM.LabelTable([bb]), :m, Int[], Int[])
+    rs = initial_state(vm, Dict{Symbol,Int64}())
+    rs2 = run!(rs, vm)
+    @test rs === rs2
+    @test is_halted(rs)
+end
+
+@testset "run! max_steps guard fires loudly (M3.4)" begin
+    # A program that never halts: build a tiny "loop" by hand with
+    # a single block whose UnconditionalExit points back to itself.
+    # The interpreter at M3.3 doesn't yet implement cross-block
+    # dispatch (that's M3.5+), so step! will keep advancing pc
+    # through the flat stream until it falls off the end —
+    # _instruction_at will then throw, NOT max_steps.
+    #
+    # To exercise the max-steps guard cleanly, we cheat: pre-set
+    # max_steps to a tiny value and use a program that has more
+    # instructions than the guard, but no End in the path traversed
+    # before the guard fires.
+    # NOTE: the Begin must declare `:a` as a formal param — M3.1's
+    # name-validation pass rejects an input key that isn't in the
+    # Begin's params list. The chained arithmetic below produces
+    # :b/:c/:d as fresh locals while keeping the destroy-source
+    # discipline (each arith destroys its lhs source).
+    bb = BennettVM.BasicBlock(:m,
+        BennettVM.BeginInstruction(:m, [:a]),
+        BennettVM.Instruction[
+            BennettVM.ArithmeticAssignment(:b, :a, :xor, :a, :xor, Int64(0)),
+            BennettVM.ArithmeticAssignment(:c, :b, :xor, :b, :xor, Int64(0)),
+            BennettVM.ArithmeticAssignment(:d, :c, :xor, :c, :xor, Int64(0)),
+        ],
+        BennettVM.EndInstruction(:m, [:d]))
+    vm = VMProgram([bb], BennettVM.LabelTable([bb]), :m, [64], [64])
+    rs = initial_state(vm, Dict(:a => Int64(1)))
+
+    # The program has 5 flat instructions (Begin + 3 Arith + End);
+    # with max_steps=2 we halt mid-arithmetic before reaching End.
+    # Guard MUST fire (not silently return).
+    err = try
+        run!(rs, vm; max_steps=2)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    @test occursin("max_steps=2", err.msg)
+    @test occursin("pc=", err.msg)
+    @test occursin("status=", err.msg)
+end
+
+@testset "run! pre-halted no-op (M3.4)" begin
+    bb = BennettVM.BasicBlock(:m, BennettVM.BeginInstruction(:m, Symbol[]),
+                              BennettVM.Instruction[],
+                              BennettVM.EndInstruction(:m, Symbol[]))
+    vm = VMProgram([bb], BennettVM.LabelTable([bb]), :m, Int[], Int[])
+    rs = initial_state(vm, Dict{Symbol,Int64}())
+    rs.current.status = :halted   # manually halt
+    pc_before = rs.current.pc
+    run!(rs, vm)  # should not change anything
+    @test rs.current.pc == pc_before
+    @test is_halted(rs)
+end

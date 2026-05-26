@@ -209,8 +209,16 @@ include("lower_vm.jl")
 # yet — that arrives at M4, AFTER forward, per the spike Q3 ordering
 # lesson documented in this function's docstring. Exported alongside
 # `initial_state` / `is_halted` / `result`.
+#
+# M3.4 — `run!(s, prog; max_steps=10_000)` loop driver (`bennettvm-fbh`).
+# The canonical forward driver: a while-loop calling `step!` until
+# `is_halted(s)`, with a Rule-1 max-steps guard that errors descriptively
+# (NOT silently returns) on divergence. PRD v4 §3.16 makes the loud
+# raise binding; the RState is left mid-run on guard fire so a future
+# M4 `unrun!` can roll it back. Exported alongside the rest of the M3
+# surface.
 include("interpreter/Interpreter.jl")
 
-export VMProgram, lower_vm, n_instructions, initial_state, is_halted, result, step!
+export VMProgram, lower_vm, n_instructions, initial_state, is_halted, result, step!, run!
 
 end # module BennettVM

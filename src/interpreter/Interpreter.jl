@@ -552,3 +552,133 @@ function step!(s::RState, prog::VMProgram)::RState
 
     return s
 end
+
+# ============================================================================
+# M3.4 — `run!` loop with max-steps guard (bd `bennettvm-fbh`).
+#
+# `run!(s::RState, prog::VMProgram; max_steps=10_000)::RState` is the
+# canonical forward driver: a simple loop that calls `step!` until
+# `is_halted(s)` reports the entry-subroutine `EndInstruction` has fired,
+# OR until `max_steps` iterations have elapsed — whichever comes first.
+# On the first condition the RState is returned (mutated in place) with
+# `status === :halted`; on the second condition the loop raises an
+# `ErrorException` with the step count, the current pc, and the current
+# status embedded in the message (Rule 1 / PRD v4 §3.16).
+#
+# ## Why this is its own function rather than inlined at every site
+#
+# Every caller of the interpreter — Phase-2 tests, the M5 Handoff-A
+# bridge, the M9 pebble-scheduler post-pass, the M11 cross-target
+# semantics theorem's witness driver — wants exactly the same "loop
+# step! to halt with a divergence guard" shape. Centralising it here
+# means one definition for the guard semantics, one error message
+# template, one place to evolve the loop when (e.g.) M4 adds the
+# history-bearing variant or when M9 needs an interrupt-checkpoint
+# variant. Inlining the loop at every site would scatter the Rule-1
+# discipline across the codebase and make a future generalisation an
+# audit nightmare.
+#
+# ## Why the max-steps guard is binding
+#
+# PRD v4 §3.16 forbids silent partial returns. Phase-2 programs can
+# diverge for principled reasons (SC9 Case D `collatz_steps` is the
+# motivating example — termination is proved by Collatz conjecture for
+# known inputs, but no static bound exists). Without a guard, a
+# runaway program loops forever; with a silent return, the caller
+# cannot distinguish "program halted normally" from "program ran out
+# of patience mid-execution". Both modes are bugs the spike Q3 area
+# retrospective flagged as load-bearing — Phase 2 must reject them at
+# the boundary.
+#
+# The guard's *value* (10_000 default) is conservative for the four
+# SC9 motivating cases of PRD v4 §3.6.2: a Case-A `fdict` walk over a
+# 256-entry table is ~5_000 dispatches, Case B / C / D need a higher
+# bound passed explicitly by the caller. The default is "loud enough
+# to catch hello-world infinite loops, quiet enough that small tests
+# don't have to think about it"; callers that know their program
+# diverges should pass a higher bound or a sentinel like `typemax(Int)`
+# (which still triggers a *finite* check at integer overflow time, so
+# remains Rule-1-compliant — Julia's `>=` on `typemax(Int)` is defined,
+# not UB).
+#
+# ## Why the RState is left mid-run on guard fire (not reset)
+#
+# The error message says so explicitly: "the RState is left mid-run
+# for inspection / unrun!". This is the discipline that lets M4's
+# history-bearing `unrun!` (when it lands) recover the pre-guard state
+# by rolling back the partial history. Resetting the RState in the
+# guard error handler would destroy that recovery path; raising while
+# leaving state intact preserves it.
+#
+# ## Why the loop terminator is `is_halted` (not pc-past-end)
+#
+# The same reasoning as M3.3's EndInstruction halt detection (see the
+# `step!` docstring §"Halt is detected on EndInstruction, not on
+# pc-past-end"). A future multi-subroutine program may have intermediate
+# `EndInstruction`s at pc values NOT past the end of the flat stream;
+# the marker-based `is_halted` predicate handles that case correctly
+# where a pc-bounds check would not.
+#
+# Ref: bennettvm_prd.md (PRD v4) §3.16 — max-steps guard must be
+#      descriptive and must NOT silently return.
+# Ref: spike/RETROSPECTIVE.md Q3 — silent partial-return failure mode.
+# Ref: CLAUDE.md Rule 1 (fail loud); Rule 4 (every test asserts a
+#      known-correct value, not just "didn't throw").
+
+"""
+    run!(s::RState, prog::VMProgram; max_steps::Int = 10_000) -> RState
+
+Repeatedly `step!` until `is_halted(s)`, or until `max_steps`
+steps have been taken — whichever first. Errors descriptively if
+the max-steps guard fires (Rule 1; PRD v4 §3.16). The RState is
+mutated in place; the same RState is returned for chaining.
+
+The max-steps guard exists because Phase-2 programs may diverge:
+SC9 Case D (`collatz_steps`) terminates for known inputs but not
+in general. Without a guard, a runaway program would loop forever;
+with a silent return, the caller could not distinguish "program
+ran to halt" from "program hit the guard mid-execution" — both
+bugs the spike retrospective flagged as load-bearing.
+
+On guard fire, the error message includes the step count, the
+current pc, and the current status — so a debugger can pick up
+where execution stopped, AND the RState is left in its mid-run
+state so `unrun!` (M4+) can roll it back.
+
+# Arguments
+
+  * `s` — RState; mutated in place.
+  * `prog` — the VMProgram being executed.
+  * `max_steps` — keyword; default 10_000. Pick higher for unbounded-
+    loop programs like `collatz_steps(::Int8)`.
+
+# Returns
+
+`s` (the same mutated RState).
+
+# Errors
+
+`ErrorException` if `step!` doesn't reach `:halted` within `max_steps`
+iterations.
+
+# Ref
+
+  * PRD v4 §3.16 — descriptive error on max-steps exceed; no silent
+    partial returns.
+  * `src/interpreter/Interpreter.jl` M3.3 — `step!`, `is_halted`.
+  * `spike/RETROSPECTIVE.md` Q3 — silent-partial-return failure mode.
+  * CLAUDE.md Rule 1 (fail loud); Rule 11 (literate docstring).
+"""
+function run!(s::RState, prog::VMProgram; max_steps::Int = 10_000)
+    n = 0
+    while !is_halted(s)
+        n >= max_steps && error(
+            "run!: max_steps=$max_steps exceeded ",
+            "(pc=$(s.current.pc), status=$(s.current.status)). ",
+            "The RState is left mid-run for inspection / unrun!. ",
+            "Increase max_steps or check for non-termination.")
+        step!(s, prog)
+        n += 1
+    end
+    return s
+end
