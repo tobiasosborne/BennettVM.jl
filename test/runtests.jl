@@ -79,4 +79,14 @@ using BennettVM
     # (`bennettvm-bii`, seeded random program generator), and M8.5
     # (`bennettvm-tnp`, 100-random-programs property test).
     include("test_per_step_inverse.jl")
+    # M8.3 — mutation-proof harness for per-instruction inverse
+    # (`bennettvm-2kl`). Sits AFTER test_per_step_inverse.jl because
+    # the harness depends on the `per_step_inverse_check` scaffold
+    # exposed by M8.2 for its non-injective L2 cycles
+    # (ArithmeticAssignment, MemoryAssignment). The three injective
+    # kinds (SwapInstruction, MemoryInterchange, MemorySwap) use a
+    # direct forward+inverse round-trip (the M6.3 pattern) because
+    # the M7.6 L1 short-circuit makes `inverse()` unreachable for
+    # them via `unstep!`'s L2 fast-path.
+    include("test_mutation_proof.jl")
 end
