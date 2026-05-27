@@ -155,19 +155,19 @@
 #     §3.9 (`run!` / `unrun!` signatures), §3.13 (round-trip
 #     invariant).
 #   * `docs/impl-plan/phase2-impl-plan.md` M4.5 (lines 224-226).
-#   * `test/test_forward_interpreter.jl` — `build_countdown_vm`
-#     factory consumed here.
-#   * `test/reference/countdown.jl` — `countdown_ref` golden master.
+#   * `test/reference/countdown.jl` — `countdown_program` factory
+#     AND `countdown_ref` golden master (M8.1, bd `bennettvm-do7`).
 #   * `test/test_unstep.jl`, `test/test_unrun.jl` — per-bead M4.3 /
 #     M4.4 tests this file builds on.
 
 using Test
 using BennettVM
 
-# `build_countdown_vm` and `countdown_ref` are defined as top-level
-# functions in `test/test_forward_interpreter.jl`, which `runtests.jl`
-# includes BEFORE this file (per the order in runtests.jl). They're
-# therefore in scope here without re-including.
+# `countdown_program` and `countdown_ref` live in
+# `test/reference/countdown.jl` (M8.1 — bd `bennettvm-do7`). Include
+# directly so this file stands alone (no transitive include-order
+# dependency on runtests.jl).
+include(joinpath(@__DIR__, "reference", "countdown.jl"))
 
 # Hand-built single-block 3-instruction arithmetic program for test 8.
 # A 1-block program with NO cross-block dispatch — exercises the L3
@@ -208,7 +208,7 @@ end
     # path (e.g., one that accidentally mutates s.current.locals via
     # CheckpointEntry's snapshot field due to a dropped deepcopy)
     # could corrupt the forward computation silently.
-    vm = build_countdown_vm(5)
+    vm = countdown_program(5)
     rs = initial_state(vm, Dict(:n0 => Int64(5), :steps0 => Int64(0)))
     run!(rs, vm; checkpoint_interval=4)
 
@@ -225,7 +225,7 @@ end
     # Pin all six instead of just `rs.current == initial`: any single
     # one of them passing while another fails is a Rule-1 bug that a
     # one-line check would silently hide.
-    vm = build_countdown_vm(5)
+    vm = countdown_program(5)
     rs = initial_state(vm, Dict(:n0 => Int64(5), :steps0 => Int64(0)))
     initial_current = deepcopy(rs.current)
     initial_rstate_initial = deepcopy(rs.initial)
@@ -263,7 +263,7 @@ end
     # intermediate state — the load-bearing capture is then keyed by
     # step_count, which is the same index unstep! reduces by 1 on each
     # call. Total expected: 18 snapshots, indexed 1..18.
-    vm = build_countdown_vm(5)
+    vm = countdown_program(5)
     rs = initial_state(vm, Dict(:n0 => Int64(5), :steps0 => Int64(0)))
 
     forward_snapshots = BennettVM.IState[]
@@ -301,7 +301,7 @@ end
     # This is the spike Q3 lesson applied to the L3 layer:
     # `spike/test/test_roundtrip.jl` lines 80-135 + RETROSPECTIVE Q3
     # §"Unexpectedly hard".
-    vm = build_countdown_vm(5)
+    vm = countdown_program(5)
     rs = initial_state(vm, Dict(:n0 => Int64(5), :steps0 => Int64(0)))
     initial_current = deepcopy(rs.current)
 
@@ -364,7 +364,7 @@ end
     #           s.initial. The most adversarial K for the L3
     #           fallback path.
     for K in (1, 2, 4, 7, 16, 64, typemax(Int))
-        vm = build_countdown_vm(5)
+        vm = countdown_program(5)
         rs = initial_state(vm, Dict(:n0 => Int64(5), :steps0 => Int64(0)))
         initial_current = deepcopy(rs.current)
 
@@ -389,7 +389,7 @@ end
     # pins the FULL structural identity at the type level — any
     # mutation in any of the four fields that fails to be undone
     # by unrun! turns this RED.
-    vm = build_countdown_vm(5)
+    vm = countdown_program(5)
     rs0 = initial_state(vm, Dict(:n0 => Int64(5), :steps0 => Int64(0)))
     rs = deepcopy(rs0)
 
@@ -411,7 +411,7 @@ end
     # halt result. Any silent state corruption from unrun! that
     # didn't manifest in test 6's == check (e.g., a corruption in
     # an internal flag that == doesn't probe) would surface here.
-    vm = build_countdown_vm(5)
+    vm = countdown_program(5)
     rs = initial_state(vm, Dict(:n0 => Int64(5), :steps0 => Int64(0)))
 
     run!(rs, vm; checkpoint_interval=4)
@@ -513,7 +513,7 @@ end
     # length) — a regression that produces 3 entries at wrong steps
     # would fail the entries-by-step check but not the length-only
     # check.
-    vm = build_countdown_vm(5)
+    vm = countdown_program(5)
     rs = initial_state(vm, Dict(:n0 => Int64(5), :steps0 => Int64(0)))
 
     run!(rs, vm; checkpoint_interval=4)
@@ -537,7 +537,7 @@ end
     # reached halt (e.g., a hypothetical M4.4 regression that checks
     # `is_halted(s)` before entering the unstep! loop and silently
     # no-ops on non-halted states).
-    vm = build_countdown_vm(5)
+    vm = countdown_program(5)
     rs = initial_state(vm, Dict(:n0 => Int64(5), :steps0 => Int64(0)))
     initial_current = deepcopy(rs.current)
 

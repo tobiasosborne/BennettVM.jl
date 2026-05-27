@@ -112,11 +112,11 @@
 using Test
 using BennettVM
 
-# The M3.8 hand-built `build_countdown_vm` factory is defined as a top-
-# level function in `test_forward_interpreter.jl`, which `runtests.jl`
-# includes BEFORE this file. The `_u_small_arith_program` fixture from
-# `test_unstep.jl` is similarly in scope (top-level Julia function
-# defs persist across includes within the same testset block).
+# The M3.8 hand-built `countdown_program` factory and its
+# `countdown_ref` oracle live in `test/reference/countdown.jl`
+# (M8.1 — bd `bennettvm-do7`). Include directly so this file stands
+# alone (no transitive include-order dependency on runtests.jl).
+include(joinpath(@__DIR__, "reference", "countdown.jl"))
 
 function _ur_small_arith_program()
     # Local re-declaration (Rule 4: per-file fixture autonomy). The
@@ -143,7 +143,7 @@ end
     # so the loop body never runs. The post-condition assertion
     # (isempty(history)) is trivially satisfied. unrun! must return
     # the RState unchanged.
-    vm = build_countdown_vm(2)
+    vm = countdown_program(2)
     rs = initial_state(vm, Dict(:n0 => Int64(2), :steps0 => Int64(0)))
     @test rs.step_count == 0
     @test isempty(rs.history)
@@ -165,7 +165,7 @@ end
     # loop predicate runs the body exactly once → one unstep! call →
     # step_count goes 1 → 0, loop exits. Post-condition: history
     # empty (was empty all along). current == initial.
-    vm = build_countdown_vm(2)
+    vm = countdown_program(2)
     rs = initial_state(vm, Dict(:n0 => Int64(2), :steps0 => Int64(0)))
     captured_initial = deepcopy(rs.current)
 
@@ -194,7 +194,7 @@ end
     #
     # unrun! must walk all 12 steps back, draining history along the
     # way, and land at the captured initial state.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     captured_initial = deepcopy(rs.current)
 
@@ -217,7 +217,7 @@ end
     # which restores a pre-halt snapshot (the step-8 state, with
     # status :running). After the full loop, status MUST remain
     # :running because s.initial.status === :running.
-    vm = build_countdown_vm(2)
+    vm = countdown_program(2)
     rs = initial_state(vm, Dict(:n0 => Int64(2), :steps0 => Int64(0)))
     run!(rs, vm; checkpoint_interval=4)
     @test is_halted(rs)
@@ -242,7 +242,7 @@ end
     # 10 < 12 → still :running (no halt yet); we partial-reverse a
     # partial-forward run, which is the most stressful exercise of
     # multi-checkpoint truncation.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     captured_initial = deepcopy(rs.current)
 
@@ -270,7 +270,7 @@ end
     # n having been incremented twice). The error message must name
     # "max_unsteps" and "exceeded". The RState is left mid-reverse:
     # step_count > 0 (NOT rolled back).
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     for _ in 1:10
         step!(rs, vm; checkpoint_interval=2)
@@ -384,7 +384,7 @@ end
     # All three must hold. M4.5 will rest its round-trip property on
     # all three; M4.4 must pin all three from the inside-out
     # perspective of unrun!'s exit guarantees.
-    vm = build_countdown_vm(2)
+    vm = countdown_program(2)
     rs = initial_state(vm, Dict(:n0 => Int64(2), :steps0 => Int64(0)))
     captured_initial = deepcopy(rs.current)
 
@@ -407,7 +407,7 @@ end
     # in place. Returning the same object means callers can chain
     # `unrun!(run!(initial_state(...), prog), prog)` exactly the
     # way the spike PRD v3 §5.4 and PRD v4 §3.9 specify.
-    vm = build_countdown_vm(1)
+    vm = countdown_program(1)
     rs = initial_state(vm, Dict(:n0 => Int64(1), :steps0 => Int64(0)))
     run!(rs, vm; checkpoint_interval=2)
     returned = unrun!(rs, vm)

@@ -85,14 +85,16 @@
 using Test
 using BennettVM
 
-# The M3.8 hand-built `build_countdown_vm` factory is exactly the
+# The M3.8 hand-built `countdown_program` factory is exactly the
 # right shape for these tests (multi-block program with predictable
-# step count per N). It is defined as a top-level function in
-# `test_forward_interpreter.jl`, which `runtests.jl` includes BEFORE
-# this file — so the symbol is already in scope. We deliberately do
-# NOT `include(test_forward_interpreter.jl)` here: that would re-run
-# the M3.8 testsets twice in the same suite, inflating the pass
-# count without adding coverage.
+# step count per N). It lives in `test/reference/countdown.jl`
+# (M8.1 — bd `bennettvm-do7`), co-located with the `countdown_ref`
+# oracle. We include it directly so this file stands alone — no
+# transitive include-order dependency on runtests.jl. (Including
+# `test_forward_interpreter.jl` would re-run its M3.8 @testsets
+# twice; the reference file is bare-include-safe — only top-level
+# `function` defs and a golden-master `@assert` self-check.)
+include(joinpath(@__DIR__, "reference", "countdown.jl"))
 
 # ---------------------------------------------------------------------
 # Small fixture helpers.
@@ -177,9 +179,9 @@ end
 end
 
 @testset "step_count increments on each successful step (M4.2)" begin
-    # Use the M3.8 countdown(3) fixture (defined in
-    # test_forward_interpreter.jl, included from runtests.jl above).
-    # Total successful forward step count for countdown(3) is 12.
+    # Use the M3.8 countdown(3) fixture (`countdown_program(3)` from
+    # `test/reference/countdown.jl`, included above). Total successful
+    # forward step count for countdown(3) is 12.
     #
     # Layout: b_start (Begin + UncondExit = 2 dispatched steps;
     # the UncondExit is a cross-block dispatch landing PAST the
@@ -191,7 +193,7 @@ end
     # = 2 + 3 + 3 + 3 + 1 = 12.
     #
     # The general formula for countdown(N >= 1) is 3N + 3.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
 
     # Step the program one instruction at a time with a huge K so no
@@ -273,7 +275,7 @@ end
     # Post-M6.2 push set: {4, 8, 12} ∩ non-injective = {4}.
     # Step 8 is UncondExit (injective; no push). Step 12 is End
     # (injective; no push). Only step 4 pushes.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     run!(rs, vm; checkpoint_interval=4)
     @test is_halted(rs)
@@ -403,7 +405,7 @@ end
     # the dispatch) + 2 Arith + UncondExit at b_step1 (3; b_done's
     # UncondEntry is skipped by the dispatch) + End at b_done (1).
     # With K=100, no push fires.
-    vm = build_countdown_vm(1)
+    vm = countdown_program(1)
     rs = initial_state(vm, Dict(:n0 => Int64(1), :steps0 => Int64(0)))
     run!(rs, vm; checkpoint_interval=100)
     @test is_halted(rs)
@@ -462,7 +464,7 @@ end
     # Tight loop of step!() calls without the kwarg. For < 64 steps,
     # no push fires. This pins that the default K is what the brief
     # says (64), and protects against a silent default change.
-    vm = build_countdown_vm(3)   # 12 successful steps total (3N + 3)
+    vm = countdown_program(3)   # 12 successful steps total (3N + 3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     # Step 11 times — still under K=64, so no push.
     for _ in 1:11
@@ -484,7 +486,7 @@ end
     # be content-equal entry-for-entry — pinning that run! forwards
     # the kwarg verbatim, neither dropping it nor substituting the
     # default.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
 
     rs_manual = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     while !is_halted(rs_manual)

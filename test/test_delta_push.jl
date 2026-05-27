@@ -93,15 +93,16 @@
 using Test
 using BennettVM
 
+include(joinpath(@__DIR__, "reference", "countdown.jl"))
+
 # ---------------------------------------------------------------------
 # Local fixtures.
 #
 # `_arith_add_program` is a single-non-inj-step program; the simplest
-# possible M7.6 push-site exercise. `build_countdown_vm` (from
-# test_forward_interpreter.jl) is the multi-block fixture that
-# exercises L2 across cross-block dispatch boundaries — by the time
-# this file is included in runtests.jl, `build_countdown_vm` is
-# already a top-level definition.
+# possible M7.6 push-site exercise. `countdown_program` (from
+# `test/reference/countdown.jl`, M8.1 / bd `bennettvm-do7`) is the
+# multi-block fixture that exercises L2 across cross-block dispatch
+# boundaries; included directly below so this file stands alone.
 # ---------------------------------------------------------------------
 
 # Single-block program with one non-injective body step:
@@ -183,7 +184,7 @@ end
 # (no DeltaEntries, would fall through to L3 with default K=64 and
 # 16 steps → still 0 entries, but length(history) == 0 instead of 6).
 @testset "M7.6 L2 push on every non-injective step (countdown(3))" begin
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
 
     set = BennettVM.compute_must_cache(vm)
@@ -241,7 +242,7 @@ end
 # test goes RED because L3 would fire at non-inj K-multiple steps,
 # pushing CheckpointEntries instead of (or alongside) DeltaEntries.
 @testset "M7.6 L2 + L3 mutual exclusivity (countdown(5) at K=4)" begin
-    vm = build_countdown_vm(5)
+    vm = countdown_program(5)
     rs = initial_state(vm, Dict(:n0 => Int64(5), :steps0 => Int64(0)))
 
     set = BennettVM.compute_must_cache(vm)
@@ -275,7 +276,7 @@ end
 # `isempty(history)` post-condition (which would raise an error
 # inside `unrun!` before this testset's final assert reached).
 @testset "M7.6 L2 suppressed in replay (full unrun! roundtrip)" begin
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     initial_current = deepcopy(rs.current)
 
@@ -340,7 +341,7 @@ end
     # countdown(3) at K=2 with NO must_cache_set kwarg passed. Per
     # M7.6's "backward compatibility" contract, this MUST reproduce
     # the pre-M7.6 M4.2/M6.2 behaviour bit-for-bit.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
 
     # No must_cache_set kwarg → default empty Set → L2 never fires.

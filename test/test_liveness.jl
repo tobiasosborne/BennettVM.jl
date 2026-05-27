@@ -36,9 +36,10 @@
 #   6. **CallInstruction.** M6.1's type-level fallback is `false`;
 #      the stub includes the call site in the set.
 #   7. **Multi-block countdown(3).** The canonical fixture
-#      `build_countdown_vm(3)` from `test/test_forward_interpreter.jl`.
-#      Layout per the `_decrement_block` helper: `:b_start` has empty
-#      body, `:b_step1`..`:b_step3` each have two non-injective
+#      `countdown_program(3)` from `test/reference/countdown.jl`
+#      (M8.1 — bd `bennettvm-do7`). Layout per the file-private
+#      `_decrement_block` helper there: `:b_start` has empty body,
+#      `:b_step1`..`:b_step3` each have two non-injective
 #      ArithmeticAssignments (`:sub` then `:add`), `:b_done` has
 #      empty body. Expected set:
 #        {(:b_step1, 1), (:b_step1, 2),
@@ -85,13 +86,14 @@
 using Test
 using BennettVM
 
-# `build_countdown_vm` and `countdown_ref` are defined as top-level
-# functions by `test/test_forward_interpreter.jl` (the M3.8 capstone),
-# which `runtests.jl` includes BEFORE this file. Re-including it here
-# would double-run that file's testsets; relying on the
-# already-loaded definitions follows the same convention as
-# `test_unrun.jl` and `test_roundtrip.jl`, which reuse
-# `build_countdown_vm` without re-include.
+# `countdown_program` and `countdown_ref` live in
+# `test/reference/countdown.jl` (M8.1 — bd `bennettvm-do7`). Include
+# the reference file directly so this test stands alone (no
+# transitive include-order dependency on `runtests.jl`); the
+# file-level `@assert` in `reference/countdown.jl` re-fires on every
+# include but that is intentional — it's the golden-master self-check
+# (PRD v4 §3.14).
+include(joinpath(@__DIR__, "reference", "countdown.jl"))
 
 # ---------------------------------------------------------------------
 # 1. Empty program (M0.2 digest-stub shape).
@@ -219,7 +221,7 @@ end
 # `block.exit` in the iterator (instead of `block.instructions`) would
 # add control-flow markers to the set and turn this RED.
 @testset "M7.5 — countdown(3) must-cache set (6 entries)" begin
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     set = BennettVM.compute_must_cache(vm)
     expected = Set([
         (:b_step1, 1), (:b_step1, 2),
@@ -242,7 +244,7 @@ end
 # `!((block_label, instr_idx) in set)` (sign flip) turns the present-
 # entry asserts RED and the absent-entry asserts RED simultaneously.
 @testset "M7.5 — must_cache(set, label, idx) query predicate" begin
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     set = BennettVM.compute_must_cache(vm)
     # Present: each step block's two body slots.
     @test BennettVM.must_cache(set, :b_step1, 1)
@@ -265,7 +267,7 @@ end
 # Symbol, Int}}` return-type annotation AND replacing the initialiser
 # with `Set()` (untyped) would produce `Set{Any}`, turning this RED.
 @testset "M7.5 — return type is Set{Tuple{Symbol, Int}}" begin
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     set = BennettVM.compute_must_cache(vm)
     @test set isa Set{Tuple{Symbol, Int}}
     @test eltype(set) === Tuple{Symbol, Int}

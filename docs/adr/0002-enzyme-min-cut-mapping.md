@@ -289,12 +289,14 @@ co-located with `forward` and `inverse` for the same `T`.
 
 ## § Worked example: `countdown(3)`
 
-Using the canonical fixture `build_countdown_vm(3)` from
-`test/test_forward_interpreter.jl:122-163`. The countdown(3) VM has 5
-blocks (b_start, b_step1, b_step2, b_step3, b_done) with a total of
-`2 + 3*4 + 2 = 16` flat-stream instructions per the regression assertion
-at `test/test_forward_interpreter.jl:206-210` (countdown(7) layout —
-the same formula).
+Using the canonical fixture `countdown_program(3)` from
+`test/reference/countdown.jl` (M8.1, bd `bennettvm-do7`; previously
+called `build_countdown_vm` in `test/test_forward_interpreter.jl`
+prior to the M8.1 hoist). The countdown(3) VM has 5 blocks (b_start,
+b_step1, b_step2, b_step3, b_done) with a total of `2 + 3*4 + 2 = 16`
+flat-stream instructions per the regression assertion in
+`test/test_forward_interpreter.jl`'s `countdown(7)` testset (same
+formula).
 
 ### Flat instruction stream
 

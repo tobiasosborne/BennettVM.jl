@@ -37,10 +37,11 @@ using BennettVM
     include("test_zero_history_roundtrip.jl")
     include("test_interpreter.jl")
     include("test_forward_interpreter.jl")
-    # M7.5 — stub liveness / min-cut analysis (`bennettvm-46p`).
-    # Sits AFTER `test_forward_interpreter.jl` so `build_countdown_vm`
-    # is already a top-level definition when the multi-block testset
-    # runs. Pure analysis tests — no `step!` integration (that's M7.6).
+    # M7.5 — stub liveness / min-cut analysis (`bennettvm-46p`). Pure
+    # analysis tests — no `step!` integration (that's M7.6). Pulls in
+    # the multi-block `countdown_program` fixture via its own
+    # `include("reference/countdown.jl")` (M8.1 — no transitive
+    # include-order dependency).
     include("test_liveness.jl")
     include("test_checkpoint_entry.jl")
     # M7.2 — DeltaEntry{T} unit tests (`bennettvm-c4m`). L2 history
@@ -50,16 +51,13 @@ using BennettVM
     include("test_checkpoint_push.jl")
     include("test_unstep.jl")
     # M7.4 — unstep! L2 DeltaEntry fast-path tests (`bennettvm-bk5`).
-    # Sits after test_unstep.jl so the M4.3 baseline tests run first;
-    # the M7.4 tests build on `build_countdown_vm` (defined in
-    # test_forward_interpreter.jl) and the M7.2/M7.3 fixtures.
+    # Sits after test_unstep.jl so the M4.3 baseline tests run first.
     include("test_unstep_delta.jl")
     # M7.6 — L2 delta push integration into `step!` (`bennettvm-7e7`).
     # Sits after `test_unstep_delta.jl` because the M7.6 round-trip
     # test (`L2 suppressed in replay`) exercises the M7.4 unstep!
     # fast-path; that fast-path's baseline tests run first. Also
-    # depends on `build_countdown_vm` from test_forward_interpreter.jl
-    # and on `compute_must_cache` from test_liveness.jl's M7.5
+    # depends on `compute_must_cache` from test_liveness.jl's M7.5
     # subject.
     include("test_delta_push.jl")
     # M7.7 — milestone capstone (`bennettvm-94m`). Integration test
@@ -68,9 +66,7 @@ using BennettVM
     # history correctness, sub-linear history scaling (PRD v4 §Part VI
     # SC4), and composition with the M6 L1 gate. Sits after
     # `test_delta_push.jl` because it builds on the same M7.6 push-site
-    # contract; uses `build_countdown_vm` from test_forward_interpreter.jl
-    # and `countdown_ref` from test/reference/countdown.jl (both already
-    # top-level by this point).
+    # contract.
     include("test_delta_roundtrip.jl")
     include("test_unrun.jl")
     include("test_roundtrip.jl")

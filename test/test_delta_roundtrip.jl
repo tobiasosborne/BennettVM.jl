@@ -157,15 +157,16 @@
 #   * `test/test_zero_history_roundtrip.jl` (M6.4) — the milestone
 #     capstone structure M7.7 mirrors (load-bearing invariants,
 #     per-step inverse, mutation matrix).
-#   * `test/test_forward_interpreter.jl` — defines `build_countdown_vm`
-#     at top level; this file consumes that fixture without re-include.
-#   * `test/reference/countdown.jl` — the `countdown_ref` golden master
-#     this file's round-trip assertion compares against (Rule 4).
+#   * `test/reference/countdown.jl` — defines `countdown_program` and
+#     `countdown_ref` (M8.1, bd `bennettvm-do7`); this file includes
+#     that reference module and uses both directly.
 #   * CLAUDE.md Rule 4 (every test pins a known-correct value), Rule 5
 #     (mutation-proof), Rule 11 (literate test docstrings).
 
 using Test
 using BennettVM
+
+include(joinpath(@__DIR__, "reference", "countdown.jl"))
 
 # ---------------------------------------------------------------------
 # Fixtures
@@ -350,7 +351,7 @@ end
     # Also mutation (v) (unstep!'s L2 fast-path dispatch broken) would
     # surface here on the per-step assertion.
 
-    vm = build_countdown_vm(5)
+    vm = countdown_program(5)
     rs = initial_state(vm, Dict(:n0 => Int64(5), :steps0 => Int64(0)))
     initial_current = deepcopy(rs.current)
 
@@ -404,7 +405,7 @@ end
     # rs.initial by step 0 would pass the aggregate test but fail per-
     # step. Small N=3 keeps test runtime bounded.
 
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     initial_current = deepcopy(rs.current)
 

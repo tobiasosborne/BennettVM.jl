@@ -107,15 +107,15 @@
 using Test
 using BennettVM
 
-# The M3.8 hand-built `build_countdown_vm` factory is defined as a top-
-# level function in `test_forward_interpreter.jl`, which `runtests.jl`
-# includes BEFORE this file. The `_small_arith_program` and
-# `_empty_main_program` fixtures from `test_checkpoint_push.jl` are
-# similarly in scope.
+# The M3.8 hand-built `countdown_program` factory and its
+# `countdown_ref` oracle live in `test/reference/countdown.jl`
+# (M8.1 — bd `bennettvm-do7`). Include directly so this file stands
+# alone (no transitive include-order dependency on runtests.jl).
+include(joinpath(@__DIR__, "reference", "countdown.jl"))
 
-# Re-declare these tiny fixtures (Julia symbol re-binding in
-# top-level test scope is permitted; they're identical to the
-# `test_checkpoint_push.jl` versions). Keeping a local copy means a
+# Re-declare the small fixture (Julia symbol re-binding in top-level
+# test scope is permitted; it's identical to the
+# `test_checkpoint_push.jl` version). Keeping a local copy means a
 # future reorder of include() lines in runtests.jl doesn't silently
 # decouple this file from its fixture dependencies.
 
@@ -138,7 +138,7 @@ end
     # deepcopy(current)`. Pinning the four-tuple `pc / locals / status /
     # ==-to-current-at-construction` is the bottom-of-stack guarantee
     # every downstream M4.3 test (and M4.4 / M4.5) relies on.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
 
     # Fields are populated.
@@ -239,7 +239,7 @@ end
     # step 1 (1 % 64 != 0). unstep! → target=0 → no checkpoint at <= 0
     # → fall back to s.initial → restore + replay 0 steps. The result
     # MUST equal the freshly-constructed initial state.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     expected_initial = deepcopy(rs.current)  # snapshot for comparison
     @test isempty(rs.history)
@@ -262,7 +262,7 @@ end
     # unstep! → target=3 → no checkpoint at <= 3 (the only entry is
     # step 4 > 3) → fall back to s.initial → restore + replay 3 steps.
     # Result MUST match a fresh run stepped 3 times.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
 
     # Construct the expected step-3 state via a separate fresh run.
@@ -293,7 +293,7 @@ end
     # (3N + 3 = 9 for N=2). Run to halt; unstep! once. Status must
     # flip back to :running, step_count -> 8, history truncation
     # correct.
-    vm = build_countdown_vm(2)
+    vm = countdown_program(2)
     rs = initial_state(vm, Dict(:n0 => Int64(2), :steps0 => Int64(0)))
     run!(rs, vm; checkpoint_interval=4)
     @test is_halted(rs)
@@ -331,7 +331,7 @@ end
     # restore checkpoint, replay 0 steps.
     # Truncation rule: pop while step > target. step-4 is NOT > 4, so
     # it is retained.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     for _ in 1:5
         step!(rs, vm; checkpoint_interval=4)
@@ -361,7 +361,7 @@ end
     # unstep! → target=3 → no checkpoint at <= 3 (the only entry is
     # step 4 > 3) → fall through to s.initial → replay 3 forward steps.
     # Truncation: step-4 entry is > 3, so it gets popped.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     for _ in 1:4
         step!(rs, vm; checkpoint_interval=4)
@@ -394,7 +394,7 @@ end
     # Loop unstep! until step_count == 0 → full backward sweep.
     # M4.4's `unrun!` is essentially this loop; M4.3 must already
     # support it as a primitive sequence.
-    vm = build_countdown_vm(2)
+    vm = countdown_program(2)
     rs = initial_state(vm, Dict(:n0 => Int64(2), :steps0 => Int64(0)))
     expected_initial = deepcopy(rs.current)
     run!(rs, vm; checkpoint_interval=2)
@@ -426,7 +426,7 @@ end
     # Restore step-4, replay 1 step. Truncation: pop entries with step
     # > 5. step-6 > 5 → popped. step-4 not > 5 → retained.
     # Expected history after unstep!: [step-4].
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     for _ in 1:6
         step!(rs, vm; checkpoint_interval=2)
@@ -451,7 +451,7 @@ end
     # Without the deepcopy at restore (step 4 of the algorithm),
     # s.current would alias the snapshot and the mutation would
     # corrupt the checkpoint for future unstep!s.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     for _ in 1:5
         step!(rs, vm; checkpoint_interval=4)
@@ -520,7 +520,7 @@ end
     # the load-bearing M4.3 invariant; M6.2 doesn't change it).
     # After unstep!, history length must be exactly 1 (step-6 popped;
     # step-4 retained; no new push from replay).
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     for _ in 1:6
         step!(rs, vm; checkpoint_interval=2)
@@ -541,7 +541,7 @@ end
     # is small enough to not hit halt, step N times then unstep! N
     # times MUST return s to initial state. This is essentially the
     # M4.5 round-trip property test for the K-driven L3 layer.
-    vm = build_countdown_vm(3)
+    vm = countdown_program(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     expected_initial = deepcopy(rs.current)
 
