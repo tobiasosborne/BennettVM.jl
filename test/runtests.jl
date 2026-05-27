@@ -62,6 +62,16 @@ using BennettVM
     # and on `compute_must_cache` from test_liveness.jl's M7.5
     # subject.
     include("test_delta_push.jl")
+    # M7.7 — milestone capstone (`bennettvm-94m`). Integration test
+    # composing M7.2-M7.6 (delta entries, push site, liveness stub) with
+    # M6 (L1 trait) and M4 (L3 checkpoint replay) — proves delta-
+    # history correctness, sub-linear history scaling (PRD v4 §Part VI
+    # SC4), and composition with the M6 L1 gate. Sits after
+    # `test_delta_push.jl` because it builds on the same M7.6 push-site
+    # contract; uses `build_countdown_vm` from test_forward_interpreter.jl
+    # and `countdown_ref` from test/reference/countdown.jl (both already
+    # top-level by this point).
+    include("test_delta_roundtrip.jl")
     include("test_unrun.jl")
     include("test_roundtrip.jl")
 end
