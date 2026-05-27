@@ -89,4 +89,13 @@ using BennettVM
     # the M7.6 L1 short-circuit makes `inverse()` unreachable for
     # them via `unstep!`'s L2 fast-path.
     include("test_mutation_proof.jl")
+    # M8.4 — seeded random control-flow program generator
+    # (`bennettvm-bii`). Sits AFTER test_mutation_proof.jl because the
+    # generator's "scaffold compatibility" testset drives every shape
+    # (linear/conditional/looping) through the M8.2 scaffold
+    # (`per_step_inverse_check`) in both L3 and L2 regimes — those
+    # primitives must already be exercised. Produces (VMProgram, inputs)
+    # pairs the M8.5 (`bennettvm-tnp`) 100-program property test will
+    # consume from a single seeded MersenneTwister(0xBE171973).
+    include(joinpath("generators", "random_program.jl"))
 end
