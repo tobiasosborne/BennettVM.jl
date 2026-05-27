@@ -180,11 +180,17 @@ end
     @test rs.current == rs.initial
 end
 
-@testset "unrun! after full forward run to halt — countdown(3), K=4 (M4.4)" begin
+@testset "unrun! after full forward run to halt — countdown(3), K=4 (M4.4 / M6.2)" begin
     # THE LOAD-BEARING TEST. Run countdown(3) to halt with K=4. M3.8
     # established that countdown(N) takes 3N + 3 forward steps to
-    # halt; for N=3 that is 12 steps. K=4 over 12 steps pushes at
-    # 4/8/12 → history length 3.
+    # halt; for N=3 that is 12 steps. K=4 over 12 steps would push at
+    # 4/8/12 in the M4.2-only world (pre-M6.2), but M6.2's
+    # `!is_injective(instr)` AND-clause narrows the push set to
+    # K-multiples whose instruction is non-injective. For countdown(3):
+    #   step 4: Arith :add b_step1 — NON-injective → PUSH
+    #   step 8: UncondExit b_step2 — injective → no push
+    #   step 12: End b_done        — injective → no push
+    # M6.2 → history length 1 (was 3 pre-M6.2).
     #
     # unrun! must walk all 12 steps back, draining history along the
     # way, and land at the captured initial state.
@@ -195,7 +201,8 @@ end
     run!(rs, vm; checkpoint_interval=4)
     @test is_halted(rs)
     @test rs.step_count == 12           # 3 * 3 + 3
-    @test length(rs.history) == 3       # pushes at 4, 8, 12
+    # M6.2: only step 4 pushes (Arith :add, non-injective).
+    @test length(rs.history) == 1
 
     unrun!(rs, vm)
     @test rs.step_count == 0
@@ -223,12 +230,18 @@ end
     @test rs.current == rs.initial
 end
 
-@testset "unrun! drains all 5 checkpoints — K=2 over 10 steps (M4.4)" begin
-    # K=2 over 10 forward steps → pushes at 2/4/6/8/10 → history
-    # length 5. countdown(3) totals 12 steps, so 10 < 12 means status
-    # is still :running (no halt yet); we partial-reverse a partial-
-    # forward run, which is the most stressful exercise of multi-
-    # checkpoint truncation.
+@testset "unrun! drains all surviving checkpoints — K=2 over 10 steps (M4.4 / M6.2)" begin
+    # K=2 over 10 forward steps on countdown(3). countdown(3) dispatched
+    # injectivity (M6.2):
+    #   step 2: UncondExit       — injective → no push
+    #   step 4: Arith :add b_step1 — NON-injective → PUSH
+    #   step 6: Arith :sub b_step2 — NON-injective → PUSH
+    #   step 8: UncondExit       — injective → no push
+    #   step 10: Arith :add b_step3 — NON-injective → PUSH
+    # M6.2 → 3 pushes at [4, 6, 10] (pre-M6.2 was 5 at [2,4,6,8,10]).
+    # 10 < 12 → still :running (no halt yet); we partial-reverse a
+    # partial-forward run, which is the most stressful exercise of
+    # multi-checkpoint truncation.
     vm = build_countdown_vm(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     captured_initial = deepcopy(rs.current)
@@ -237,12 +250,11 @@ end
         step!(rs, vm; checkpoint_interval=2)
     end
     @test rs.step_count == 10
-    @test length(rs.history) == 5
-    @test rs.history[1].step == 2
-    @test rs.history[2].step == 4
-    @test rs.history[3].step == 6
-    @test rs.history[4].step == 8
-    @test rs.history[5].step == 10
+    # M6.2: 3 surviving pushes (non-injective K-multiples 4, 6, 10).
+    @test length(rs.history) == 3
+    @test rs.history[1].step == 4
+    @test rs.history[2].step == 6
+    @test rs.history[3].step == 10
     @test !is_halted(rs)   # still mid-run
 
     unrun!(rs, vm)

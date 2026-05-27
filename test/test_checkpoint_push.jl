@@ -110,11 +110,38 @@ end
 
 # A minimal one-block program: Begin([:n]) -> single ArithAssign -> End.
 # Total flat-stream count = 3; full forward run takes 3 steps.
+#
+# Body modop is `:xor` — INJECTIVE under M6.1's trait. Under the M6.2
+# gate, none of the three dispatched steps (Begin, Arith :xor, End)
+# triggers a checkpoint push regardless of K. This fixture is the right
+# shape for tests that probe the K-validation / increment-only / status-
+# transition paths (which do NOT depend on the push firing); tests
+# that need the push to fire at a specific step must use
+# `_small_arith_nonxor_program` below.
 function _small_arith_program()
     bb = BennettVM.BasicBlock(:m,
         BennettVM.BeginInstruction(:m, [:n]),
         BennettVM.Instruction[
             BennettVM.ArithmeticAssignment(:x, :n, :xor, :n, :xor, Int64(0)),
+        ],
+        BennettVM.EndInstruction(:m, [:x]))
+    return VMProgram([bb], BennettVM.LabelTable([bb]), :m, [64], [64])
+end
+
+# Same shape as `_small_arith_program` but the body modop is `:sub`
+# (NON-injective under M6.1). Dispatched steps:
+#   step 1: Begin              — injective; no push regardless of K.
+#   step 2: Arith :sub         — NON-injective; pushes when step_count % K == 0.
+#   step 3: End                — injective; no push regardless of K.
+# This is the right fixture for the M4.2 "push captures POST-step
+# state" and "aliasing safety" tests post-M6.2: they need a push to
+# actually fire so the captured snapshot is observable, and the only
+# step in this 3-step program that pushes is step 2.
+function _small_arith_nonxor_program()
+    bb = BennettVM.BasicBlock(:m,
+        BennettVM.BeginInstruction(:m, [:n]),
+        BennettVM.Instruction[
+            BennettVM.ArithmeticAssignment(:x, :n, :sub, Int64(1), :and, Int64(1)),
         ],
         BennettVM.EndInstruction(:m, [:x]))
     return VMProgram([bb], BennettVM.LabelTable([bb]), :m, [64], [64])
@@ -221,32 +248,46 @@ end
     @test rs.history == history_before   # unchanged
 end
 
-@testset "push fires at exactly K, 2K, 3K (M4.2)" begin
+@testset "push fires at exactly K, 2K, 3K (M4.2 / M6.2)" begin
     # countdown(3) executes 12 successful steps (= 3N + 3 for N = 3;
     # see prior testset for the dispatched-step accounting). With
-    # K=4, push must fire at step 4, 8, 12 — three entries — and NOT
-    # at steps 1, 2, 3, 5, 6, 7, 9, 10, 11. Step 12 is the final
-    # End-step that flips status to :halted; per the brief's pinned
-    # design (7), the push at step K=12 still fires AFTER halt
-    # detection (status becomes :halted, then increment+push), and
-    # the captured snapshot is the halted state.
+    # K=4, the M4.2-only push-gate fires at steps 4/8/12; M6.2's
+    # `!is_injective(instr)` AND-in narrows that set to the steps
+    # whose instruction is non-injective per M6.1. The countdown(3)
+    # dispatched-step instruction sequence is:
+    #
+    #   step  1: Begin                 (injective; control marker)
+    #   step  2: UncondExit b_start    (injective; control flow)
+    #   step  3: Arith :sub (b_step1)  (NON-injective; modop=:sub)
+    #   step  4: Arith :add (b_step1)  (NON-injective; modop=:add)
+    #   step  5: UncondExit b_step1    (injective)
+    #   step  6: Arith :sub (b_step2)  (NON-injective)
+    #   step  7: Arith :add (b_step2)  (NON-injective)
+    #   step  8: UncondExit b_step2    (injective)
+    #   step  9: Arith :sub (b_step3)  (NON-injective)
+    #   step 10: Arith :add (b_step3)  (NON-injective)
+    #   step 11: UncondExit b_step3    (injective)
+    #   step 12: End                   (injective)
+    #
+    # Pre-M6.2 expected pushes at K=4: steps {4, 8, 12} → length 3.
+    # Post-M6.2 push set: {4, 8, 12} ∩ non-injective = {4}.
+    # Step 8 is UncondExit (injective; no push). Step 12 is End
+    # (injective; no push). Only step 4 pushes.
     vm = build_countdown_vm(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     run!(rs, vm; checkpoint_interval=4)
     @test is_halted(rs)
-    @test length(rs.history) == 3
+    # M6.2: pushes only at non-injective K-multiples; only step 4 qualifies.
+    @test length(rs.history) == 1
+    # M6.2: the surviving entry is the step-4 push (Arith :add, non-injective).
     @test rs.history[1] isa BennettVM.CheckpointEntry
-    @test rs.history[2] isa BennettVM.CheckpointEntry
-    @test rs.history[3] isa BennettVM.CheckpointEntry
     @test rs.history[1].step == 4
-    @test rs.history[2].step == 8
-    @test rs.history[3].step == 12
     # Final step count is exactly the total successful-step count.
     @test rs.step_count == 12
-    # And the 3rd checkpoint's snapshot reflects the halted state
-    # (brief design point 7: halt + checkpoint interaction — the
-    # snapshot is harmless-but-halted, not a bug).
-    @test rs.history[3].snapshot.status === :halted
+    # M6.2: the step-4 snapshot is mid-run (:running), not halted —
+    # the previous "3rd checkpoint at step 12 is halted" assertion is
+    # gone because step 12's End is injective and no longer pushes.
+    @test rs.history[1].snapshot.status === :running
 end
 
 @testset "step_count=0 post-increment does NOT trigger push (D2 sentinel) (M4.2)" begin
@@ -272,60 +313,88 @@ end
     # take one successful step with K=1 (which would otherwise fire on
     # every step), and assert the push did NOT happen and that
     # step_count post-increment is exactly 0.
-    vm = _small_arith_program()
+    #
+    # M6.2 — the fixture below uses `_small_arith_nonxor_program` so
+    # the first dispatched step (Begin) is followed by a NON-injective
+    # Arith :sub. Wait — actually the first step IS Begin (injective),
+    # which under M6.2 doesn't push regardless of the `> 0` guard. So
+    # using a fixture whose FIRST step is non-injective is what makes
+    # this test continue to mutation-prove the `step_count > 0` guard.
+    # We can't construct such a fixture cheaply (every BasicBlock starts
+    # with a ControlInstruction, all of which are injective at M6.1).
+    # We therefore pre-step the fixture forward to land on a non-
+    # injective step BEFORE manufacturing the step_count=-1 state: this
+    # way the next step! call dispatches on a non-injective instruction
+    # (Arith :sub) and would push if the `> 0` guard were dropped.
+    vm = _small_arith_nonxor_program()
     base = initial_state(vm, Dict(:n => Int64(7)))
+    # Step 1: Begin (injective, no push). Now pc points at the body
+    # ArithAssign (the next dispatch will be the non-injective Arith :sub).
+    step!(base, vm; checkpoint_interval=10_000)
+    @test base.current.status === :running
     # Manufacture an RState with step_count = -1 via the 3-arg
-    # constructor (M4.2 `src/ir/RState.jl:221-223`). The history is
-    # empty and the IState is the same starting snapshot.
+    # constructor (M4.2 `src/ir/RState.jl:221-223`), preserving the
+    # post-step-1 IState so the next step! lands on Arith :sub (non-
+    # injective). The history is empty.
     rs = BennettVM.RState(base.current,
                           BennettVM.AbstractHistoryEntry[],
                           -1)
     @test rs.step_count == -1
     @test isempty(rs.history)
-    # One step with K=1. Without the `&& > 0` guard, this would push
-    # a CheckpointEntry at step 0. With the guard, no push fires.
+    # One step with K=1, dispatching the non-injective Arith :sub.
+    # Without the `&& > 0` guard, this would push a CheckpointEntry
+    # at step 0 (the post-increment step_count). With the guard, no
+    # push fires. M6.2's `!is_injective(instr)` AND-clause does NOT
+    # cover for the guard here because the dispatched instruction
+    # IS non-injective.
     step!(rs, vm; checkpoint_interval=1)
     @test rs.step_count == 0
     @test isempty(rs.history)
 end
 
-@testset "push captures POST-step state (M4.2)" begin
-    # With K=1, every step pushes. After each step, the just-pushed
-    # entry's snapshot must equal `s.current` at the moment of push
-    # — i.e., the post-step state. We check this by capturing
-    # `s.current` immediately after each `step!` call and comparing.
-    # The M4.1 `CheckpointEntry.==` override (which delegates to the
-    # M2.2 `IState.==` override) is what makes this comparison
-    # content-equality rather than identity.
-    vm = _small_arith_program()
+@testset "push captures POST-step state (M4.2 / M6.2)" begin
+    # With K=1, the M4.2 push-gate would otherwise fire on every step
+    # — but M6.2's `!is_injective(instr)` AND-clause skips the push on
+    # injective steps even at K=1. `_small_arith_nonxor_program`'s
+    # dispatched sequence is:
+    #
+    #   step 1: Begin         (injective; no push, even at K=1)
+    #   step 2: Arith :sub    (NON-injective; pushes at K=1)
+    #   step 3: End           (injective; no push)
+    #
+    # So with K=1 across the three steps, exactly one push fires
+    # (step 2's Arith :sub). The post-step-state-capture invariant is
+    # then re-exercised on that single push: the captured snapshot is
+    # the post-step IState (pc bumped past Arith, :n destroyed, :x
+    # created, status :running). The M4.1 `CheckpointEntry.==`
+    # override (which delegates to the M2.2 `IState.==` override) is
+    # what makes this content-equality rather than identity.
+    vm = _small_arith_nonxor_program()
     rs = initial_state(vm, Dict(:n => Int64(7)))
 
-    # Step 1: Begin. Post-state has pc=2 (bumped past entry), locals
-    # unchanged, status :running. The push captures THAT state.
+    # M6.2: step 1 is Begin (injective) → no push, history empty.
+    step!(rs, vm; checkpoint_interval=1)
+    @test isempty(rs.history)
+    @test rs.step_count == 1   # counter increments regardless of push gate
+
+    # M6.2: step 2 is Arith :sub (non-injective) → push at step_count=2.
     step!(rs, vm; checkpoint_interval=1)
     @test length(rs.history) == 1
-    @test rs.history[end].step == 1
+    @test rs.history[end].step == 2
     @test rs.history[end].snapshot == rs.current
     # Belt-and-braces: snapshot is a DISTINCT IState from rs.current
     # (because CheckpointEntry's constructor deep-copied). This pins
     # the M4.1 deepcopy contract end-to-end through the M4.2 call site.
     @test rs.history[end].snapshot !== rs.current
-
-    # Step 2: ArithAssign. Post-state has pc=3, :n destroyed, :x
-    # created, status :running.
-    step!(rs, vm; checkpoint_interval=1)
-    @test length(rs.history) == 2
-    @test rs.history[end].step == 2
-    @test rs.history[end].snapshot == rs.current
     @test !haskey(rs.history[end].snapshot.locals, :n)
-    @test rs.history[end].snapshot.locals[:x] == 7 ⊻ (7 ⊻ 0)
+    # :sub with op=:and / lhs=1 / rhs=1 produces (7 - (1 & 1)) = 6.
+    @test rs.history[end].snapshot.locals[:x] == Int64(6)
+    @test rs.history[end].snapshot.status === :running
 
-    # Step 3: End. Post-state has status :halted.
+    # M6.2: step 3 is End (injective) → no push; history still length 1.
     step!(rs, vm; checkpoint_interval=1)
-    @test length(rs.history) == 3
-    @test rs.history[end].step == 3
-    @test rs.history[end].snapshot == rs.current
-    @test rs.history[end].snapshot.status === :halted
+    @test length(rs.history) == 1
+    @test rs.current.status === :halted
 end
 
 @testset "K=large suppresses pushes (M4.2)" begin
@@ -427,50 +496,68 @@ end
 
     @test rs_manual.step_count == rs_auto.step_count
     @test length(rs_manual.history) == length(rs_auto.history)
-    @test length(rs_auto.history) == 3   # K=4 over 12 steps -> 3 pushes
+    # M6.2: countdown(3) at K=4 → step-4 (Arith :add, non-injective)
+    # is the only K-multiple step whose instruction is non-injective.
+    # Steps 8 and 12 are injective (UncondExit / End) so they no
+    # longer push under M6.2 → length 1 (was length 3 pre-M6.2).
+    @test length(rs_auto.history) == 1
     for i in eachindex(rs_manual.history)
         @test rs_manual.history[i] == rs_auto.history[i]
     end
 end
 
-@testset "aliasing safety re-confirmed through step! pipeline (M4.2)" begin
+@testset "aliasing safety re-confirmed through step! pipeline (M4.2 / M6.2)" begin
     # The M4.1 deep-copy contract, exercised through the M4.2 call
-    # site. With K=1, every step pushes a CheckpointEntry capturing
-    # `s.current`. After the push, mutating `s.current` (via the next
-    # step!) MUST NOT alter the captured snapshot. M4.1's
-    # test_checkpoint_entry.jl pinned this at the constructor level;
-    # this test pins it END-TO-END, catching any future M4.2 refactor
-    # that "optimises away" the deepcopy by handing a stale alias to
-    # CheckpointEntry's constructor.
-    vm = _small_arith_program()
+    # site. With K=1 on `_small_arith_nonxor_program`, exactly one
+    # push fires (step 2, Arith :sub, non-injective per M6.1); see the
+    # "push captures POST-step state" testset above for the dispatched-
+    # step enumeration. After that single push, the captured snapshot
+    # MUST be undisturbed by subsequent mutations to `s.current`.
+    # M4.1's test_checkpoint_entry.jl pinned this at the constructor
+    # level; this test pins it END-TO-END, catching any future M4.2
+    # refactor that "optimises away" the deepcopy by handing a stale
+    # alias to CheckpointEntry's constructor.
+    vm = _small_arith_nonxor_program()
     rs = initial_state(vm, Dict(:n => Int64(7)))
 
-    # Step 1: Begin. Push captures pc=2, locals={:n => 7}, :running.
+    # M6.2: step 1 is Begin (injective) → no push.
     step!(rs, vm; checkpoint_interval=1)
-    captured_after_step1 = rs.history[end]
-    @test captured_after_step1.snapshot.pc == 2
-    @test captured_after_step1.snapshot.locals[:n] == 7
-    @test captured_after_step1.snapshot.status === :running
+    @test isempty(rs.history)
 
-    # Step 2: ArithAssign destroys :n, creates :x, pc -> 3. The
-    # captured snapshot from step 1 must STILL show pc=2 and :n=>7,
-    # not the post-step-2 state.
+    # M6.2: step 2 is Arith :sub (non-injective) → push fires at step
+    # 2. Capture the entry for the aliasing checks below. The pushed
+    # snapshot is the post-step-2 IState: pc bumped past Arith (= 3),
+    # :n destroyed, :x = 7 - 1 = 6 (since `op=:and, lhs=1, rhs=1`
+    # produces 1), status :running.
     step!(rs, vm; checkpoint_interval=1)
-    @test captured_after_step1.snapshot.pc == 2
-    @test captured_after_step1.snapshot.locals[:n] == 7
-    @test !haskey(captured_after_step1.snapshot.locals, :x)
-    @test captured_after_step1.snapshot.status === :running
+    @test length(rs.history) == 1
+    captured_after_step2 = rs.history[end]
+    @test captured_after_step2.step == 2
+    @test captured_after_step2.snapshot.pc == 3
+    @test !haskey(captured_after_step2.snapshot.locals, :n)
+    @test captured_after_step2.snapshot.locals[:x] == Int64(6)
+    @test captured_after_step2.snapshot.status === :running
 
-    # Hand mutation: forcibly alter rs.current after step 2 — none of
-    # this can reach the step-1 snapshot if the deepcopy contract holds.
+    # Step 3 is End (injective; no push). The forward() of End bumps
+    # pc and step! flips status to :halted. The captured step-2
+    # snapshot must STILL show pc=3, status=:running.
+    step!(rs, vm; checkpoint_interval=1)
+    @test length(rs.history) == 1   # no new push (End is injective)
+    @test rs.current.status === :halted
+    @test captured_after_step2.snapshot.pc == 3
+    @test captured_after_step2.snapshot.status === :running
+    @test captured_after_step2.snapshot.locals[:x] == Int64(6)
+
+    # Hand mutation: forcibly alter rs.current — none of this can
+    # reach the captured step-2 snapshot if the deepcopy contract holds.
     rs.current.locals[:x] = Int64(-999)
     rs.current.pc = 0
     rs.current.status = :error
-    @test captured_after_step1.snapshot.pc == 2
-    @test captured_after_step1.snapshot.locals[:n] == 7
-    @test !haskey(captured_after_step1.snapshot.locals, :x)
-    @test captured_after_step1.snapshot.status === :running
+    @test captured_after_step2.snapshot.pc == 3
+    @test captured_after_step2.snapshot.locals[:x] == Int64(6)
+    @test captured_after_step2.snapshot.status === :running
+    @test !haskey(captured_after_step2.snapshot.locals, :n)
     # And the Dict instances are distinct objects (the M4.1 mechanism
     # check, mirrored here for end-to-end coverage).
-    @test captured_after_step1.snapshot.locals !== rs.current.locals
+    @test captured_after_step2.snapshot.locals !== rs.current.locals
 end

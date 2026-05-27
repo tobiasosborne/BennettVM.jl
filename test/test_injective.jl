@@ -216,3 +216,61 @@ end
     # where the discrimination lives.
     @test BennettVM.is_injective(BennettVM.ArithmeticAssignment) === false
 end
+
+@testset "M6.2 — step! skips L3 push on all-injective program" begin
+    # PRD v4 §3.3 layer 1 ("No log"): injective instructions push
+    # nothing. M6.2 implements this gate inside `step!`'s push site.
+    # An all-injective program — Begin + ArithAssign(:xor) + End,
+    # three injective instructions — must produce ZERO history
+    # entries even under the most aggressive push interval K=1
+    # (which under M4.2 alone would have pushed on every single
+    # step). This is the M6.2 invariant in isolation, independent
+    # of the M4.x test cascade.
+    #
+    # `step_count` STILL increments for injective instructions —
+    # the counter is canonical and used by replay; only the *push*
+    # is gated.
+    bb = BennettVM.BasicBlock(:m,
+        BennettVM.BeginInstruction(:m, [:x]),
+        BennettVM.Instruction[
+            # x := x ⊕ (0 xor 0) → x unchanged in value but the
+            # forward semantics still execute. modop=:xor → injective
+            # per M6.1.
+            BennettVM.ArithmeticAssignment(:x, :x, :xor, Int64(0), :xor, Int64(0)),
+        ],
+        BennettVM.EndInstruction(:m, [:x]))
+    vm = VMProgram([bb], BennettVM.LabelTable([bb]), :m, [64], [64])
+    rs = initial_state(vm, Dict(:x => Int64(7)))
+
+    run!(rs, vm; checkpoint_interval=1)
+
+    @test is_halted(rs)
+    @test rs.step_count == 3
+    @test isempty(rs.history)
+end
+
+@testset "M6.2 — step! still pushes for non-injective instruction at K-multiple" begin
+    # The paired test: same 3-instruction layout but with the middle
+    # instruction non-injective (ArithAssign modop=:sub). With K=1
+    # and 3 steps, only the middle step (step 2) is non-injective;
+    # Begin (step 1) and End (step 3) are injective and skip the
+    # push. → length 1, history[1].step == 2.
+    #
+    # Pins the M6.2 gate's positive side: the L1 "no log" suppression
+    # does NOT degenerate the L3 push for non-injective ops.
+    bb = BennettVM.BasicBlock(:m,
+        BennettVM.BeginInstruction(:m, [:x]),
+        BennettVM.Instruction[
+            BennettVM.ArithmeticAssignment(:y, :x, :sub, Int64(1), :and, Int64(1)),
+        ],
+        BennettVM.EndInstruction(:m, [:y]))
+    vm = VMProgram([bb], BennettVM.LabelTable([bb]), :m, [64], [64])
+    rs = initial_state(vm, Dict(:x => Int64(7)))
+
+    run!(rs, vm; checkpoint_interval=1)
+
+    @test is_halted(rs)
+    @test rs.step_count == 3
+    @test length(rs.history) == 1
+    @test rs.history[1].step == 2
+end

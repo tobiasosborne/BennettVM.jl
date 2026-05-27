@@ -532,6 +532,53 @@ multiple of `checkpoint_interval`, `step!` pushes a `CheckpointEntry`
 onto `s.history` capturing the post-step `s.current` and the
 just-incremented count. The L3 history layer of PRD v4 §3.3.
 
+# M6.2 — L1 "no log" gate
+
+PRD v4 §3.3 layer 1 ("No log") says injective instructions and
+reversible jumps push nothing. M6.2 implements that gate by AND-ing
+the M6.1 trait into the M4.2 push condition:
+
+    should_checkpoint =
+        !is_injective(instr) &&
+        s.step_count > 0    &&
+        s.step_count % checkpoint_interval == 0
+
+i.e., the L3 checkpoint push fires only when (a) the instruction is
+**non-injective**, (b) `step_count > 0` (the M4.2 step-0 carve-out),
+and (c) `step_count` is a multiple of `K`. Injective instructions —
+`SwapInstruction`, all `ControlInstruction` subtypes (Begin/End,
+Unconditional Entry/Exit, Conditional Entry/Exit), `MemoryInterchange`,
+`MemorySwap`, and `ArithmeticAssignment` with `modop === :xor` (see
+M6.1 trait `src/history/Injective.jl`) — skip the push entirely,
+even when `step_count % K == 0` would otherwise fire. The inverse
+is recoverable from current state alone (Vieri Pendulum §4.2.1 +
+Mogensen RSSA §3 for the structural pattern; PRD v4 §3.2/§3.3 for
+the binding wording), so no checkpoint is needed.
+
+`step_count` STILL increments for injective instructions — the
+counter is canonical and used by replay (`unstep!` in
+`src/history/Replay.jl` finds the nearest checkpoint at-or-before
+`target = step_count - 1` and replays forward; the absence of a
+push at an injective step does not break that lookup because the
+replay falls through to the next-earlier checkpoint or to
+`s.initial`). Only the *push* is gated; the *counter* is not.
+
+The gate is **necessary AND SUFFICIENT** for L1 — no other
+interpreter / `Replay.jl` modification is needed in this bead.
+`unstep!`'s find-nearest-then-replay algorithm already handles the
+"no checkpoints available" case via the `s.initial` fallback
+(`src/history/Replay.jl` step (3)), so a program that pushes fewer
+(or zero) checkpoints still reverses correctly — the replay just
+spans more steps per `unstep!` call. M6.3 (per-instruction
+`inverse()` short-circuits for injective instructions, so `unstep!`
+itself can skip the replay) and M6.4 (zero-history round-trip test)
+are separate beads that build on this gate.
+
+See `src/history/Injective.jl` (M6.1) for the trait definition and
+the per-instruction injectivity rationale (Pendulum exchange-as-
+injective, Mogensen RSSA paired entry/exit, the conservative `:xor`-
+only modop classification on `ArithmeticAssignment`).
+
 **`K = 1` is a forensic-test mode, NOT a production configuration.**
 Passing `checkpoint_interval = 1` reproduces the §3.3-prohibited
 per-step full-snapshot pattern (every successful step pushes a deep-
@@ -697,8 +744,20 @@ function step!(s::RState, prog::VMProgram;
     # constructor"); doing it a second time here would be redundant
     # and confusing — see this function's docstring §"Why the deepcopy
     # lives inside CheckpointEntry's constructor".
+    #
+    # M6.2 — gate on `!is_injective(instr)`. PRD v4 §3.3 layer 1: an
+    # injective instruction needs no history entry because its inverse
+    # is recoverable from current state alone. The trait is defined at
+    # `src/history/Injective.jl` (M6.1); see this function's docstring
+    # §"M6.2 — L1 'no log' gate" for the full rationale. `step_count`
+    # increments unconditionally (Replay.jl's `unstep!` indexes by the
+    # counter; the absence of a push at injective steps falls through
+    # to the prior checkpoint or to `s.initial`).
     s.step_count += 1
-    if s.step_count % checkpoint_interval == 0 && s.step_count > 0
+    should_checkpoint = !is_injective(instr) &&
+                        s.step_count > 0 &&
+                        s.step_count % checkpoint_interval == 0
+    if should_checkpoint
         push!(s.history, CheckpointEntry(s.current, s.step_count))
     end
 

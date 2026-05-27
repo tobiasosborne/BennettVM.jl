@@ -439,7 +439,14 @@ end
     # is in the loop), test 8 catches it.
     #
     # Total flat-stream: Begin + 3 ArithAssign + End = 5 steps.
-    # With K=2, pushes at 2 and 4 → 2 history entries.
+    # Under M6.2 the L1 "no log" gate (PRD v4 §3.3) skips the push
+    # for injective instructions. Per-step injectivity (M6.1 trait):
+    #   step 1: BeginInstruction          — injective → push skipped
+    #   step 2: ArithAssign(modop=:xor)   — injective → push skipped
+    #   step 3: ArithAssign(modop=:add)   — non-injective; 3%2=1 → no push
+    #   step 4: ArithAssign(modop=:sub)   — non-injective; 4%2=0 → PUSH
+    #   step 5: EndInstruction            — injective → push skipped
+    # → 1 history entry at step 4 (the only non-injective K-multiple).
     vm = _rt_threeop_program()
     rs = initial_state(vm, Dict(:n => Int64(7)))
     initial_current = deepcopy(rs.current)
@@ -447,8 +454,8 @@ end
     run!(rs, vm; checkpoint_interval=2)
     @test is_halted(rs)
     @test rs.step_count == 5
-    @test length(rs.history) == 2
-    @test [e.step for e in rs.history] == [2, 4]
+    @test length(rs.history) == 1
+    @test [e.step for e in rs.history] == [4]
 
     unrun!(rs, vm)
     @test rs.step_count == 0
@@ -460,15 +467,40 @@ end
 end
 
 @testset "M4.5 — history contains exactly the expected entries during run (K=4)" begin
-    # Test 9: pin M4.2's push pattern at the integration level on
-    # the canonical countdown(5) / K=4 fixture.
+    # Test 9: pin the M4.2 + M6.2 push pattern at the integration
+    # level on the canonical countdown(5) / K=4 fixture.
     #
-    # countdown(5) is 18 steps total; with K=4 the push fires at
-    # steps where `step_count % 4 == 0 && step_count > 0`:
-    #   step 4, step 8, step 12, step 16
-    # → length 4, indices [4, 8, 12, 16].
+    # countdown(5) is 18 steps total. Under M4.2 alone, the push fires
+    # at every step where `step_count % 4 == 0 && step_count > 0`:
+    #   steps 4, 8, 12, 16 → 4 entries.
+    # Under M6.2's L1 "no log" gate (PRD v4 §3.3 layer 1), the push is
+    # additionally suppressed for injective instructions (M6.1 trait).
+    # Walking the flat stream:
+    #   step  1: BeginInstruction          — injective
+    #   step  2: UnconditionalExit          — injective
+    #   step  3: ArithAssign(:sub)          — non-injective; 3%4=3
+    #   step  4: ArithAssign(:add)          — non-injective; 4%4=0 → PUSH
+    #   step  5: UnconditionalExit          — injective
+    #   step  6: ArithAssign(:sub)          — non-injective; 6%4=2
+    #   step  7: ArithAssign(:add)          — non-injective; 7%4=3
+    #   step  8: UnconditionalExit          — injective → push skipped
+    #   step  9: ArithAssign(:sub)          — non-injective; 9%4=1
+    #   step 10: ArithAssign(:add)          — non-injective; 10%4=2
+    #   step 11: UnconditionalExit          — injective
+    #   step 12: ArithAssign(:sub)          — non-injective; 12%4=0 → PUSH
+    #   step 13: ArithAssign(:add)          — non-injective; 13%4=1
+    #   step 14: UnconditionalExit          — injective
+    #   step 15: ArithAssign(:sub)          — non-injective; 15%4=3
+    #   step 16: ArithAssign(:add)          — non-injective; 16%4=0 → PUSH
+    #   step 17: UnconditionalExit          — injective
+    #   step 18: EndInstruction             — injective (halt)
+    # → length 3, indices [4, 12, 16] (step 8 would have pushed
+    # under M4.2 but is UnconditionalExit → injective → push skipped).
     #
-    # Step 18 (the End-step) has 18 % 4 = 2 ≠ 0 → no push.
+    # (The cross-block dispatch in step!() jumps over UnconditionalEntry
+    # instructions — they never appear in the executed flat stream
+    # under the canonical forward flow; their bwd_address exists only
+    # for backward traversal.)
     #
     # A common bug mode this test catches: the replay loop inside
     # unstep! using K=4 (the test's K) instead of typemax(Int).
@@ -478,7 +510,7 @@ end
     # RState == check) would catch the contamination.
     #
     # We pin BOTH the length AND the exact step indices (not just
-    # length) — a regression that produces 4 entries at wrong steps
+    # length) — a regression that produces 3 entries at wrong steps
     # would fail the entries-by-step check but not the length-only
     # check.
     vm = build_countdown_vm(5)
@@ -487,8 +519,8 @@ end
     run!(rs, vm; checkpoint_interval=4)
     @test is_halted(rs)
     @test rs.step_count == 18
-    @test length(rs.history) == 4
-    @test [e.step for e in rs.history] == [4, 8, 12, 16]
+    @test length(rs.history) == 3
+    @test [e.step for e in rs.history] == [4, 12, 16]
     # Each entry is a CheckpointEntry (not some other
     # AbstractHistoryEntry variant that doesn't exist yet at M4.5).
     @test all(e isa BennettVM.CheckpointEntry for e in rs.history)

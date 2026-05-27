@@ -288,7 +288,7 @@ end
     @test isempty(rs.history)
 end
 
-@testset "Unstep! from a halted state (M4.3)" begin
+@testset "Unstep! from a halted state (M4.3 / M6.2)" begin
     # countdown(2) terminates with status :halted at step 9
     # (3N + 3 = 9 for N=2). Run to halt; unstep! once. Status must
     # flip back to :running, step_count -> 8, history truncation
@@ -298,19 +298,30 @@ end
     run!(rs, vm; checkpoint_interval=4)
     @test is_halted(rs)
     @test rs.step_count == 9
-    # K=4 over 9 steps → pushes at 4 and 8. step 9's End-step push:
-    # 9 % 4 = 1 ≠ 0, so no push at 9. → history length 2.
-    @test length(rs.history) == 2
+    # countdown(2) dispatched-step sequence (M6.2 injectivity in []):
+    #   1 Begin [inj], 2 UncondExit [inj],
+    #   3 Arith :sub [non-inj], 4 Arith :add [non-inj],
+    #   5 UncondExit [inj],
+    #   6 Arith :sub [non-inj], 7 Arith :add [non-inj],
+    #   8 UncondExit [inj],
+    #   9 End [inj].
+    # K=4 candidates: steps 4 and 8. Of these, step 4 is non-injective
+    # (Arith :add), step 8 is injective (UncondExit). M6.2 → only step
+    # 4 pushes. Pre-M6.2 this was length 2 ([4, 8]); post-M6.2 length 1.
+    @test length(rs.history) == 1
     @test rs.history[1].step == 4
-    @test rs.history[2].step == 8
 
     unstep!(rs, vm)
     @test rs.step_count == 8
     @test rs.current.status === :running
-    # target=8, nearest checkpoint at step 8 is retained (step <= target).
-    # No truncation in this case (the last entry has step == target, not >).
-    @test length(rs.history) == 2
-    @test rs.history[end].step == 8
+    # target=8, nearest checkpoint with step <= 8 is the step-4 entry
+    # (the only one). Restore step 4, replay forward 4 steps to reach
+    # step 8. Truncation: pop entries with step > 8 — none. The step-4
+    # checkpoint is RETAINED (4 is not > 8). M6.2 introduces no new
+    # pushes during replay (the replay loop uses checkpoint_interval=
+    # typemax(Int) so the gate never fires, M6.2 gate or otherwise).
+    @test length(rs.history) == 1
+    @test rs.history[end].step == 4
 end
 
 @testset "Unstep! across a checkpoint boundary (retained-at-target) (M4.3)" begin
@@ -372,9 +383,14 @@ end
     @test isempty(rs.history)
 end
 
-@testset "Multiple unstep!s all the way back (M4.3)" begin
-    # K=2, countdown(2) → 9 steps total, with pushes at 2, 4, 6, 8.
-    # (Step 9 is 9 % 2 = 1, no push.) history length 4.
+@testset "Multiple unstep!s all the way back (M4.3 / M6.2)" begin
+    # K=2, countdown(2) → 9 steps total. countdown(2) dispatched
+    # injectivity (see "Unstep! from a halted state" testset):
+    #   step 2: UncondExit       — injective; no push
+    #   step 4: Arith :add       — NON-injective; PUSH at K=2
+    #   step 6: Arith :sub b_step2 — NON-injective; PUSH at K=2
+    #   step 8: UncondExit       — injective; no push
+    # M6.2: history length 2 (steps [4, 6]); pre-M6.2 was 4.
     # Loop unstep! until step_count == 0 → full backward sweep.
     # M4.4's `unrun!` is essentially this loop; M4.3 must already
     # support it as a primitive sequence.
@@ -384,7 +400,8 @@ end
     run!(rs, vm; checkpoint_interval=2)
     @test is_halted(rs)
     @test rs.step_count == 9
-    @test length(rs.history) == 4  # pushes at 2, 4, 6, 8
+    # M6.2: 2 non-injective steps at K-multiples (4, 6); pre-M6.2 was 4.
+    @test length(rs.history) == 2
 
     # Loop unstep! until exhausted.
     while rs.step_count > 0
@@ -396,30 +413,36 @@ end
     @test rs.current == rs.initial
 end
 
-@testset "History truncation correctness — mid-K target (M4.3)" begin
-    # K=2, step 6 times → push at 2, 4, 6. history=[step-2, step-4,
-    # step-6], step_count=6.
+@testset "History truncation correctness — mid-K target (M4.3 / M6.2)" begin
+    # K=2, step 6 times on countdown(3). Dispatched injectivity
+    # (countdown(3) is the canonical fixture; see test_checkpoint_push
+    # "push fires at exactly K, 2K, 3K" testset for the full layout):
+    #   step 2: UncondExit       — injective; no push
+    #   step 4: Arith :add b_step1 — NON-injective; PUSH at K=2
+    #   step 6: Arith :sub b_step2 — NON-injective; PUSH at K=2
+    # M6.2: history=[step-4, step-6] (pre-M6.2 was [step-2, step-4,
+    # step-6]).
     # unstep! once → target=5 → nearest checkpoint <= 5 is step 4.
-    # Restore step-4, replay 1 step.
-    # Truncation: pop entries with step > 5. step-6 > 5 → popped.
-    # step-4 == 4 not > 5 → retained.
-    # Expected history after unstep!: [step-2, step-4].
+    # Restore step-4, replay 1 step. Truncation: pop entries with step
+    # > 5. step-6 > 5 → popped. step-4 not > 5 → retained.
+    # Expected history after unstep!: [step-4].
     vm = build_countdown_vm(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     for _ in 1:6
         step!(rs, vm; checkpoint_interval=2)
     end
     @test rs.step_count == 6
-    @test length(rs.history) == 3
-    @test rs.history[1].step == 2
-    @test rs.history[2].step == 4
-    @test rs.history[3].step == 6
+    # M6.2: 2 non-injective K-multiples (4, 6); pre-M6.2 was 3.
+    @test length(rs.history) == 2
+    @test rs.history[1].step == 4
+    @test rs.history[2].step == 6
 
     unstep!(rs, vm)
     @test rs.step_count == 5
-    @test length(rs.history) == 2
-    @test rs.history[1].step == 2
-    @test rs.history[2].step == 4
+    # M6.2: step-6 popped (6 > target=5); step-4 retained (4 not > 5).
+    # Pre-M6.2 this was length 2 (retained [step-2, step-4]).
+    @test length(rs.history) == 1
+    @test rs.history[1].step == 4
 end
 
 @testset "Restore-side deepcopy invariant — checkpoint case (M4.3)" begin
@@ -488,24 +511,29 @@ end
     @test rs.initial.locals !== rs.current.locals
 end
 
-@testset "No-spurious-push during replay (M4.3)" begin
-    # K=2, step 6 times → history length 3 (pushes at 2, 4, 6).
+@testset "No-spurious-push during replay (M4.3 / M6.2)" begin
+    # K=2, step 6 times on countdown(3). Per the M6.2-aware accounting
+    # in the prior testset, history is [step-4, step-6] (length 2).
     # unstep! once → target=5 → nearest <= 5 is step 4, restore +
     # replay 1 step. The replay's step!() call uses
-    # checkpoint_interval=typemax(Int), so it must NOT push.
-    # After unstep!, history length must be exactly 2 (step-6 popped;
-    # step-2 + step-4 retained; no new push from replay).
+    # checkpoint_interval=typemax(Int), so it must NOT push (this is
+    # the load-bearing M4.3 invariant; M6.2 doesn't change it).
+    # After unstep!, history length must be exactly 1 (step-6 popped;
+    # step-4 retained; no new push from replay).
     vm = build_countdown_vm(3)
     rs = initial_state(vm, Dict(:n0 => Int64(3), :steps0 => Int64(0)))
     for _ in 1:6
         step!(rs, vm; checkpoint_interval=2)
     end
-    @test length(rs.history) == 3
+    # M6.2: 2 non-injective K-multiples; pre-M6.2 was 3.
+    @test length(rs.history) == 2
 
     unstep!(rs, vm)
     @test rs.step_count == 5
-    # Exactly 2 entries (one popped from end; no new pushes).
-    @test length(rs.history) == 2
+    # M6.2: step-6 popped (> target=5); step-4 retained. No new push
+    # during replay (typemax(Int) suppresses the gate). Length 1
+    # (pre-M6.2 was 2).
+    @test length(rs.history) == 1
 end
 
 @testset "unstep! is a no-op equivalent on a sequence of step/unstep (M4.3)" begin
