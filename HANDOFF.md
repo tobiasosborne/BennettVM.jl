@@ -2,48 +2,98 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
-## Current state (2026-05-26 — Session 4 close)
+## Current state (2026-05-27 — Session 5 close)
 
 - **Phase:** **Phase 2 (production).**
 - **PRD:** `bennettvm_prd.md` is v4.
 - **Bennett.jl pin:** `877341e` (unchanged this session).
-- **Test suite:** **990 / 990 passing.** `julia --project=. -e 'using Pkg; Pkg.test()'`.
+- **Test suite:** **1591 / 1591 passing.** `julia --project=. -e 'using Pkg; Pkg.test()'`.
 - **Setup gotcha:** Manifest.toml is gitignored (per-machine). Fresh
   clones MUST run `julia --project=. -e 'using Pkg; Pkg.develop(path="../Bennett.jl"); Pkg.instantiate()'`
   before tests pass.
-- **M4 (history layer L3: checkpoint-replay) — CLOSED this session.**
-  All five sub-beads:
-  - **M4.1** `cbd6644` — `CheckpointEntry <: AbstractHistoryEntry`,
-    deep-copy constructor + structural ==/hash. New file
-    `src/history/CheckpointEntry.jl`.
-  - **M4.2** `a325be5` — `step!` pushes CheckpointEntry every K steps.
-    RState gains `step_count::Int`. `step!` / `run!` gain
-    `checkpoint_interval::Int = 64` kwarg. `&& step_count > 0` guard
-    is load-bearing for M4.3's replay arithmetic.
-  - **M4.3** `9f6cda7` — `unstep!(s, prog)` via find-nearest-checkpoint
-    + restore-deepcopy + truncate + replay-forward. New file
-    `src/history/Replay.jl`. RState gains `initial::IState` field.
-  - **M4.4** `36e2cd3` — `unrun!(s, prog; max_unsteps=10_000)` loops
-    unstep! until `step_count == 0`, asserts `isempty(history)` as
-    structural post-condition. NO manual status reset.
-  - **M4.5** `61c47cd` — M4 milestone capstone round-trip test.
-    10 testsets, 141 new assertions, per-step inverse pattern from
-    spike Q3. K ∈ {1, 2, 4, 7, 16, 64, typemax(Int)}.
+- **M6 (history layer L1: injective no-log) — CLOSED this session.**
+  All four sub-beads orchestrated through Opus coder + Sonnet hostile
+  reviewer pairs:
+  - **M6.1** `6b59824` — `is_injective` trait at `src/history/Injective.jl`.
+    Type-level true for `SwapInstruction`, all `ControlInstruction`
+    subtypes (Begin/End, Uncond Entry/Exit, Cond Entry/Exit),
+    `MemoryInterchange`, `MemorySwap`. Value-level true for
+    `ArithmeticAssignment` iff `modop === :xor`. Conservative on
+    `:xor` only — broaden-to-`:add`/`:sub` filed as follow-up
+    `bennettvm-ack`. 30 new assertions.
+  - **M6.2** `e9eb994` — `step!` push site AND-gated by
+    `!is_injective(instr)`. `step_count` increments unconditionally;
+    only the L3 push is gated. Cascading test updates to
+    `test_unstep.jl`, `test_checkpoint_push.jl`, `test_unrun.jl`,
+    `test_roundtrip.jl` for the new push patterns (net -7 assertions
+    from removed out-of-bounds `history[i]` checks; +7 new in
+    `test_injective.jl`). Round-trip invariant preserved via
+    Replay.jl's `s.initial` fallback.
+  - **M6.3** `44dfdca` — contract tests pinning `inverse(i, _, nothing)
+    == s_pre` for every M6.1-injective type. New file
+    `test/test_injective_inverse.jl`. **Audit result: no bugs in any
+    existing inverse() method.** 81 new assertions. Identified gap
+    `bennettvm-xtb` (P3) — `_handle_backward_cross_block_dispatch!`
+    missing; non-blocking because Replay.jl's `s.initial` fallback
+    handles empty-history cross-block backward traversal.
+  - **M6.4** `fa90ee1` — M6 milestone capstone integration test. Five
+    all-injective programs (xor-chain, swap-chain, two-block-uncond,
+    memory-ops, mixed) under K ∈ {1, 4, 64, typemax(Int)}. 14
+    testsets, 490 new assertions. `isempty(rs.history)` asserted
+    after EVERY step, not just at end. Confirms M6 architecture
+    composes correctly.
+
+## Session 5 orchestration notes
+
+Orchestrated as four Opus coding subagents (one per sub-bead) + four
+Sonnet hostile reviewers, serial (Rule 7 — no parallel Julia). Each
+reviewer produced per-claim signoff with hostile mutation probes
+(Rule 6 — "Core" change tier for M6.1/M6.2; "Small" + reviewer for
+M6.3/M6.4). M6.2 coder hit a 529 Overloaded mid-edit on
+`test_roundtrip.jl` and `test_injective.jl`; orchestrator finished
+those manually using the coder's partial state, then sent the
+combined diff through the reviewer.
+
+Follow-up beads filed this session (do not block M7):
+
+- `bennettvm-ack` (P2) — broaden `is_injective(::ArithmeticAssignment)`
+  to `:add`/`:sub` modops (PRD v4 §3.2 reconciliation).
+- `bennettvm-c0e` (P2) — `MemoryAssignment` value-level
+  discrimination (modop===:xor case).
+- `bennettvm-xtb` (P3) — `_handle_backward_cross_block_dispatch!`
+  for future direct-inverse `unstep!` optimization.
 
 ## What you (next session) are picking up
 
-**M6 — history layer L1 (injective no-log) — is the next milestone.**
+**M7 — history layer L2 (delta min-cut, Enzyme-style) — is the next
+milestone.**
 
-M6.1 introduces an `is_injective(::Type{<:Instruction})::Bool` trait;
-specializations for `SwapInstruction`, all `ControlInstruction`
-subtypes, `MemoryInterchange`, `MemorySwap`, `ArithmeticAssignment` when
-`modop === :xor`. M6.2 modifies `step!` to skip the checkpoint push for
-injective instructions. M6.3 wires the matching `inverse`
-reconstruction. M6.4 round-trip test with zero history entries.
+Per PRD v4 §3.3 layer 2: for non-injective ops in deterministic
+regions, the history payload is the minimal information required to
+invert the step (typically: the destroyed value(s), not a snapshot).
+The decision of which values to cache vs recompute is the Enzyme
+min-cut analysis (Moses-Churavy 2020 NeurIPS §2 "Cache") ported to
+Phase-2 IR.
 
-After M6: M7 (L2 delta min-cut, Enzyme-style), M8 (per-step inverse
-property test). Then the four P0 SC9 motivating cases (M_DICT, M_DYN,
-M_NESTED, M_UNBOUNDED).
+PRD v4 §3.3 also mandates: "Before the delta-history selector is
+implemented, an ADR MUST identify which Phase-2 RSSA dataflow
+constructs correspond to Enzyme's LLVM-IR value-dependency graph
+edges. Filed as `docs/adr/0002-enzyme-min-cut-mapping.md`." This is
+the M7.1 first sub-bead (`bennettvm-80a` per `bd ready`).
+
+After M7: M8 (per-step inverse property test, currently filed as
+M8.x sub-beads). Then the four P0 SC9 motivating cases (M_DICT,
+M_DYN, M_NESTED, M_UNBOUNDED).
+
+### Open observation carried over from Session 4
+
+- `bennettvm-kuq` (P2): `unstep!` search loop uses
+  `entry isa CheckpointEntry` while the truncation loop uses the
+  polymorphic `_entry_step()` helper. **Still asymmetric.** M6 did
+  not introduce a new entry type (M6's no-push semantics meant the
+  L3 entry type set didn't grow). When M7 introduces a delta entry
+  type, resolve this asymmetry — the search loop should use the
+  polymorphic helper too.
 
 ### Open observation flagged this session
 
