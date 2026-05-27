@@ -159,6 +159,23 @@ include("ir/memory_instructions.jl")
 # `Instruction` (from `instructions.jl`) and `IState` (from
 # `IState.jl`); MUST follow both. Not yet exported.
 include("ir/call_instruction.jl")
+# M6.1 — `is_injective` trait (`bennettvm-9hf`). The L1 "no-log"
+# layer-1 predicate of PRD v4 §3.3: tells the rest of the VM whether
+# an instruction needs a history entry. Type-level `true` for the
+# eight invariant injective cases (`SwapInstruction`,
+# `BeginInstruction`, `EndInstruction`, `UnconditionalEntry`/`Exit`,
+# `ConditionalEntry`/`Exit`, `MemoryInterchange`, `MemorySwap`);
+# value-level `true` for `ArithmeticAssignment` iff `modop === :xor`;
+# default `false` everywhere else (conservative — forces M6.2's
+# `step!` to push when the trait is uncertain, per CLAUDE.md
+# Rule 1). MUST follow every M2.6-M2.14 include because the
+# specialisations dispatch on the concrete `Instruction` subtypes
+# defined there. M6.2 (interpreter integration), M6.3 (golden-
+# master regression test), and M6.4 (per-instruction `unstep!`
+# short-circuit) consume this trait; M6.1 itself does NOT modify
+# `step!`, `inverse`, or the round-trip path. Not yet exported —
+# M6.2 decides the public-API surface.
+include("history/Injective.jl")
 # M2.15 — `BasicBlock` + `reversed(::BasicBlock)` (`bennettvm-jvh`). The
 # unit of RSSA program structure: a single straight-line code segment
 # bracketed by exactly one control-flow entry marker and exactly one
