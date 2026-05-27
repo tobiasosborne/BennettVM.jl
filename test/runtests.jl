@@ -70,4 +70,13 @@ using BennettVM
     include("test_delta_roundtrip.jl")
     include("test_unrun.jl")
     include("test_roundtrip.jl")
+    # M8.2 — per-step inverse test scaffold (`bennettvm-3d8`).
+    # Sits AFTER test_delta_roundtrip.jl because the scaffold's M7
+    # driver-layer testset depends on `compute_must_cache` (M7.5) and
+    # the M7.6 push-site integration both being exercised first. The
+    # scaffold itself is reusable infrastructure consumed by M8.3
+    # (`bennettvm-2kl`, mutation-proof harness), M8.4
+    # (`bennettvm-bii`, seeded random program generator), and M8.5
+    # (`bennettvm-tnp`, 100-random-programs property test).
+    include("test_per_step_inverse.jl")
 end
