@@ -37,6 +37,11 @@ using BennettVM
     include("test_zero_history_roundtrip.jl")
     include("test_interpreter.jl")
     include("test_forward_interpreter.jl")
+    # M7.5 — stub liveness / min-cut analysis (`bennettvm-46p`).
+    # Sits AFTER `test_forward_interpreter.jl` so `build_countdown_vm`
+    # is already a top-level definition when the multi-block testset
+    # runs. Pure analysis tests — no `step!` integration (that's M7.6).
+    include("test_liveness.jl")
     include("test_checkpoint_entry.jl")
     # M7.2 — DeltaEntry{T} unit tests (`bennettvm-c4m`). L2 history
     # entry type for non-injective instructions; mirrors

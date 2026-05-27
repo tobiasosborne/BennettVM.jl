@@ -228,6 +228,22 @@ include("ir/label_table.jl")
 # the bridge that lets `lower_vm` (still a digest stub) produce a
 # typed `VMProgram` value while M3.x is pending.
 include("ir/VMProgram.jl")
+# M7.5 — stub liveness / min-cut analysis (`bennettvm-46p`). The L2
+# layer's "which instructions need a DeltaEntry?" pre-computation,
+# operationalising PRD v4 §3.3 layer 2 ("delta entries with min-cut
+# selection") and Moses–Churavy 2020 §2 "Cache" per ADR 0002.
+# Returns a `Set{Tuple{Symbol, Int}}` of `(block_label, instr_idx)`
+# pairs whose forward steps must push a `DeltaEntry`. The stub is
+# conservative: every non-injective instruction (per M6.1's
+# `is_injective` trait) is included; the true min-cut tightening is
+# deferred per ADR 0002 §"What M7.5 ships". MUST follow
+# `history/Injective.jl` (consumes `is_injective`) and `ir/VMProgram.jl`
+# (consumes the `VMProgram` type / its `blocks` field). M7.6 (bead
+# `bennettvm-7e7`) consumes this analysis at the `step!` push site;
+# M7.5 itself does NOT modify `VMProgram`, `step!`, or the round-trip
+# path. Not exported — internal-access only until M7.6 settles the
+# public-API surface.
+include("analysis/liveness.jl")
 include("lower_vm.jl")
 # M3.1 — `initial_state(prog, input)` (`bennettvm-afj`). Gateway to the
 # forward-only interpreter milestone (M3). Consumes a `VMProgram`
