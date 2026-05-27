@@ -38,6 +38,10 @@ using BennettVM
     include("test_interpreter.jl")
     include("test_forward_interpreter.jl")
     include("test_checkpoint_entry.jl")
+    # M7.2 — DeltaEntry{T} unit tests (`bennettvm-c4m`). L2 history
+    # entry type for non-injective instructions; mirrors
+    # test_checkpoint_entry.jl's pattern.
+    include("test_delta_entry.jl")
     include("test_checkpoint_push.jl")
     include("test_unstep.jl")
     include("test_unrun.jl")

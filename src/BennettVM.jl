@@ -176,6 +176,24 @@ include("ir/call_instruction.jl")
 # `step!`, `inverse`, or the round-trip path. Not yet exported —
 # M6.2 decides the public-API surface.
 include("history/Injective.jl")
+# M7.2 — L2 history entry: `DeltaEntry{T<:Instruction} <:
+# AbstractHistoryEntry` (`bennettvm-c4m`). The "delta with min-cut
+# selection" layer of PRD v4 §3.3's three-layer history scheme: for
+# non-injective instructions in deterministic regions, the entry
+# carries the minimal payload needed to invert one forward step
+# (Enzyme-style cache analysis ported to BennettVM's RSSA IR per
+# ADR 0002). Parametric on the instruction type so the per-`T`
+# `make_delta` constructors (M7.3) and `inverse(::T, s, payload::
+# NamedTuple)` specialisations (M7.4) dispatch without `Any`-routing.
+# Depends on `AbstractHistoryEntry` (the supertype, defined in
+# `ir/RState.jl`) and `Instruction` (the abstract parent of `T`,
+# defined in `ir/instructions.jl`), so MUST follow both in include
+# order. M7.2 is type definition only — per-instruction
+# `make_delta` lives co-located with `forward`/`inverse` per ADR
+# 0002 Design Decision 3 and lands at M7.3; the push-site wiring
+# into `step!` is M7.6's job. Not yet exported (M7.6 settles the
+# public-API surface).
+include("history/delta.jl")
 # M2.15 — `BasicBlock` + `reversed(::BasicBlock)` (`bennettvm-jvh`). The
 # unit of RSSA program structure: a single straight-line code segment
 # bracketed by exactly one control-flow entry marker and exactly one
