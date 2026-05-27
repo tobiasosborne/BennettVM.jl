@@ -2,12 +2,119 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
-## Current state (2026-05-27 — Session 6 close)
+## Current state (2026-05-27 — Session 7 close, partial)
 
 - **Phase:** **Phase 2 (production).**
 - **PRD:** `bennettvm_prd.md` is v4.
 - **Bennett.jl pin:** `877341e` (unchanged this session).
-- **Test suite:** **1997 / 1997 passing.** `julia --project=. -e 'using Pkg; Pkg.test()'`.
+- **Test suite:** **2108 / 2108 passing.** `julia --project=. -e 'using Pkg; Pkg.test()'`.
+- **M8 (per-step inverse + property-test family) — 4 of 5 sub-beads CLOSED.**
+  Session was cut short before M8.5 (100-program property capstone).
+  All four landings orchestrated as Opus coder + Sonnet hostile reviewer
+  pairs (M8.4 hostile review deferred — see below):
+  - **M8.1** `adf12a9` — `test/reference/countdown.jl` gains
+    `countdown_program(n)` factory + include-time `@assert` self-check
+    (two clauses: `result[:steps_N] == countdown_ref(N)` AND
+    `result[:n_N] == 0`; clause 2 pins `:sub`/`:add` direction —
+    reviewer-caught defect: clause 1 alone is theatre against the
+    n-decrement mutation because the unrolled layout always runs
+    exactly N blocks regardless of body arithmetic). Refactor hoists
+    `build_countdown_vm` (→ `countdown_program`) and `_decrement_block`
+    from `test/test_forward_interpreter.jl` to the reference file;
+    updates 7 consumer tests to include directly instead of leaning
+    on transitive include order. Updates ADR 0002 citation.
+  - **M8.2** `107aad9` — `test/test_per_step_inverse.jl` —
+    `per_step_inverse_check(vm, inputs; checkpoint_interval,
+    must_cache_set, label, _forward_snapshots_override)`. Reusable
+    parameterized check that snapshots post-step IState, walks back
+    via `unstep!`, asserts equality at every position; mismatch raises
+    `ErrorException` pinning step index + offending IState field.
+    Also asserts `rs.current == rs.initial` post-sweep (catches
+    `rs.initial`-mutation bugs in the M4.3 L3 restore site).
+    **Architectural finding (reviewer-caught, fixed):** when
+    `must_cache_set` is empty, the L3 fallback path is
+    `forward()`-driven (`Replay.jl`'s `_restore_to_checkpoint` reads
+    nearest CheckpointEntry snapshot and replays forward) and
+    BYPASSES `inverse()` entirely. So countdown(N)/empty-must_cache
+    testsets are blind to per-instruction `inverse()` regressions.
+    The M4.5 anchor inherits the same blind spot. Fix: extended the
+    M7-delta testset to cover countdown(5)/K=4 with `must_cache_set =
+    compute_must_cache(vm)` so the L2 path (M7.4 fast-path, the
+    actual `inverse()` call site) is driven on the anchor. Docstring
+    rewritten to honestly bound what each shape catches.
+  - **M8.3** `f0435a9` — `test/test_mutation_proof.jl` — 5 instruction
+    kinds × 2 mutations × 2 paths (L2 scaffold for non-injective;
+    M6.3 direct `forward+inverse` round-trip for L1-short-circuited
+    injective kinds — the M6.2 push gate prevents `unstep!` from
+    reaching `inverse()` for SwapInstruction, MemoryInterchange,
+    MemorySwap). Strategy (a) chosen: `BennettVM.eval(body)` shadows
+    canonical method; `Base.delete_method` inside `try/finally`
+    restores; `n>=1` signature-drift check + post-restore GREEN
+    scaffold assertion form the double safety net.
+    **World-age trap finding:** Julia world-age semantics make a
+    freshly-`eval`'d method invisible to calls from any function
+    whose compilation predates the eval. First implementation gave
+    20/20 false GREEN. Fix: every call into mutated production code
+    is wrapped in `Base.invokelatest(...)`. Documented in file
+    docstring §"World-age caveat".
+    `CallInstruction.inverse()` excluded — its `make_delta` raises
+    unconditionally (v5-deferred per ADR 0002 §Open Questions item
+    4) so the L2 path cannot be driven. Audit-trail cross-reference
+    added at `src/ir/call_instruction.jl` (17-line docstring,
+    pure documentation, no behavior change) pointing at follow-up
+    `bennettvm-7cg` (P2).
+  - **M8.4** `989c6a9` — **UNREVIEWED** —
+    `test/generators/random_program.jl` — seeded random RSSA program
+    generator. `random_program(rng; shape=:any, size_hint=4)` with
+    three shape constructors (linear chain, conditional reconvergent
+    diamond, unrolled loop) + `default_rng() =
+    MersenneTwister(0xBE171973)` (BE1 = Bennett + 1973). Excludes
+    CallInstruction (same exclusion M8.3 took). Hostile reviewer NOT
+    RUN — session was cut short. Self-mutation-proof on the
+    determinism test passed (global-RNG injection → 20/20 RED →
+    restored). Follow-up `bennettvm-s9c` (P2) tracks the deferred
+    review. Do NOT re-open `bennettvm-bii` unless a regression is
+    found.
+
+## What you (next session) are picking up
+
+**M8.5 — 100-random-programs property test capstone — is the next bead.**
+
+`bennettvm-tnp` (P1). Consumes M8.2's scaffold + M8.4's generator:
+loop `default_rng()` 100 times, call `random_program(rng)`, push the
+program through `per_step_inverse_check` at multiple K and
+must_cache_set settings. The capstone for the M8 milestone. Note
+that M8.4 isn't externally reviewed — M8.5's full-suite green is
+itself a strong validation signal for the generator (100 random
+programs exercising scaffold+history+IR end-to-end), but flag any
+suspicious failure as a candidate generator bug first.
+
+Also outstanding before M8 milestone close:
+- `bennettvm-s9c` (P2) — deferred hostile review of M8.4 generator.
+- `bennettvm-7cg` (P2) — direct round-trip audit of
+  `CallInstruction.inverse()` (M8.3 follow-up).
+
+After M8: the four P0 SC9 motivating cases (M_DICT, M_DYN, M_NESTED,
+M_UNBOUNDED) which are the load-bearing acceptance gate before M13
+(Bennett.jl `target=:reversible_vm` dispatch arm).
+
+## Session 7 orchestration notes (partial)
+
+Same Opus + Sonnet pattern as Sessions 5 and 6. Orchestrator
+(opus[1m]) ran in foreground; each sub-bead spawned one Opus coder
+(general-purpose subagent) then one Sonnet hostile reviewer
+(general-purpose subagent). Reviewer per-claim signoff + mutation
+probes uncovered the load-bearing findings (M8.1 weak self-check,
+M8.2 L3 blind spot, M8.3 MemorySwap-duplicate + generic fragment).
+M8.4 review skipped due to time pressure — see `bennettvm-s9c`.
+
+**Stale untracked dirs**: the 8 `references/<topic>/` dirs (foundational,
+ad-and-checkpointing, implementations, quantum-uncomputation,
+reverse-debugging, reversible-ir, reversible-isa, reversible-languages)
+are local PDF stashes carried across sessions; they are NOT in
+`.gitignore` but also NOT committed yet. No effect on suite.
+
+### Earlier session marker (Session 6 close: 1997/1997)
 - **M7 (history layer L2: delta with min-cut) — CLOSED this session.**
   All seven sub-beads, orchestrated as Opus coder + Sonnet hostile
   reviewer pairs:
