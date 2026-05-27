@@ -291,6 +291,96 @@ function inverse(instr::CallInstruction, s::IState, prev)::IState
 end
 
 """
+    make_delta(instr::CallInstruction, s_pre::IState, step::Integer)
+        -> DeltaEntry{CallInstruction}
+
+L2 delta-entry constructor for `CallInstruction` (M7.3, bead
+`bennettvm-vk8`). **Always raises `ErrorException`** — cross-call
+delta semantics are deferred to v5 per ADR 0002 §Open Questions
+item 4.
+
+# Why this errors rather than returning an empty-payload entry
+
+`CallInstruction` is non-injective per M6.1 (`src/history/Injective.jl`
+default `false`), so M7.6's push site WILL call `make_delta` on it
+if a program contains a procedure call under `target=:reversible_vm`.
+The naïve choice would be to return `DeltaEntry(instr, NamedTuple(),
+step)` mirroring `ArithmeticAssignment` / `MemoryAssignment`. ADR
+0002 explicitly rejects this:
+
+> Row 15: `CallInstruction` — deferred to v5 per
+> `src/ir/call_instruction.jl`'s top-of-module docstring. Phase-2
+> (this iteration) treats `CallInstruction` as conservatively
+> non-injective; M3.x interpreter does not yet recurse into the
+> callee.
+> ([ADR 0002 §The mapping table, "Cross-procedure boundary" row])
+
+The reason: at this dispatch layer `CallInstruction.forward` only
+bumps `pc` (`src/ir/call_instruction.jl:266-274`). The actual
+recursive sub-execution of the callee's BasicBlocks — which is
+what would need a delta entry to record — lands at M3.x once the
+`VMProgram` callee registry exists. **An empty-payload entry would
+silently lie about the call's reversibility**: the M7.6 push would
+record "non-injective step at `step_count`" with no information,
+and any future `unstep!` that consulted the entry would do nothing
+(no payload to restore from). Worse: if a future v5 bead extended
+the delta to actually carry callee state, existing programs that
+were "running" with empty-payload entries would have those entries
+silently misinterpreted.
+
+Rule 1 demands fail-loud on unsupported cases. Raising here gives
+the user an exact message — "your program contains a `Call`,
+which v5 hasn't wired into the delta history yet" — and pins the
+v5 contract: when v5 lands, this method body is replaced (not the
+whole method), and the call sites in M7.6's push gate continue to
+work unchanged.
+
+# When this method is actually reached
+
+Only when:
+
+  * `M7.6`'s push site has landed (delta entries are pushed by
+    `step!`),
+  * a program contains a `CallInstruction` (M2.14 type),
+  * and the call's `forward`/`inverse` actually run (i.e. the
+    program is being executed under `target=:reversible_vm`).
+
+Until M7.6 lands, this method is callable but unreachable from
+the interpreter — only the M7.3 unit tests exercise it.
+
+# Workaround for users hitting this error
+
+Pre-v5: avoid procedure calls in Phase-2 programs. The motivating
+cases (PRD v4 §3.6.2 Cases A-D) are all flat or single-block
+programs that lower to no `CallInstruction`s.
+
+# Ref
+
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §Open Questions
+    item 4 — cross-call delta semantics deferred to v5.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §DeltaEntry payload
+    schema row 3 — "CallInstruction: deferred to v5".
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §The mapping table,
+    "Cross-procedure boundary" row.
+  * `src/ir/call_instruction.jl:266-291` (this file, `forward` /
+    `inverse` above) — pc-only stubs.
+  * `effective_call_direction` (below) — the helper that future
+    v5 sub-execution will consume to pick the callee direction.
+  * `CLAUDE.md` Rule 1 — fail loud on unsupported cases.
+  * Bead `bennettvm-vk8` (M7.3) — this method's bead.
+"""
+function make_delta(instr::CallInstruction, s_pre::IState,
+                    step::Integer)::DeltaEntry
+    error("BennettVM.make_delta(::CallInstruction): CallInstruction delta ",
+          "is deferred to v5 per ADR 0002 §Open Questions item 4. The ",
+          "recursive sub-execution semantics are not yet wired into the ",
+          "delta history. If you reached this error, a program contains a ",
+          "CallInstruction at step ", step, " (pc=", s_pre.pc, ") under ",
+          "target=:reversible_vm. Workaround: avoid procedure calls in ",
+          "Phase-2 programs until v5.")
+end
+
+"""
     effective_call_direction(instr::CallInstruction, vm_direction::Symbol) -> Symbol
 
 Returns `:forward` or `:backward` — the direction in which the callee

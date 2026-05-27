@@ -228,3 +228,67 @@ function inverse(instr::ArithmeticAssignment, s::IState, prev)::IState
     s.pc -= 1
     return s
 end
+
+"""
+    make_delta(instr::ArithmeticAssignment, s_pre::IState, step::Integer)
+        -> DeltaEntry{ArithmeticAssignment}
+
+L2 delta-entry constructor for `ArithmeticAssignment` (M7.3,
+bead `bennettvm-vk8`). ADR 0002 §DeltaEntry payload schema finding:
+the payload is an **empty `NamedTuple`** for all three modops in the
+M2.6-locked set (`{:xor, :add, :sub}`).
+
+# Why empty (verified at `src/ir/arithmetic_assignment.jl:220-230`)
+
+`inverse(::ArithmeticAssignment, s, prev)` declares `prev::Any`
+(untyped) and is empirically unused: the inverse recomputes
+`(lhs op rhs)` from the surviving locals (`_resolve` reads the
+operand symbols out of `s.locals` at the post-forward state, and the
+operands are unchanged by `forward` per the read/write table in
+ADR 0002 §Phase-2 RSSA dataflow row 1) and reconstructs the
+destroyed `source` value via `dual_modop(modop)` applied to the
+surviving `target` value. **No information from before `forward`
+needs to be captured** — the inverse is structural.
+
+The `s_pre` parameter is part of the dispatch signature for
+symmetry with future `make_delta` methods that DO need pre-state
+(e.g., a hypothetical `:mul`-by-constant modop, ADR 0002 §Open
+Questions item 5). It is unused here.
+
+# M6.1 / M7.6 interaction
+
+Under M6.1's value-level trait (`src/history/Injective.jl`),
+`ArithmeticAssignment` with `modop === :xor` is classified
+injective and never reaches `make_delta` — M7.6's push gate skips
+both L2 and L3 for it. `:add` and `:sub` are classified
+non-injective by M6.1 (conservative) and DO reach this method,
+but the delta they generate carries no information beyond the
+instruction reference and the step index.
+
+The open follow-up bead `bennettvm-ack` would promote `:add` /
+`:sub` to injective once the broader trait change lands; this
+method then becomes unreachable, which is fine. The method
+remains defined so the M7.6 push site can call it unconditionally
+on non-injective `ArithmeticAssignment`s without depending on the
+M6.1 broadening landing first.
+
+# Ref
+
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §DeltaEntry payload
+    schema — locks the empty-payload finding for this T.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §Design Decision 3 —
+    `make_delta` co-located with `forward`/`inverse` per Rule 11.
+  * `src/ir/arithmetic_assignment.jl:220-230` (this file, the
+    `inverse` method just above) — the structural-inverse code
+    that justifies the empty payload.
+  * `src/history/Injective.jl` — the L1 gate that already filters
+    `modop === :xor` to L1-skip.
+  * Bead `bennettvm-vk8` (M7.3) — this method's bead.
+  * Bead `bennettvm-ack` — open follow-up that would broaden M6.1
+    to all three modops, collapsing this method's L2 pushes into
+    L1-skips.
+"""
+function make_delta(instr::ArithmeticAssignment, s_pre::IState,
+                    step::Integer)::DeltaEntry
+    DeltaEntry(instr, NamedTuple(), step)
+end

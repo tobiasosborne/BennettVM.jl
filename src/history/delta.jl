@@ -124,14 +124,17 @@ their call sites.
 
 # What this file does NOT do
 
-  * **No `make_delta` constructors.** M7.3 (`bennettvm-vk8`) adds the
-    per-instruction `make_delta(instr::T, s_pre::IState, step::Int)
-    :: DeltaEntry{T}` methods alongside each instruction's own
-    `forward`/`inverse` (ADR 0002 Design Decision 3 — co-located
-    with `forward`/`inverse` per Rule 11). A bare convenience
-    constructor `DeltaEntry(instruction, payload, step)` is provided
-    here for type-inference convenience and for the tests; per-T
-    factories land at M7.3.
+  * **Per-instruction `make_delta` methods land in the instruction's
+    own file** (`src/ir/<instr>.jl`), NOT here, per ADR 0002 Design
+    Decision 3 (co-located with `forward`/`inverse` per Rule 11).
+    M7.3 (`bennettvm-vk8`) adds the per-T methods; this file carries
+    only the abstract generic fallback (defined at the bottom — see
+    `make_delta(instr::Instruction, ...)`) whose sole job is the
+    Rule-1 fail-loud raise for instruction types that lack a
+    specialisation. A bare convenience constructor
+    `DeltaEntry(instruction, payload, step)` is provided here for
+    type-inference convenience and for the tests; per-T factories
+    land at M7.3.
   * **No `inverse(::T, s, payload::NamedTuple)` methods.** M7.4
     (`bennettvm-bk5`) extends the existing `inverse(instr, s, prev)`
     signature with a `payload::NamedTuple` specialisation — strictly
@@ -327,4 +330,70 @@ function Base.hash(e::DeltaEntry{T}, h::UInt) where T
     h = hash(e.instruction, h)
     h = hash(e.payload, h)
     return h
+end
+
+"""
+    make_delta(instr::Instruction, s_pre::IState, step::Integer) -> DeltaEntry
+
+Per-instruction constructor that captures the minimum information
+needed to reverse `forward(instr, s_pre)` without a full IState
+snapshot. ADR 0002 §Design Decision 3: the per-instruction
+specialisations live in the instruction's own file
+(`src/ir/<instr>.jl`); this generic fallback catches forgotten
+types and surfaces them loudly (CLAUDE.md Rule 1).
+
+For the M7.1 ADR's key finding — `ArithmeticAssignment` and
+`MemoryAssignment` are structurally injective via `dual_modop`, so
+their deltas carry an EMPTY `NamedTuple` — see the per-instruction
+specialisations in `src/ir/arithmetic_assignment.jl` and
+`src/ir/memory_instructions.jl`.
+
+# Why this is the abstract entry point
+
+Two requirements from ADR 0002 collide here:
+
+  * **Per-instruction `make_delta` lives in each instruction's own
+    file** (Design Decision 3) — this means there is no single file
+    that imports every concrete subtype's `make_delta` method, and
+    therefore no "central registry" check for completeness.
+  * **Rule 1 demands fail-loud on unknown instruction kinds** — if
+    M7.6's push site calls `make_delta(some_new_instr, ...)` on a
+    type whose `make_delta` was forgotten, the system MUST raise a
+    descriptive error, not silently fall through to a NoMethodError
+    or worse a wrong-dispatch path.
+
+The generic abstract-typed fallback below satisfies both: it
+exists in this file because the file already imports the abstract
+`Instruction` supertype (`src/ir/instructions.jl:79`), and it
+errors descriptively naming the missing-specialisation type and
+the file the specialisation belongs in. Adding a new concrete
+instruction without a paired `make_delta` causes the next M7.6
+push to raise this error the first time the new instruction
+executes non-injectively — exactly the Rule 1 failure mode the
+ADR demands.
+
+# Note on `CallInstruction`
+
+`CallInstruction` does have a specialised `make_delta` method (in
+`src/ir/call_instruction.jl`) but it ALSO errors loudly — per ADR
+0002 §Open Questions item 4, cross-call deltas are deferred to v5.
+The specialisation exists so that future v5 work can replace just
+that method body without changing this fallback's contract.
+
+# Ref
+
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §Design Decision 3 —
+    "per-instruction file" location rule.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §Open Questions item
+    4 — CallInstruction deferred to v5.
+  * `CLAUDE.md` Rule 1 — fail loud on unknown / unsupported cases.
+  * Bead `bennettvm-vk8` (M7.3) — this method's bead.
+"""
+function make_delta(instr::Instruction, s_pre::IState, step::Integer)::DeltaEntry
+    error("BennettVM.make_delta: no specialisation for instruction of type ",
+          typeof(instr),
+          ". This usually means a non-injective instruction kind was added ",
+          "without a paired make_delta method. Add a method in the ",
+          "instruction's own file (src/ir/<instr>.jl) — ADR 0002 §Design ",
+          "Decision 3. Pre-state pc=", s_pre.pc, ", step=", step, ".")
 end

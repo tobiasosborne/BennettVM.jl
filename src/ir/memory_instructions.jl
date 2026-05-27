@@ -198,6 +198,77 @@ function inverse(instr::MemoryAssignment, s::IState, prev)::IState
 end
 
 """
+    make_delta(instr::MemoryAssignment, s_pre::IState, step::Integer)
+        -> DeltaEntry{MemoryAssignment}
+
+L2 delta-entry constructor for `MemoryAssignment` (M7.3, bead
+`bennettvm-vk8`). ADR 0002 §DeltaEntry payload schema finding: the
+payload is an **empty `NamedTuple`** for all three modops in the
+M2.6-locked set (`{:xor, :add, :sub}`).
+
+# Why empty (verified at `src/ir/memory_instructions.jl:181-198`)
+
+`inverse(::MemoryAssignment, s, prev)` declares `prev::Any`
+(untyped) and is empirically unused: the inverse recomputes
+`(lhs op rhs)` from the surviving locals (operands are unchanged
+by `forward` per ADR 0002 §Phase-2 RSSA dataflow rows 5-6) and
+reconstructs the old cell value via `dual_modop(modop)` applied to
+the surviving `s.memory[a]`. The delete-on-zero rule
+(`:189-195` above) handles the first-write case by re-establishing
+the zero-init equivalence. **No information from before `forward`
+needs to be captured** — the inverse is structural, exactly
+parallel to `ArithmeticAssignment` (`src/ir/arithmetic_assignment.jl`).
+
+The `s_pre` parameter is part of the dispatch signature for
+symmetry with future `make_delta` methods that might need
+pre-state. Unused here.
+
+# M6.1 / M7.6 interaction
+
+Unlike `ArithmeticAssignment`, M6.1 (`src/history/Injective.jl`)
+does NOT specialise `is_injective` for `MemoryAssignment` even
+on `modop === :xor` — the asymmetry is documented in ADR 0002
+§Open Questions item 3 (deliberately conservative; M6.1 owner
+chose not to add the value-level method). M7.6 therefore reaches
+this `make_delta` for ALL three modops at the current milestone.
+The open follow-up bead would parallel `bennettvm-ack` — call it
+`bennettvm-c0e` — and promote `MemoryAssignment` to value-level
+injective at least on `:xor`. Once that lands, the `:xor` case
+collapses to L1-skip and only `:add` / `:sub` reach this method;
+once a further broadening lands (parallel to the broader
+`bennettvm-ack`), even those become L1-skip and this method's L2
+pushes collapse to no-ops.
+
+Until then, the method remains defined so the M7.6 push site can
+call it unconditionally on non-injective `MemoryAssignment`s
+without depending on the M6.1 broadening landing first.
+
+# Ref
+
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §DeltaEntry payload
+    schema — locks the empty-payload finding for this T.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §Design Decision 3 —
+    `make_delta` co-located with `forward`/`inverse` per Rule 11.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §Open Questions
+    item 3 — the M6.1 asymmetry between `ArithmeticAssignment`
+    (has `:xor` specialisation) and `MemoryAssignment` (does not).
+  * `src/ir/memory_instructions.jl:181-198` (this file, the
+    `inverse` method just above) — the structural-inverse code
+    that justifies the empty payload, including the delete-on-zero
+    rule.
+  * `src/history/Injective.jl` — the L1 gate; `MemoryAssignment`
+    sits at the conservative `false` default.
+  * Bead `bennettvm-vk8` (M7.3) — this method's bead.
+  * Bead `bennettvm-c0e` (open follow-up) — parallel to
+    `bennettvm-ack` for `MemoryAssignment`'s injective trait
+    broadening.
+"""
+function make_delta(instr::MemoryAssignment, s_pre::IState,
+                    step::Integer)::DeltaEntry
+    DeltaEntry(instr, NamedTuple(), step)
+end
+
+"""
     MemoryInterchange (M2.12)
 
 The fourth concrete RSSA instruction in BennettVM's twelve-subclass
