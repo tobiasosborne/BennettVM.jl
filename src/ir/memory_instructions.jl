@@ -269,6 +269,54 @@ function make_delta(instr::MemoryAssignment, s_pre::IState,
 end
 
 """
+    inverse(instr::MemoryAssignment, s::IState, payload::NamedTuple) -> IState
+
+M7.4 NamedTuple specialisation per ADR 0002 §Design Decision 4
+(bd `bennettvm-bk5`). Per ADR 0002 §DeltaEntry payload schema row 2,
+the payload is `NamedTuple()` — `MemoryAssignment`'s inverse uses
+current state alone (the surviving operands in `s.locals` and the
+post-forward cell at `s.memory[a]`, with `dual_modop` recovering the
+old cell value; the delete-on-zero rule re-establishes the zero-init
+absent-key state at `:189-195` above).
+
+# Why both this method and `inverse(::MemoryAssignment, s, prev)`
+# coexist
+
+See the parallel `ArithmeticAssignment` NamedTuple specialisation in
+`src/ir/arithmetic_assignment.jl` for the full coexistence rationale.
+The `prev::Any` method (above) is the M2.4-convention path; this
+NamedTuple method is the M7.4 fast-path entry. Both must be defined
+so that `inverse(instr, s, payload)` dispatches here without
+shadowing the existing prev::Any method that M4 / M6.3 sites call.
+
+# Delegation
+
+The body delegates to `inverse(instr, s, nothing)`. The payload is
+empty per the ADR; a future Phase-2.x bead that introduces a modop
+or `op` carrying non-zero payload (e.g., the `:mul` family per ADR
+0002 §Open Questions item 5) would specialise this method with
+non-trivial payload reads.
+
+# Ref
+
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §Design Decision 4 —
+    additive `inverse` signature.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §DeltaEntry payload
+    schema row 2 — empty-payload finding for `MemoryAssignment`.
+  * `src/ir/memory_instructions.jl` (this file, the
+    `inverse(instr, s, prev)` method above) — the existing
+    `prev::Any` method this delegates to; delete-on-zero rule lives
+    there.
+  * `src/history/Replay.jl` (M7.4) — the unique current call site,
+    via the L2 fast-path.
+  * Bead `bennettvm-bk5` (M7.4) — this method's bead.
+"""
+function inverse(instr::MemoryAssignment, s::IState,
+                 payload::NamedTuple)::IState
+    inverse(instr, s, nothing)
+end
+
+"""
     MemoryInterchange (M2.12)
 
 The fourth concrete RSSA instruction in BennettVM's twelve-subclass

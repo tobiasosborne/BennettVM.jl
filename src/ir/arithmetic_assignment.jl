@@ -292,3 +292,61 @@ function make_delta(instr::ArithmeticAssignment, s_pre::IState,
                     step::Integer)::DeltaEntry
     DeltaEntry(instr, NamedTuple(), step)
 end
+
+"""
+    inverse(instr::ArithmeticAssignment, s::IState, payload::NamedTuple) -> IState
+
+M7.4 NamedTuple specialisation per ADR 0002 §Design Decision 4
+(bd `bennettvm-bk5`). The empty-payload finding from ADR 0002
+§DeltaEntry payload schema (row 1) means the NamedTuple here is
+expected to be `NamedTuple()` — the inverse needs nothing beyond
+current state for any of the M2.6-locked modops
+(`{:xor, :add, :sub}`). The payload is consumed only to satisfy the
+M7.4 dispatch contract.
+
+# Why both this method and `inverse(::ArithmeticAssignment, s, prev)`
+# coexist
+
+ADR 0002 §Design Decision 4 (verified at all 12 sites in the M7.1
+review) — every existing `inverse(::T, s, prev)` method declares
+`prev::Any`, so the M4 / M6.3 / per-step-inverse call sites that
+pass `nothing` or another `Any`-typed argument continue to dispatch
+to the existing method under the `::Any` slot. M7.4's
+NamedTuple specialisation is strictly additive: a call site that
+passes a `payload::NamedTuple` (the M7.4 fast-path in
+`src/history/Replay.jl`) dispatches here, NOT to the existing
+method. The two methods coexist for *contract symmetry* — the
+prev::Any method documents the original M2.6 inverse semantics; the
+NamedTuple method documents the M7.4 dispatch shape.
+
+# Delegation
+
+The body delegates to the existing `inverse(instr, s, nothing)`
+method, since the empty payload carries no extra information for
+this `T`. A future `bennettvm-ack` broadening that promotes `:add` /
+`:sub` to injective (M6.1) makes this method *unreachable* (the M7.6
+push site would skip the delta push for those modops); both
+NamedTuple and prev::Any methods remain defined for contract
+symmetry. The `:xor` modop is already M6.1-injective per the
+value-level discrimination at `src/history/Injective.jl`, so this
+method is only reached for `:add` and `:sub` at this milestone.
+
+# Ref
+
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §Design Decision 4 —
+    additive `inverse` signature; verified-at-12-sites cross-check.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §DeltaEntry payload
+    schema row 1 — empty-payload finding for `ArithmeticAssignment`.
+  * `src/ir/arithmetic_assignment.jl` (this file, the
+    `inverse(instr, s, prev)` method above) — the existing
+    `prev::Any` method this delegates to.
+  * `src/history/Replay.jl` (M7.4) — the unique current call site,
+    via the L2 fast-path.
+  * Bead `bennettvm-bk5` (M7.4) — this method's bead.
+  * Bead `bennettvm-ack` — open follow-up that would make this
+    method unreachable for `ArithmeticAssignment`.
+"""
+function inverse(instr::ArithmeticAssignment, s::IState,
+                 payload::NamedTuple)::IState
+    inverse(instr, s, nothing)
+end

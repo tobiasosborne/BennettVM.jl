@@ -381,6 +381,55 @@ function make_delta(instr::CallInstruction, s_pre::IState,
 end
 
 """
+    inverse(instr::CallInstruction, s::IState, payload::NamedTuple) -> IState
+
+M7.4 NamedTuple specialisation per ADR 0002 §Design Decision 4 (bd
+`bennettvm-bk5`). **Always raises `ErrorException`** — parallel to
+the `make_delta` v5-deferral above. This is the second line of
+defense: the first is `make_delta(::CallInstruction, ...)` which
+errors *before* any delta would ever be pushed (so M7.6's push site
+cannot reach a payload-bearing `DeltaEntry{CallInstruction}` in
+`s.history` at this milestone); the second is this method, which
+errors *if* `unstep!`'s M7.4 fast-path ever reaches a
+`DeltaEntry{CallInstruction}` (a state that should be unreachable
+under M7.6's push gate, but Rule 1 demands fail-loud even on the
+unreachable path).
+
+# Why this method exists separately from the prev::Any inverse
+
+`CallInstruction.inverse(instr, s, prev)` (above, line 288) is the
+pc-only dispatch-level inverse — the M3.x-pending placeholder.
+Calling that from M7.4's fast-path would silently no-op the call
+(only pc decrements), giving the *appearance* of a successful
+reverse step while the cross-call state was never restored. Rule 1
+forbids that silent corruption; the NamedTuple method raises
+descriptively instead.
+
+# Ref
+
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §Open Questions item 4
+    — cross-call delta semantics deferred to v5.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §The mapping table,
+    "Cross-procedure boundary" row.
+  * `src/ir/call_instruction.jl` (this file, `make_delta` above) —
+    the first line of defense; errors before push.
+  * `src/ir/call_instruction.jl` (this file, `inverse(instr, s, prev)`
+    above) — the pc-only dispatch-level inverse this method
+    deliberately does NOT delegate to.
+  * `CLAUDE.md` Rule 1 — fail loud on unsupported cases.
+  * Bead `bennettvm-bk5` (M7.4) — this method's bead.
+"""
+function inverse(instr::CallInstruction, s::IState,
+                 payload::NamedTuple)::IState
+    error("BennettVM.inverse(::CallInstruction, s, payload::NamedTuple): ",
+          "CallInstruction reverse-dispatch is deferred to v5 per ADR 0002 ",
+          "§Open Questions item 4. If you reached this error, a program ",
+          "contains a CallInstruction whose forward step pushed a delta ",
+          "(M7.6 should never have done this — file a bug). State at error: ",
+          "pc=", s.pc, ", status=", s.status, ".")
+end
+
+"""
     effective_call_direction(instr::CallInstruction, vm_direction::Symbol) -> Symbol
 
 Returns `:forward` or `:backward` — the direction in which the callee

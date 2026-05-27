@@ -1,5 +1,6 @@
 """
-    Replay (M4.3 + M4.4) — `unstep!` and `unrun!` via L3 checkpoint-replay
+    Replay (M4.3 + M4.4 + M7.4) — `unstep!` and `unrun!` via L2 delta
+    fast-path on top of the L3 checkpoint-replay fallback
 
 The third and fourth concrete steps in the PRD v4 §3.3 three-layer
 history implementation. Where M4.1 defined `CheckpointEntry` (the entry
@@ -12,6 +13,18 @@ until `s.step_count == 0`, then assert the structural exit invariant
 `isempty(s.history)` — the Bennett-1973 Stage-3 retrace's BennettVM
 realisation. Both functions are exported from this file; the M4.4
 prose lives below the M4.3 `unstep!` definition, just above `unrun!`.
+
+M7.4 (bd `bennettvm-bk5`) grows a *fast-path* on top of M4.3's
+checkpoint-restore-and-replay path: when the top of `s.history` is a
+`DeltaEntry` whose `step` field equals `s.step_count` (i.e., the delta
+for the just-completed forward step), `unstep!` pops the entry, calls
+`inverse(entry.instruction, s.current, entry.payload)` — the M7.4
+NamedTuple-dispatch specialisation in each non-injective instruction's
+file — and decrements `step_count` by 1. The L3 fallback is unchanged;
+control falls through to it whenever the fast-path doesn't apply
+(history top is a `CheckpointEntry`, history top is a `DeltaEntry`
+from an earlier step, or history is empty). See the `unstep!`
+docstring §"M7.4 — DeltaEntry fast-path" for the full rationale.
 
 # What `unstep!` does (one backward step)
 
@@ -200,13 +213,49 @@ raise an `ErrorException` with a descriptive message.
 # Algorithm
 
 See the top-of-file docstring §"The five-step algorithm" for the full
-specification. Briefly: find the nearest `CheckpointEntry` at or
-before the target step, restore its (deep-copied) snapshot into
-`s.current`, truncate later entries off `s.history`, reset
-`s.step_count`, then replay `step!` forward until `step_count ==
-target`. Replay passes `checkpoint_interval = typemax(Int)` to
-suppress spurious pushes (see top-of-file §"Why `checkpoint_interval
-= typemax(Int)` during replay").
+specification of the M4.3 path. Briefly: find the nearest
+`CheckpointEntry` at or before the target step, restore its
+(deep-copied) snapshot into `s.current`, truncate later entries off
+`s.history`, reset `s.step_count`, then replay `step!` forward until
+`step_count == target`. Replay passes `checkpoint_interval =
+typemax(Int)` to suppress spurious pushes (see top-of-file §"Why
+`checkpoint_interval = typemax(Int)` during replay").
+
+# M7.4 — DeltaEntry fast-path
+
+After the precondition check and before the M4.3 path, `unstep!`
+inspects the top of `s.history`. If it is a `DeltaEntry` whose `step`
+field equals `s.step_count` (the entry records the just-completed
+forward step), `unstep!`:
+
+  1. pops the `DeltaEntry`;
+  2. calls `inverse(entry.instruction, s.current, entry.payload)` —
+     the M7.4 NamedTuple-dispatch specialisation, distinct from the
+     existing `inverse(instr, s, prev)` method that accepts `nothing`
+     or other `Any`-typed `prev`;
+  3. decrements `s.step_count` by 1;
+  4. returns `s` directly.
+
+The `entry.step == s.step_count` guard (NOT `entry.step ==
+s.step_count - 1`) is correct: M7.6's push site (when it lands) will
+push deltas with `step = post-increment step_count`, mirroring M4.2's
+`CheckpointEntry` convention. So the delta on the top of history
+records "the state-transition that took `step_count` from `N-1` to
+`N`", and `unstep!` reverses *exactly* that transition.
+
+When the fast-path doesn't apply — the top of history is a
+`CheckpointEntry`, the top is a `DeltaEntry` whose `step` is strictly
+less than `s.step_count` (i.e., the most recent forward step was an
+injective L1-skip or an L3-deferred step that didn't push), or
+history is empty — control falls through to the M4.3 checkpoint-
+restore-and-replay path. Both paths produce the same result on the
+same delta+pre-state input (the fast-path is a sound *optimisation*;
+the M4.3 path is its general-case envelope).
+
+Composition with M6's L1 gate and M4.2's L3 gate is locked in
+ADR 0002 §Composition with M6. The architectural point is that the
+two reverse paths share the *same* RState shape; they differ only in
+which work the per-step reversal performs.
 
 # Ref
 
@@ -217,6 +266,11 @@ suppress spurious pushes (see top-of-file §"Why `checkpoint_interval
   * `src/interpreter/Interpreter.jl` (M4.2) — forward `step!` whose
     push policy this function inverts.
   * `src/ir/RState.jl` (M4.3) — the `initial::IState` anchor field.
+  * `src/history/delta.jl` (M7.2) — `DeltaEntry{T}` entry type the
+    M7.4 fast-path pops.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §Composition with M6 —
+    the binding composition rule for the push site and the dispatch
+    side (M7.4 is the dispatch-side half).
 """
 function unstep!(s::RState, prog::VMProgram)::RState
     # (1) Precondition. PRD v4 §3.16 + Rule 1: descriptive raise on
@@ -230,6 +284,41 @@ function unstep!(s::RState, prog::VMProgram)::RState
               "PRD v4 §3.16 requires a descriptive raise here ",
               "(not a silent no-op or default state). Rule 1: ",
               "reversibility violations are correctness bugs.")
+
+    # (1a) M7.4 — DeltaEntry fast-path (bd `bennettvm-bk5`). If the top
+    # of history is a DeltaEntry whose `step` field equals the current
+    # `step_count`, the most recent forward step left a delta record;
+    # pop it and apply the per-instruction inverse with the payload,
+    # no checkpoint-restore-and-replay needed. The
+    # `entry.step == s.step_count` guard is the post-increment
+    # convention M4.2's CheckpointEntry uses, mirrored here per ADR
+    # 0002 §DeltaEntry payload schema (the `step::Int` field carries
+    # the post-increment step_count at which the entry was pushed).
+    #
+    # When the guard is false (top is a CheckpointEntry, top is a
+    # DeltaEntry from an earlier step, or history is empty), control
+    # falls through to the existing M4.3 checkpoint-restore-and-replay
+    # path below. Both paths produce the same RState on the same
+    # delta+pre-state input.
+    #
+    # The third argument to `inverse` is `entry.payload::NamedTuple`,
+    # NOT `nothing`. The NamedTuple dispatches to the M7.4-added
+    # `inverse(::T, s::IState, payload::NamedTuple)` specialisation in
+    # the per-instruction file (`src/ir/arithmetic_assignment.jl`,
+    # `src/ir/memory_instructions.jl`); the existing
+    # `inverse(::T, s, prev)` method that accepts `prev::Any` (per the
+    # M2.4 dispatch convention) is the prev::Any path that M4.3
+    # post-replay does not use directly (its replay loop drives
+    # `step!` forward; M7.4's fast-path is the only consumer of
+    # `inverse` on the L2 layer at this milestone).
+    if !isempty(s.history) &&
+       last(s.history) isa DeltaEntry &&
+       _entry_step(last(s.history)) == s.step_count
+        entry = pop!(s.history)
+        inverse(entry.instruction, s.current, entry.payload)
+        s.step_count -= 1
+        return s
+    end
 
     target = s.step_count - 1
 
@@ -323,6 +412,27 @@ loop calls this on every entry it inspects, so a silent fallthrough
 to a wrong value would corrupt the history-pop decision.
 """
 _entry_step(e::CheckpointEntry) = e.step
+
+"""
+    _entry_step(entry::DeltaEntry) -> Int
+
+The polymorphic step-index accessor for the M7.2 L2 `DeltaEntry`.
+Mirrors `_entry_step(::CheckpointEntry)` so the truncation loop in
+`unstep!` step (5) is unchanged — it walks back popping entries with
+`step > target` regardless of entry type. Also consumed by the M7.4
+fast-path guard at step (1a) of `unstep!` and by `unrun!`'s
+post-condition diagnostic message.
+
+The search loop in `unstep!` step (2) (`entry isa CheckpointEntry &&
+entry.step <= target`) intentionally keeps the `isa CheckpointEntry`
+check — a `DeltaEntry` cannot serve as a restore anchor; only
+`CheckpointEntry` can (its `snapshot::IState` is what `s.current` is
+deepcopied from). The polymorphism via `_entry_step` is load-bearing
+*only* at the truncation loop and the diagnostic; restore-anchor
+selection remains type-specific.
+"""
+_entry_step(e::DeltaEntry) = e.step
+
 _entry_step(e::AbstractHistoryEntry) =
     error("_entry_step: no method for entry type ", typeof(e),
           " — M4.3's truncation loop needs an explicit step index. ",

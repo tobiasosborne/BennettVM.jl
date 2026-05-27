@@ -44,6 +44,11 @@ using BennettVM
     include("test_delta_entry.jl")
     include("test_checkpoint_push.jl")
     include("test_unstep.jl")
+    # M7.4 — unstep! L2 DeltaEntry fast-path tests (`bennettvm-bk5`).
+    # Sits after test_unstep.jl so the M4.3 baseline tests run first;
+    # the M7.4 tests build on `build_countdown_vm` (defined in
+    # test_forward_interpreter.jl) and the M7.2/M7.3 fixtures.
+    include("test_unstep_delta.jl")
     include("test_unrun.jl")
     include("test_roundtrip.jl")
 end
