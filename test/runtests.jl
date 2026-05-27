@@ -29,6 +29,12 @@ using BennettVM
     include("test_ir_types.jl")
     include("test_injective.jl")
     include("test_injective_inverse.jl")
+    # M6.4 capstone (bennettvm-moa). Integration test that composes
+    # M6.1 (`is_injective` trait), M6.2 (`step!` gate), M6.3 (per-
+    # instruction inverse contract): all-injective VM programs must
+    # produce zero history at every step and round-trip via the
+    # `s.initial` fallback path in Replay.jl.
+    include("test_zero_history_roundtrip.jl")
     include("test_interpreter.jl")
     include("test_forward_interpreter.jl")
     include("test_checkpoint_entry.jl")
