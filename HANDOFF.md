@@ -2,12 +2,73 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
-## Current state (2026-05-27 — Session 5 close)
+## Current state (2026-05-27 — Session 6 close)
 
 - **Phase:** **Phase 2 (production).**
 - **PRD:** `bennettvm_prd.md` is v4.
 - **Bennett.jl pin:** `877341e` (unchanged this session).
-- **Test suite:** **1591 / 1591 passing.** `julia --project=. -e 'using Pkg; Pkg.test()'`.
+- **Test suite:** **1997 / 1997 passing.** `julia --project=. -e 'using Pkg; Pkg.test()'`.
+- **M7 (history layer L2: delta with min-cut) — CLOSED this session.**
+  All seven sub-beads, orchestrated as Opus coder + Sonnet hostile
+  reviewer pairs:
+  - **M7.1** `cd911b6` — ADR 0002 `docs/adr/0002-enzyme-min-cut-mapping.md`.
+    Six binding design decisions for M7.2-M7.7. Key finding from
+    source cross-check: all three ArithmeticAssignment modops AND
+    MemoryAssignment are structurally injective via `dual_modop`;
+    strengthens `bennettvm-ack` and `bennettvm-c0e` follow-ups.
+  - **M7.2** `400593b` — `DeltaEntry{T<:Instruction} <: AbstractHistoryEntry`
+    at `src/history/delta.jl`. Parametric on T, NamedTuple payload,
+    step::Int field. Structural ==/hash. Julia 1.12 dispatch quirk
+    documented: do NOT add cross-T `==` method (shadows same-T).
+  - **M7.3** `9d1b374` — `make_delta(instr, s_pre, step)` per-instruction
+    in `src/ir/<instr>.jl` files. Per ADR finding: empty NamedTuple
+    payload for ArithmeticAssignment + MemoryAssignment;
+    CallInstruction errors v5-deferred. Generic fallback errors loudly.
+  - **M7.4** `c7edd6b` — `unstep!` DeltaEntry fast-path:
+    pop-and-inverse when top of history is a DeltaEntry whose step
+    matches step_count. Existing M4.3 path byte-preserved as
+    fallback. `inverse(::T, s, payload::NamedTuple)` specialisations
+    coexist with existing `prev::Any` methods (no ambiguity).
+  - **M7.5** `ecabb78` — `compute_must_cache(prog)::Set{Tuple{Symbol,Int}}`
+    + `must_cache(set, label, idx)::Bool` at `src/analysis/liveness.jl`
+    (new dir). Stub: returns all non-injective body positions.
+  - **M7.6** `281414a` — INTEGRATION. New kwargs on step!/run!:
+    `must_cache_set` (default empty) and `replay_mode` (default false).
+    Push gate is the ADR composition rule: replay_mode → L1 → L2 → L3.
+    `_block_index_at(prog, pc)` private helper. unstep!'s replay loop
+    sets replay_mode=true. **ADR deviation accepted**: kwarg, not
+    VMProgram field — avoids 18-file test cascade; default-empty
+    reproduces M6.2 behaviour bit-for-bit. Zero pre-existing regressions.
+  - **M7.7** `d29c9b2` — M7 milestone capstone. Seven testsets, 150
+    new assertions. **Sub-linear ratio achieved: 0.0909** on
+    18-Swap + 2-Arith program (well below 0.5 ADR floor, < 0.1
+    design target). Scaling sweep confirms ratio approaches the 10%
+    asymptote monotonically from below. L2 path matches L3 path on
+    countdown(5). Composition with M6 (all-injective → zero history)
+    preserved.
+
+## Session 6 orchestration notes
+
+Same Opus + Sonnet pattern as Session 5. The seven sub-beads ran
+sequentially per Rule 7 (no parallel Julia). Highlights:
+
+- **M7.1's ADR was binding**: subsequent coders deferred to ADR §
+  references rather than the (sometimes outdated) bead text. M7.3 in
+  particular ignored the bead's "capture pre-target value" wording
+  and followed the ADR's empty-payload finding.
+- **M7.6's ADR deviation**: `must_cache_set` ships as a kwarg, not a
+  VMProgram field. Hostile reviewer accepted this as an
+  optional-capability parameter (Rule 13 is about toggling competing
+  behaviours; the default here is a strict subset).
+- **M7.7 mutation-provability gap (informational)**: testset 3's
+  sub-linear ratio assertion is architecturally double-enforced by
+  L1 + L2, so no single-line mutation can drive ratio above 0.5.
+  Reviewer flagged this as a strength of the architecture, not a
+  defect.
+
+No follow-up beads filed this session (the existing `bennettvm-ack`,
+`bennettvm-c0e`, `bennettvm-xtb` from Sessions 4–5 were strengthened
+with ADR-derived rationale; nothing new emerged).
 - **Setup gotcha:** Manifest.toml is gitignored (per-machine). Fresh
   clones MUST run `julia --project=. -e 'using Pkg; Pkg.develop(path="../Bennett.jl"); Pkg.instantiate()'`
   before tests pass.
@@ -65,25 +126,29 @@ Follow-up beads filed this session (do not block M7):
 
 ## What you (next session) are picking up
 
-**M7 — history layer L2 (delta min-cut, Enzyme-style) — is the next
-milestone.**
+**M8 — per-step inverse property test — is the next milestone.**
 
-Per PRD v4 §3.3 layer 2: for non-injective ops in deterministic
-regions, the history payload is the minimal information required to
-invert the step (typically: the destroyed value(s), not a snapshot).
-The decision of which values to cache vs recompute is the Enzyme
-min-cut analysis (Moses-Churavy 2020 NeurIPS §2 "Cache") ported to
-Phase-2 IR.
+Per PRD v4 §3.13 (per-step inverse pattern) + §3.15 (property test
+discipline). M8 is mostly testing infrastructure that exercises the
+M2/M4/M6/M7 layers under randomised programs. M8.x sub-beads are in
+`bd ready`.
 
-PRD v4 §3.3 also mandates: "Before the delta-history selector is
-implemented, an ADR MUST identify which Phase-2 RSSA dataflow
-constructs correspond to Enzyme's LLVM-IR value-dependency graph
-edges. Filed as `docs/adr/0002-enzyme-min-cut-mapping.md`." This is
-the M7.1 first sub-bead (`bennettvm-80a` per `bd ready`).
+After M8: the four P0 SC9 motivating cases (M_DICT, M_DYN, M_NESTED,
+M_UNBOUNDED) which are the load-bearing acceptance gate before M13
+(Bennett.jl `target=:reversible_vm` dispatch arm).
 
-After M7: M8 (per-step inverse property test, currently filed as
-M8.x sub-beads). Then the four P0 SC9 motivating cases (M_DICT,
-M_DYN, M_NESTED, M_UNBOUNDED).
+**Parallel-startable alternatives** (independent of M8):
+- `bennettvm-ack` (P2): broaden `is_injective(ArithmeticAssignment)`
+  to `:add`/`:sub`. ADR 0002 source cross-check confirmed all three
+  modops are structurally injective via `dual_modop`. Small,
+  low-risk simplification that reduces M7.6's must_cache set.
+- `bennettvm-c0e` (P2): MemoryAssignment value-level injectivity.
+  Same shape as bennettvm-ack.
+- `bennettvm-6r6` (P1): M1.1 benchmark harness for history strategies.
+- `bennettvm-34c` (P1): M_OPCODE audit of lower_vm vs Bennett.jl's
+  17 IRInst subtypes.
+- `bennettvm-81y` (P1): M_FP.1 ADR for SoftFloat-dispatch FP
+  inheritance.
 
 ### Open observation carried over from Session 4
 
