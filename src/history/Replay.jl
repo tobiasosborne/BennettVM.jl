@@ -116,23 +116,38 @@ replay forward".
      checkpoint walk's selection criterion); so the loop is bounded
      by `target - start_step` iterations.
 
-# Why `checkpoint_interval = typemax(Int)` during replay
+# Why `checkpoint_interval = typemax(Int)` during replay (M4.2 + M7.6 update)
 
-M4.2's `step!` push guard is `s.step_count % checkpoint_interval == 0
-&& s.step_count > 0`. With `K = typemax(Int)`, for any `step_count`
+M4.2's `step!` push guard for L3 is `s.step_count % checkpoint_interval
+== 0 && s.step_count > 0`. With `K = typemax(Int)`, for any `step_count`
 in `[1, typemax(Int) - 1]` we have `step_count % typemax(Int) ==
-step_count`, which is `> 0` (never `== 0`). The push therefore never
-fires. Setting K to `typemax(Int)` is the cleanest way to suppress
-pushes without introducing a "replay mode" flag on `RState` or a
-second variant of `step!`. The cost is one redundant modulo per step
-during replay; M4.5's round-trip benchmark will show this is below
-the noise floor for the four motivating cases of PRD v4 §3.6.2.
+step_count`, which is `> 0` (never `== 0`). The L3 push therefore
+never fires. Pre-M7.6 this was the *only* push the replay loop had
+to suppress, so `K = typemax(Int)` was the load-bearing signal.
+
+**M7.6 update.** M7.6 introduced an L2 (delta) push path that fires
+when `must_cache(set, label, idx)` is true — independent of K. The
+`typemax(Int)` trick does NOT suppress L2; if the caller's
+`must_cache_set` is non-empty and replay drives `step!` through a
+non-injective body slot in the set, the replay would re-create the
+DeltaEntry `unstep!` just popped, breaking the M4.4
+`isempty(history)` post-condition.
+
+The fix is a new `replay_mode::Bool` kwarg on `step!` (and `run!`)
+that suppresses BOTH L2 and L3 pushes. M4.3's replay loop now
+passes `replay_mode=true`. The `checkpoint_interval=typemax(Int)`
+spelling is retained alongside it — see the comment at the replay
+loop in `unstep!` step (6) — both for symmetry with the M4.2
+documentation and as defense in depth (if a future agent removes
+`replay_mode=true` accidentally, the typemax(Int) still prevents
+the L3 push, which is still a partial improvement over an
+uncontrolled replay).
 
 The alternative — calling a hypothetical internal `_step_without_push!`
 — was rejected on Law 2 / Rule 11 grounds: every consumer that wants
-"step without push" can spell it as `step!(..., checkpoint_interval =
-typemax(Int))`, and forking the function signature would duplicate
-the dispatch logic for no readability gain.
+"step without push" can spell it as `step!(..., replay_mode=true)`,
+and forking the function signature would duplicate the dispatch
+logic for no readability gain.
 
 # Why `s.initial` is the fallback rather than recomputing from input
 
@@ -217,9 +232,13 @@ specification of the M4.3 path. Briefly: find the nearest
 `CheckpointEntry` at or before the target step, restore its
 (deep-copied) snapshot into `s.current`, truncate later entries off
 `s.history`, reset `s.step_count`, then replay `step!` forward until
-`step_count == target`. Replay passes `checkpoint_interval =
-typemax(Int)` to suppress spurious pushes (see top-of-file §"Why
-`checkpoint_interval = typemax(Int)` during replay").
+`step_count == target`. Replay passes `replay_mode=true` (M7.6) AND
+`checkpoint_interval = typemax(Int)` (M4.2, kept for symmetry) to
+suppress spurious pushes — see top-of-file §"Why `checkpoint_interval
+= typemax(Int)` during replay" and the M7.6 update note in the same
+section. The `replay_mode=true` flag is the primary signal post-M7.6
+because it suppresses BOTH L2 (delta) and L3 (checkpoint) pushes,
+where `checkpoint_interval=typemax(Int)` alone only suppresses L3.
 
 # M7.4 — DeltaEntry fast-path
 
@@ -378,17 +397,33 @@ function unstep!(s::RState, prog::VMProgram)::RState
         pop!(s.history)
     end
 
-    # (6) Replay forward to target. The kwarg suppresses spurious
-    # pushes (see top-of-file §"Why `checkpoint_interval = typemax(Int)`
-    # during replay"). The loop is bounded by `target - start_step`
-    # iterations — at most `K - 1` for a target one-past the nearest
-    # checkpoint (typical M4.2 K=64 default → at most 63 replay
-    # steps), and at most `step_count_before - 1` for the worst-case
-    # fallback to s.initial (i.e., no checkpoint at or before
-    # target — only happens when target < first_checkpoint_step,
-    # which for K=64 means target < 64).
+    # (6) Replay forward to target. Both kwargs suppress spurious
+    # pushes during replay:
+    #
+    #   - `replay_mode=true` (M7.6): the primary signal — suppresses
+    #     ALL pushes (L2 AND L3). Without it, the replay path would
+    #     re-create L2 DeltaEntries that `unstep!`'s fast-path just
+    #     popped, breaking the M4.4 `isempty(history)` post-condition.
+    #   - `checkpoint_interval=typemax(Int)` (M4.2): kept for symmetry
+    #     and documentation. Pre-M7.6 this was the only mechanism;
+    #     post-M7.6 it is redundant when `replay_mode=true` (the L3
+    #     branch is skipped via `replay_mode` before the modulo check
+    #     would matter). Retained because (a) the M4.2 docstring
+    #     references it explicitly and (b) defense in depth: if a
+    #     future agent removes the `replay_mode=true` argument
+    #     accidentally, the typemax(Int) still prevents the L3 push.
+    #
+    # The loop is bounded by `target - start_step` iterations — at
+    # most `K - 1` for a target one-past the nearest checkpoint
+    # (typical M4.2 K=64 default → at most 63 replay steps), and at
+    # most `step_count_before - 1` for the worst-case fallback to
+    # s.initial (i.e., no checkpoint at or before target — only
+    # happens when target < first_checkpoint_step, which for K=64
+    # means target < 64).
     while s.step_count < target
-        step!(s, prog; checkpoint_interval=typemax(Int))
+        step!(s, prog;
+              checkpoint_interval=typemax(Int),
+              replay_mode=true)
     end
 
     return s

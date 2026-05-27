@@ -54,6 +54,14 @@ using BennettVM
     # the M7.4 tests build on `build_countdown_vm` (defined in
     # test_forward_interpreter.jl) and the M7.2/M7.3 fixtures.
     include("test_unstep_delta.jl")
+    # M7.6 — L2 delta push integration into `step!` (`bennettvm-7e7`).
+    # Sits after `test_unstep_delta.jl` because the M7.6 round-trip
+    # test (`L2 suppressed in replay`) exercises the M7.4 unstep!
+    # fast-path; that fast-path's baseline tests run first. Also
+    # depends on `build_countdown_vm` from test_forward_interpreter.jl
+    # and on `compute_must_cache` from test_liveness.jl's M7.5
+    # subject.
+    include("test_delta_push.jl")
     include("test_unrun.jl")
     include("test_roundtrip.jl")
 end

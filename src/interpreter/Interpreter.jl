@@ -445,7 +445,93 @@ function _instruction_at(prog::VMProgram, pc::Int)
 end
 
 """
-    step!(s::RState, prog::VMProgram; checkpoint_interval::Int = 64) -> RState
+    _block_index_at(prog::VMProgram, pc::Int) -> Tuple{Symbol, Int}
+
+Resolve the flat-stream address `pc` (1-based) to the
+`(block_label, body_idx)` coordinate consumed by M7.5's
+`must_cache(set, label, idx)` query. The coordinate convention
+matches `compute_must_cache`'s loop (`src/analysis/liveness.jl`):
+
+  * `block_label` — the `BasicBlock.label` field of the block
+    containing `pc`.
+  * `body_idx` — 1-based index INTO `block.instructions` (i.e., the
+    non-control body only) when `pc` lands on a body slot. For the
+    entry-marker slot we return `0`; for the exit-marker slot we
+    return `length(block.instructions) + 1`. The latter two values
+    never satisfy `must_cache` (M7.5's set only contains body
+    indices) so the L2 path never fires for control-flow markers —
+    consistent with M6.1's type-level injectivity for all six
+    `ControlInstruction` subtypes.
+
+# Why this lives next to `_instruction_at`, not in liveness.jl
+
+The M7.6 push site needs *both* the resolved instruction (for the
+`is_injective` and `make_delta` dispatch) AND its (block_label,
+body_idx) coordinate (for the `must_cache` query). Having both
+resolvers in the same file lets them share the block-walk loop
+shape verbatim and stay co-located with the M3.3 docstring's
+flat-stream layout explanation. `compute_must_cache` in
+`src/analysis/liveness.jl` is the *producer* of the set; this
+helper is its corresponding per-pc *coordinate-lookup* — they meet
+at the M7.6 push site in `step!`.
+
+# Cross-block dispatch interaction
+
+The M7.6 push site captures `pc_before = s.current.pc` at the top
+of `step!` (BEFORE `forward()` and BEFORE
+`_handle_cross_block_dispatch!`), so this helper always sees the
+pc that was *dispatched on*, not the post-step pc (which for
+Uncond/Cond Exit gets overridden to the destination block by
+`_dispatch_to_block!`). For a non-injective body instruction in
+any block — entry block or otherwise — `pc_before` is the address
+of that body slot in the flat stream, regardless of how control
+arrived. The walk below produces the matching (label, idx) per
+the M2.16 `fwd_address` convention.
+
+# Ref
+
+  * ADR 0002 §"Design decisions that ripple to M7.2–M7.7" decision
+    5 — the `Set{Tuple{Symbol, Int}}` coordinate convention.
+  * `src/analysis/liveness.jl` (M7.5) — the producer of the set
+    this helper's output is queried against.
+  * `src/ir/basic_block.jl` (M2.15) — `BasicBlock` field layout;
+    `instructions` is the non-control body only.
+  * `_instruction_at` (above) — the sibling resolver that returns
+    the instruction value at `pc`; this helper returns its
+    coordinate. Both share the flat-stream walk shape.
+  * CLAUDE.md Rule 1 — fail loud on out-of-range pc.
+"""
+function _block_index_at(prog::VMProgram, pc::Int)::Tuple{Symbol, Int}
+    pc < 1 && error("_block_index_at: pc=", pc,
+                    " < 1 (program addresses are 1-based; the M2.16 ",
+                    "LabelEntry.fwd_address constructor rejects values ",
+                    "< 1). Rule 1 fail-loud.")
+    pos = 1
+    for b in prog.blocks
+        body_len = length(b.instructions)
+        if pc == pos
+            # Entry marker. Return body_idx == 0 — never a key in
+            # the must_cache set (whose body indices start at 1).
+            return (b.label, 0)
+        elseif pc > pos && pc <= pos + body_len
+            return (b.label, pc - pos)
+        elseif pc == pos + body_len + 1
+            # Exit marker. Return body_idx == body_len + 1 — never
+            # a key in the must_cache set.
+            return (b.label, body_len + 1)
+        end
+        pos += 2 + body_len
+    end
+    error("_block_index_at: pc=", pc, " beyond end of program ",
+          "(total flat-stream instruction count = ", pos - 1,
+          "). This indicates a corrupted RState — Rule 1 fail-loud.")
+end
+
+"""
+    step!(s::RState, prog::VMProgram;
+          checkpoint_interval::Int = 64,
+          must_cache_set::Set{Tuple{Symbol, Int}} = Set{Tuple{Symbol, Int}}(),
+          replay_mode::Bool = false) -> RState
 
 Advance the interpreter one instruction forward in `prog`. Returns the
 same `RState` (mutated in place); the return value is for chaining and
@@ -645,6 +731,92 @@ the push (because `step_count > 0` and `step_count % K` would be
 negative in Julia for negative K — well-defined but useless).
 Failing loud at the boundary beats every alternative.
 
+# M7.6 — L2 delta push integration
+
+PRD v4 §3.3 layer 2 ("delta entries with min-cut selection") is the
+binding mandate for L2; ADR 0002 §"Composition with M6's injective
+gate" locks the three-way decision at the push site:
+
+    s.step_count += 1
+    if replay_mode                            # M7.6: suppress all pushes
+        # nothing
+    elseif is_injective(instr)                # L1 (M6.2)
+        # nothing
+    elseif must_cache(must_cache_set, blk, i) # L2 (M7.6)
+        push!(s.history, make_delta(instr, s_pre, s.step_count))
+    elseif s.step_count % K == 0              # L3 (M4.2)
+        push!(s.history, CheckpointEntry(s.current, s.step_count))
+    end
+
+The `(blk, i)` coordinate is `_block_index_at(prog, pc_before)`,
+where `pc_before` is captured at the *top* of `step!` (before
+`forward()` and `_handle_cross_block_dispatch!` overwrite pc). The
+M7.5 coordinate convention (body indices 1..N inside the block's
+`instructions` field) matches this lookup; entry / exit markers
+produce body_idx 0 / N+1 which are never in the must_cache set.
+
+## `must_cache_set` — kwarg, NOT a VMProgram field (M7.6 decision A)
+
+ADR 0002 §Design Decision 5 says the must-cache set "lives on
+VMProgram". M7.6 ships the set as a kwarg on `step!` and `run!`
+instead, defaulting to `Set{Tuple{Symbol, Int}}()` (empty). With
+the default, the L2 branch never fires (membership in the empty
+set is always false), and existing callers see the M4.2 / M6.2
+behaviour unchanged — a strict superset of pre-M7 semantics.
+
+This is NOT a feature flag (CLAUDE.md Rule 13): the default-empty
+case is *strictly sound* (L3 takes over for non-injective steps
+the empty set "rejects"). The deviation from the ADR's "lives on
+VMProgram" wording is a deliberate scope choice to avoid the test
+cascade across 18+ M4.x test files that adding a VMProgram field
+would force. A future refactor MAY move the set to VMProgram once
+measurements justify the cascade; this rewrite is non-breaking.
+M7.7 (and any production caller) explicitly passes
+`compute_must_cache(prog)` to opt into L2.
+
+## `replay_mode::Bool = false` — suppresses ALL pushes (M7.6 decision C)
+
+`unstep!`'s M4.3 replay loop calls `step!(s, prog;
+checkpoint_interval=typemax(Int))` to drive the interpreter from a
+restored checkpoint to the backward target. Pre-M7.6 that
+suppressed L3 pushes (the `% typemax(Int)` modulo never hits 0
+for any positive step_count). Post-M7.6 we ALSO need to suppress
+L2 pushes during replay — otherwise the replay path would
+re-create the very DeltaEntries `unstep!` just popped. The
+`replay_mode=true` flag suppresses both layers uniformly, and
+M4.3's `unstep!` sets it. The `checkpoint_interval=typemax(Int)`
+spelling is kept for symmetry (M4.3 still passes it for clarity)
+but is redundant when `replay_mode=true`.
+
+## `s_pre` simplification — pass `s.current` (the ADR's pre-state arg)
+
+ADR 0002 §"Payload construction order" specifies `make_delta(instr,
+s_pre, step)` where `s_pre` is the IState *before* `forward()`
+mutates it. The empty-payload finding (ADR 0002 §"DeltaEntry
+payload schema") establishes that every current non-injective
+instruction's `make_delta` *ignores* `s_pre` (the payload is
+`NamedTuple()`). M7.6 therefore passes `s.current` (post-forward)
+rather than capturing `deepcopy(s.current)` BEFORE forward(), which
+would be a wasted deepcopy at every non-injective step.
+
+**Future caveat.** If a future Phase-2.x bead introduces a
+non-injective instruction whose `make_delta` reads `s_pre`'s
+fields (a non-self-inverse modop, a new memory-with-residue
+instruction), M7.6's push site MUST be revisited to capture
+`deepcopy(s.current)` *before* forward() and pass the captured
+snapshot as `s_pre`. The current shortcut is safe ONLY because all
+existing `make_delta` methods ignore `s_pre`. Filed under ADR
+0002 §"Open questions" item 5.
+
+## Backward compatibility
+
+The defaults (`must_cache_set = Set{...}()`, `replay_mode = false`)
+reproduce the M6.2 push behaviour exactly: the L2 branch never
+fires (empty set), the `replay_mode` suppression never fires, and
+the L3 branch is the only push path. Every pre-M7.6 test that
+constructed a `step!` or `run!` call without the new kwargs gets
+the M4.2 / M6.2 behaviour bit-for-bit.
+
 # Ref
 
   * `bennettvm_prd.md` (PRD v4) §3.11 — `step!(rstate, prog) :: RState`
@@ -653,6 +825,24 @@ Failing loud at the boundary beats every alternative.
     periodic full-state checkpoints + deterministic forward replay;
     "every 64 retained-snapshot-equivalent steps" is the placeholder
     default K.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §"Composition with M6's
+    injective gate" — the binding three-way decision at the push
+    site this implementation discharges.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §"DeltaEntry payload
+    schema" — the empty-payload finding that justifies the `s_pre`
+    simplification.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §"Design decisions
+    that ripple to M7.2–M7.7" decision 5 — the
+    `Set{Tuple{Symbol, Int}}` coordinate convention.
+  * `src/analysis/liveness.jl` (M7.5) — `compute_must_cache` /
+    `must_cache`, the producer and query for the set this kwarg
+    carries.
+  * `src/history/delta.jl` (M7.2) — `DeltaEntry{T}` the L2 branch
+    pushes.
+  * `src/ir/<instr>.jl` (M7.3) — per-instruction `make_delta`
+    methods this push site dispatches to.
+  * `src/history/Replay.jl` (M4.3 / M7.4) — `unstep!`'s replay loop
+    that passes `replay_mode=true` to suppress all pushes.
   * `spike/RETROSPECTIVE.md` Q2.2 — deepcopy semantics + the
     forward-before-push ordering invariant; the "deepcopy inside
     CheckpointEntry's constructor" decision pattern that lets
@@ -676,7 +866,10 @@ Failing loud at the boundary beats every alternative.
     history-length values, not just "didn't throw").
 """
 function step!(s::RState, prog::VMProgram;
-               checkpoint_interval::Int = 64)::RState
+               checkpoint_interval::Int = 64,
+               must_cache_set::Set{Tuple{Symbol, Int}} =
+                   Set{Tuple{Symbol, Int}}(),
+               replay_mode::Bool = false)::RState
     # (1) Silent no-op gate. The `===` comparison matches the M2.1
     # IState.status convention (identity on interned symbols). Returning
     # early here makes `step!` idempotent on a non-running state, which
@@ -706,6 +899,19 @@ function step!(s::RState, prog::VMProgram;
               "boundary) requires this validation at the entry to ",
               "step!, not deeper in the call stack.")
 
+    # (2a) M7.6 — Capture `pc_before` BEFORE forward() / cross-block
+    # dispatch overwrite it. Used at the push gate below to derive the
+    # `(block_label, body_idx)` coordinate the M7.5 `must_cache` query
+    # consults. For cross-block-exit instructions (Uncond/Cond Exit),
+    # `s.current.pc` will be overwritten by `_dispatch_to_block!` to
+    # the destination block's first body slot — but those Exit
+    # instructions are themselves `ControlInstruction`s and hence
+    # always injective (M6.1 type-level), so the M7.6 L2 branch never
+    # fires for them anyway. Capturing `pc_before` here is the
+    # uniform-shape choice: it is correct regardless of which
+    # instruction class fires.
+    pc_before = s.current.pc
+
     # (3) Resolve the instruction at the current pc. Out-of-range pc
     # raises in `_instruction_at` (Rule 1).
     instr = _instruction_at(prog, s.current.pc)
@@ -730,35 +936,56 @@ function step!(s::RState, prog::VMProgram;
         s.current.status = :halted
     end
 
-    # (7) M4.2 — Step-count increment + periodic checkpoint push. Both
-    # happen only on this success path: the early-return at (1) skips
-    # this entirely (count unchanged), and any exception thrown by
-    # `forward` / `_handle_cross_block_dispatch!` propagates past this
-    # block (count unchanged, history unchanged).
+    # (7) M4.2 / M6.2 / M7.6 — Step-count increment + three-way push
+    # gate. The increment happens unconditionally on success (the
+    # early-return at (1) skips it; an exception in forward() /
+    # cross-block propagates past it). The push gate composes:
     #
-    # The push captures the POST-step IState (s.current after forward +
-    # dispatch + halt) and the POST-increment step_count, matching the
-    # rr-style "checkpoint = resumption point" convention M4.3 will
-    # consume. The deepcopy is inside CheckpointEntry's constructor
-    # (`src/history/CheckpointEntry.jl` §"Why deep-copy in the
-    # constructor"); doing it a second time here would be redundant
-    # and confusing — see this function's docstring §"Why the deepcopy
-    # lives inside CheckpointEntry's constructor".
+    #   - `replay_mode=true` (M7.6) suppresses ALL pushes, replacing
+    #     the old `checkpoint_interval=typemax(Int)` trick at M4.3's
+    #     replay loop (which only suppressed L3; M7.6 also has to
+    #     suppress L2).
+    #   - L1 (`is_injective(instr)` — M6.2): no push, ever. The inverse
+    #     is recoverable from current state alone (Vieri Pendulum
+    #     §4.2.1 + Mogensen RSSA §3 — see this docstring's
+    #     §"M6.2 — L1 'no log' gate").
+    #   - L2 (`must_cache(must_cache_set, label, idx)` — M7.6): push a
+    #     DeltaEntry. Default empty set → L2 never fires → backwards-
+    #     compat with M6.2 behaviour. `compute_must_cache(prog)`
+    #     populates the set; M7.7 (and any production caller) opts in
+    #     by passing it.
+    #   - L3 (`step_count % checkpoint_interval == 0` — M4.2): push a
+    #     CheckpointEntry. Safety net per PRD §3.3 lines 461-465.
     #
-    # M6.2 — gate on `!is_injective(instr)`. PRD v4 §3.3 layer 1: an
-    # injective instruction needs no history entry because its inverse
-    # is recoverable from current state alone. The trait is defined at
-    # `src/history/Injective.jl` (M6.1); see this function's docstring
-    # §"M6.2 — L1 'no log' gate" for the full rationale. `step_count`
-    # increments unconditionally (Replay.jl's `unstep!` indexes by the
-    # counter; the absence of a push at injective steps falls through
-    # to the prior checkpoint or to `s.initial`).
+    # See this docstring's §"M7.6 — L2 delta push integration" for the
+    # design-decision rationale (kwarg vs VMProgram field, the s_pre
+    # simplification, the replay_mode flag).
     s.step_count += 1
-    should_checkpoint = !is_injective(instr) &&
-                        s.step_count > 0 &&
-                        s.step_count % checkpoint_interval == 0
-    if should_checkpoint
-        push!(s.history, CheckpointEntry(s.current, s.step_count))
+    if !replay_mode
+        if is_injective(instr)
+            # L1 (M6.2). No push.
+        else
+            (block_label, body_idx) = _block_index_at(prog, pc_before)
+            if must_cache(must_cache_set, block_label, body_idx)
+                # L2 (M7.6). Per ADR 0002 §"DeltaEntry payload schema",
+                # all current `make_delta` methods ignore their `s_pre`
+                # argument (empty-payload finding). Passing `s.current`
+                # (post-forward) is therefore safe; a future
+                # non-empty-payload make_delta would require capturing
+                # `deepcopy(s.current)` BEFORE forward() at (4) — see
+                # this docstring's §"s_pre simplification" and ADR
+                # 0002 §"Open questions" item 5.
+                push!(s.history,
+                      make_delta(instr, s.current, s.step_count))
+            elseif s.step_count > 0 &&
+                   s.step_count % checkpoint_interval == 0
+                # L3 (M4.2). The deepcopy is inside CheckpointEntry's
+                # constructor (`src/history/CheckpointEntry.jl`);
+                # doing it a second time here would be redundant and
+                # confusing.
+                push!(s.history, CheckpointEntry(s.current, s.step_count))
+            end
+        end
     end
 
     return s
@@ -1083,7 +1310,10 @@ end
 """
     run!(s::RState, prog::VMProgram;
          max_steps::Int = 10_000,
-         checkpoint_interval::Int = 64) -> RState
+         checkpoint_interval::Int = 64,
+         must_cache_set::Set{Tuple{Symbol, Int}} =
+             Set{Tuple{Symbol, Int}}(),
+         replay_mode::Bool = false) -> RState
 
 Repeatedly `step!` until `is_halted(s)`, or until `max_steps`
 steps have been taken — whichever first. Errors descriptively if
@@ -1114,6 +1344,23 @@ tests, the M5 Handoff-A bridge — choose the L3 history density
 without re-implementing the loop driver. See `step!` docstring
 §"M4.2 — Checkpoint push" for the per-step push semantics.
 
+# M7.6 — `must_cache_set` and `replay_mode` forwarding
+
+Both new M7.6 kwargs are forwarded verbatim to every `step!` call.
+
+  * `must_cache_set::Set{Tuple{Symbol, Int}}` — the L2 must-cache
+    set produced by `compute_must_cache(prog)`
+    (`src/analysis/liveness.jl`). Default empty → L2 path never
+    fires → backwards-compat with M6.2 behaviour. Production
+    callers pass `compute_must_cache(prog)` to opt into L2.
+  * `replay_mode::Bool` — when `true`, ALL pushes (L2 and L3) are
+    suppressed. M4.3's `unstep!` replay loop sets this to `true`.
+    Default `false` for backwards compat with every pre-M7.6 caller.
+
+See `step!` docstring §"M7.6 — L2 delta push integration" for the
+full design rationale (kwarg-vs-VMProgram-field decision, the
+`s_pre` simplification, and the `replay_mode` semantics).
+
 # Arguments
 
   * `s` — RState; mutated in place.
@@ -1122,6 +1369,10 @@ without re-implementing the loop driver. See `step!` docstring
     loop programs like `collatz_steps(::Int8)`.
   * `checkpoint_interval` — keyword; default 64. Forwarded to every
     `step!` call.
+  * `must_cache_set` — keyword; default empty. Forwarded to every
+    `step!` call (M7.6).
+  * `replay_mode` — keyword; default `false`. Forwarded to every
+    `step!` call (M7.6).
 
 # Returns
 
@@ -1145,7 +1396,10 @@ iterations. Also raises (via `step!`) if `checkpoint_interval <= 0`.
 """
 function run!(s::RState, prog::VMProgram;
               max_steps::Int = 10_000,
-              checkpoint_interval::Int = 64)
+              checkpoint_interval::Int = 64,
+              must_cache_set::Set{Tuple{Symbol, Int}} =
+                  Set{Tuple{Symbol, Int}}(),
+              replay_mode::Bool = false)
     n = 0
     while !is_halted(s)
         n >= max_steps && error(
@@ -1153,7 +1407,10 @@ function run!(s::RState, prog::VMProgram;
             "(pc=$(s.current.pc), status=$(s.current.status)). ",
             "The RState is left mid-run for inspection / unrun!. ",
             "Increase max_steps or check for non-termination.")
-        step!(s, prog; checkpoint_interval=checkpoint_interval)
+        step!(s, prog;
+              checkpoint_interval=checkpoint_interval,
+              must_cache_set=must_cache_set,
+              replay_mode=replay_mode)
         n += 1
     end
     return s
