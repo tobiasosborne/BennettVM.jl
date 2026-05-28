@@ -41,6 +41,17 @@ using BennettVM
     # Sits right after `test_define.jl` — its sibling; depends only on
     # already-loaded symbols.
     include("test_select.jl")
+    # M_OPCODE (ADR 0013 §D-5 step 1, ADR 0012 §D1 template) —
+    # `CastInstruction`, the reversible width-cast SSA-create
+    # (`bennettvm-hek`). Unit tests for forward (sext/zext/trunc with
+    # hand-computed LLVM-semantics expected values, incl. high-bit-set
+    # zext, negative-from-width sext, high-bit-dropping trunc), operand-
+    # survives / overwrite-at-forward, literal operand, constructor
+    # validation (op domain + width range + SSA single-assignment), the
+    # load-bearing `is_injective(CastInstruction) == false` pin, and the
+    # deferred-`inverse` raise. Sits right after `test_select.jl` — its
+    # sibling create; depends only on already-loaded symbols.
+    include("test_cast_instruction.jl")
     include("test_basic_block.jl")
     include("test_label_table.jl")
     include("test_vmprogram.jl")

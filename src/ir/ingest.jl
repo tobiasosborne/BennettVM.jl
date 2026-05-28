@@ -157,6 +157,8 @@ instruction — see this file's docstring §1).
     (the predicate is a valid `_apply_binop` comparison op — ADR 0012 §D2).
   * `IRSelect(dest, cond, op1, op2)`→ `SelectInstruction(dest, cond.name,
     lower(op1), lower(op2))` (cond is an `SSAOperand`, ADR 0012 §D3).
+  * `IRCast(dest, op, operand, fw, tw)`→ `CastInstruction(dest, op,
+    lower(operand), fw, tw)` (`op ∈ {:sext,:zext,:trunc}`, ADR 0013 §D-5).
   * `IRPhi`                         → `nothing` (handled as a param).
 
 Any other `IRInst` subtype is rejected loudly (Rule 1).
@@ -182,12 +184,22 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
         return SelectInstruction(inst.dest, inst.cond.name,
                                  _lower_operand(inst.op1),
                                  _lower_operand(inst.op2))
+    elseif inst isa Bennett.IRCast
+        # LLVM width cast (sext/zext/trunc) → the non-destructive width-cast
+        # SSA-create (ADR 0013 §D-5 step 1). The operand is READ, never
+        # destroyed (mirrors Define/SelectInstruction); the per-op bit
+        # semantics live in CastInstruction._apply_cast. The op symbol is
+        # validated against `_CAST_OPS` by the CastInstruction constructor.
+        return CastInstruction(inst.dest, inst.op,
+                               _lower_operand(inst.operand),
+                               inst.from_width, inst.to_width)
     elseif inst isa Bennett.IRPhi
         return nothing   # φ → block parameter; not a body instruction.
     else
         error("lower_vm: unsupported IRInst body subtype ", typeof(inst),
               " — the M_UNBOUNDED slice (ADR 0012) handles IRBinOp / ",
-              "IRICmp / IRSelect / IRPhi only (Rule 1).")
+              "IRICmp / IRSelect / IRPhi and IRCast (ADR 0013 §D-5) ",
+              "only (Rule 1).")
     end
 end
 

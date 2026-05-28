@@ -203,6 +203,28 @@ include("ir/define_instruction.jl")
 # replay path and is deferred (raises descriptively, the `Define` /
 # `CallInstruction` pattern). Not yet exported.
 include("ir/select_instruction.jl")
+# M_OPCODE (ADR 0013 §D-5 step 1, ADR 0012 §D1 template) —
+# `CastInstruction`, the reversible width-cast SSA-create
+# (`bennettvm-hek`). LLVM `IRCast` (`sext` / `zext` / `trunc`) lowers to a
+# `CastInstruction` (`target := cast(op, operand)`) whose single operand
+# is READ, never destroyed — the non-destructive create analogue of
+# `Define` for width casts, the remaining frontend-reachable non-memory
+# body-instruction gap (`docs/coverage-matrix.md` row 6). Reuses `_resolve`
+# (from `arithmetic_assignment.jl`, Law 2), so MUST follow it in include
+# order; placed right after `select_instruction.jl` (its sibling create)
+# and BEFORE `history/Injective.jl` (which pins its trait). The `op` domain
+# is the three-element IRCast set `{:sext, :zext, :trunc}` (Bennett.jl
+# `_IR_CAST_OPS`), disjoint from `BINARY_OPERATORS`, so it carries its own
+# width-aware `_apply_cast` rather than routing through `_apply_binop`.
+# Classified NON-injective (`is_injective(::Type{CastInstruction}) = false`,
+# wired in `history/Injective.jl`): `:trunc` is lossy and in a loop the same
+# SSA name is redefined each iteration, so a cast may overwrite a prior
+# value; the static trait can't see runtime freshness, so it is
+# conservatively `false` (Rule 1) and the M6.2/M7.6 push gate emits L3
+# checkpoints around it. Its per-instruction `inverse()` is NOT on the L3
+# replay path and is deferred (raises descriptively, the `Define` /
+# `SelectInstruction` pattern). Not yet exported.
+include("ir/cast_instruction.jl")
 # M6.1 — `is_injective` trait (`bennettvm-9hf`). The L1 "no-log"
 # layer-1 predicate of PRD v4 §3.3: tells the rest of the VM whether
 # an instruction needs a history entry. Type-level `true` for the
