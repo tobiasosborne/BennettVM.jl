@@ -225,6 +225,34 @@ include("ir/select_instruction.jl")
 # replay path and is deferred (raises descriptively, the `Define` /
 # `SelectInstruction` pattern). Not yet exported.
 include("ir/cast_instruction.jl")
+# MEMORY FLOOR (ADR 0014 §D1–D4) — `MemoryStore` / `MemoryLoad`, the scalar
+# reversible-memory floor (`bennettvm-x9j`). LLVM `store` / `load` lower to
+# these plain heap primitives: `MemoryStore(ptr, value)` writes
+# `s.memory[resolve_ptr(ptr)] = resolve(value)` (void, no SSA dest),
+# `MemoryLoad(dest, ptr)` reads `s.locals[dest] = get(s.memory,
+# resolve_ptr(ptr), 0)` (zero-init). A pointer is just an `Int64` address in
+# `locals`, materialised by the ingest bump allocator's `Define(dest, base,
+# :add, 0)` for each `IRAlloca` (ADR 0014 §D1). Evaluated the existing
+# `MemoryAssignment` (modop) / `MemoryInterchange` (exchange) / `MemorySwap`
+# (ADR 0014 §D3, Law 2): their forward semantics are exchange/modop, NOT a
+# plain overwrite/read, so dedicated instructions following the
+# `Define`/`CastInstruction` L3 template were added instead — the L1 Exchange
+# form (where `MemoryInterchange` is the natural reuse) is the deferred
+# optimization (ADR 0014 §D2, bead `bennettvm-uom`). Reuses `_resolve` (from
+# `arithmetic_assignment.jl`, Law 2), so MUST follow it; placed right after
+# `cast_instruction.jl` (its sibling L3-create template) and BEFORE
+# `history/Injective.jl` (which pins both traits). Classified NON-injective
+# (`is_injective(::Type{MemoryStore}) = false` / `(::Type{MemoryLoad}) =
+# false`, wired in `history/Injective.jl`): a store overwrites (loses) the
+# prior cell value and a load overwrites (loses) any prior `dest` value on a
+# loop re-definition, so per Rule 1 the trait is conservatively `false` and
+# the M6.2/M7.6 push gate emits L3 checkpoints around them. Reversal is L3
+# ONLY — `IState.memory` is in the snapshot and in `==`/`hash`
+# (`src/ir/IState.jl`), so checkpoint-replay reverses memory automatically;
+# the per-instruction `inverse()` is NOT on the L3 replay path and is
+# deferred (raises descriptively, the `Define` / `CastInstruction` pattern).
+# Not yet exported.
+include("ir/memory_floor.jl")
 # M6.1 — `is_injective` trait (`bennettvm-9hf`). The L1 "no-log"
 # layer-1 predicate of PRD v4 §3.3: tells the rest of the VM whether
 # an instruction needs a history entry. Type-level `true` for the

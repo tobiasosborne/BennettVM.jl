@@ -378,6 +378,37 @@ is_injective(::Type{SelectInstruction})::Bool = false
 # cast's deferred per-instruction `inverse()`. Do NOT mark this `true`.
 is_injective(::Type{CastInstruction})::Bool = false
 
+# -----------------------------------------------------------------------------
+# Type-level `false` pin — `MemoryStore` / `MemoryLoad` (memory floor, ADR 0014).
+# -----------------------------------------------------------------------------
+#
+# `MemoryStore` (`M[addr] := value`) and `MemoryLoad` (`dest := M[addr]`,
+# `src/ir/memory_floor.jl`) are the plain L3 heap primitives LLVM `store` /
+# `load` lower to (ADR 0014 §D2). Both are NON-injective and are reversed
+# EXCLUSIVELY via L3 checkpoint-replay (`IState.memory` is in the snapshot and
+# in `==`/`hash`, `src/ir/IState.jl`, so memory reverses automatically):
+#
+#   * `MemoryStore` is a plain OVERWRITE — it loses the prior cell value, so
+#     the forward step is not a bijection on the cell (the discarded value is
+#     unrecoverable from the result alone). This is the NON-injective contrast
+#     with `MemoryInterchange` (a bijective register↔cell EXCHANGE, marked
+#     `true` above). The L1 Exchange lowering that WOULD make a store
+#     injective (PRD §3.7, zero-ancilla `MemoryInterchange`) is the deferred
+#     optimization (ADR 0014 §D2, bead bennettvm-uom), not this baseline.
+#   * `MemoryLoad` is a plain READ into a fresh local — but in a loop the same
+#     SSA name is redefined each iteration, so a load may OVERWRITE a prior
+#     value (the cross-iteration crux shared with `Define` / `CastInstruction`,
+#     ADR 0012). The static type-level trait cannot see runtime freshness, so
+#     per Rule 1 ("fail safe — push when in doubt") it is conservatively
+#     `false`.
+#
+# This forces the M6.2/M7.6 push gate to emit L3 `CheckpointEntry`s around
+# every store/load; `unstep!` then reverses them via checkpoint-replay
+# (`src/history/Replay.jl`), which never calls their deferred per-instruction
+# `inverse()`. Do NOT mark these `true` until the L1 Exchange form lands.
+is_injective(::Type{MemoryStore})::Bool = false
+is_injective(::Type{MemoryLoad})::Bool  = false
+
 """
     is_injective(x::ArithmeticAssignment) -> Bool
 

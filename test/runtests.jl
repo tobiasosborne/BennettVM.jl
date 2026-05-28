@@ -173,6 +173,26 @@ using BennettVM
     # round-trip gate; pulls in the oracles + `matrix_tri_vm` factory via
     # `test/reference/matrix_tri.jl` (re-include-guarded).
     include("test_matrix_tri_roundtrip.jl")
+    # Memory floor (scalar IRAlloca/IRStore/IRLoad) unit + lowering tests
+    # (bead `bennettvm-x9j`, ADR 0014 §D1–D4; ADR 0013 §D-2). Pins the new
+    # `MemoryStore` / `MemoryLoad` instructions (`src/ir/memory_floor.jl`):
+    # forward semantics (store-then-load, zero-init absent read), the
+    # non-injective L3 classification, the deferred per-instruction inverse,
+    # the bump-allocator addressing (distinct base addresses per scalar
+    # alloca), the v1 scope guard (array / dynamic-N raise), and a hand-built
+    # scalar ParsedIR lowered + run + round-tripped under L3 via the
+    # `per_step_inverse_check` scaffold. Sits after the matrix_tri gate
+    # (consumes the same M8.2 scaffold).
+    include("test_memory_floor.jl")
+    # Memory floor — THE EMITTER-AGNOSTIC GATE (bead `bennettvm-x9j`, ADR
+    # 0014 §D5; ADR 0013 §D-1). Proves BennettVM round-trips a **C** program:
+    # `int through_mem(int n){int s; s=n+1; return s;}` compiled clang-18 -O0
+    # to a committed `.ll` (clang-free at test time), extracted via Bennett's
+    # language-agnostic `extract_parsed_ir_from_ll`, lowered via the real
+    # `lower_vm`, run forward matching the C oracle (n+1), and round-tripped
+    # to empty history under L3 (P0.6). The executable demonstration that
+    # BennettVM is useful to ANY LLVM emitter, not just Julia.
+    include("test_memory_floor_cll.jl")
     # M8.3 — mutation-proof harness for per-instruction inverse
     # (`bennettvm-2kl`). Sits AFTER test_per_step_inverse.jl because
     # the harness depends on the `per_step_inverse_check` scaffold

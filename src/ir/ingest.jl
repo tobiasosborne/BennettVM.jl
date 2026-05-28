@@ -176,7 +176,18 @@ instruction — see this file's docstring §1).
     lower(op1), lower(op2))` (cond is an `SSAOperand`, ADR 0012 §D3).
   * `IRCast(dest, op, operand, fw, tw)`→ `CastInstruction(dest, op,
     lower(operand), fw, tw)` (`op ∈ {:sext,:zext,:trunc}`, ADR 0013 §D-5).
+  * `IRStore(ptr, val, width)`     → `MemoryStore(ptr.name, lower(val))`
+    (the scalar memory floor, ADR 0014 §D2; `ptr` is an `SSAOperand` naming
+    an alloca dest — a pointer is an `Int64` address in `locals`). IRStore
+    produces NO SSA value (void), so this arm returns a real `Instruction`,
+    NOT `nothing` — the caller appends it unconditionally.
+  * `IRLoad(dest, ptr, width)`     → `MemoryLoad(dest, ptr.name)` (the scalar
+    memory floor, ADR 0014 §D2).
   * `IRPhi`                         → `nothing` (handled as a param).
+
+`IRAlloca` is NOT handled here — it needs the bump-allocator state threaded
+through `_lower_parsed_ir` (ADR 0014 §D1), so it is lowered at the call site,
+not in this pure per-instruction dispatch.
 
 Any other `IRInst` subtype is rejected loudly (Rule 1).
 """
@@ -210,14 +221,81 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
         return CastInstruction(inst.dest, inst.op,
                                _lower_operand(inst.operand),
                                inst.from_width, inst.to_width)
+    elseif inst isa Bennett.IRStore
+        # LLVM `store value, ptr` → the plain non-injective heap write (ADR
+        # 0014 §D2). `ptr` is an SSAOperand naming an alloca dest (a pointer
+        # is an Int64 address in `locals`, materialised by the bump allocator
+        # — `_lower_alloca!`). IRStore is void (no SSA dest), so this returns
+        # a real `Instruction`, not `nothing`. The value may be an SSAOperand
+        # or a ConstOperand (LLVM stores constants), handled by `_lower_operand`.
+        inst.ptr isa Bennett.SSAOperand ||
+            error("lower_vm: IRStore ptr is ", typeof(inst.ptr),
+                  " — the memory floor (ADR 0014 §D1) requires an SSAOperand ",
+                  "pointer naming an alloca dest (a pointer is an Int64 ",
+                  "address in locals). Address arithmetic (IRPtrOffset / ",
+                  "IRVarGEP) is deferred to v2 (Rule 1).")
+        return MemoryStore(inst.ptr.name, _lower_operand(inst.val))
+    elseif inst isa Bennett.IRLoad
+        # LLVM `dest = load ptr` → the plain non-injective heap read (ADR
+        # 0014 §D2). `ptr` is an SSAOperand naming an alloca dest. Zero-init
+        # convention: a load of a never-stored address reads as 0
+        # (`MemoryLoad.forward`).
+        inst.ptr isa Bennett.SSAOperand ||
+            error("lower_vm: IRLoad ptr is ", typeof(inst.ptr),
+                  " (dest=", inst.dest, ") — the memory floor (ADR 0014 §D1) ",
+                  "requires an SSAOperand pointer naming an alloca dest. ",
+                  "Address arithmetic (IRPtrOffset / IRVarGEP) is deferred ",
+                  "to v2 (Rule 1).")
+        return MemoryLoad(inst.dest, inst.ptr.name)
     elseif inst isa Bennett.IRPhi
         return nothing   # φ → block parameter; not a body instruction.
     else
         error("lower_vm: unsupported IRInst body subtype ", typeof(inst),
-              " — the M_UNBOUNDED slice (ADR 0012) handles IRBinOp / ",
-              "IRICmp / IRSelect / IRPhi and IRCast (ADR 0013 §D-5) ",
-              "only (Rule 1).")
+              " — the slice handles IRBinOp / IRICmp / IRSelect / IRPhi ",
+              "(ADR 0012), IRCast (ADR 0013 §D-5), and IRStore / IRLoad ",
+              "(the scalar memory floor, ADR 0014 §D2) only. IRAlloca is ",
+              "lowered at the call site via the bump allocator (ADR 0014 ",
+              "§D1). IRPtrOffset / IRVarGEP / IRExtractValue / IRCall are ",
+              "deferred (Rule 1).")
     end
+end
+
+"""
+    _lower_alloca!(inst::Bennett.IRAlloca, next_addr::Int64)
+        -> Tuple{Define, Int64}
+
+Lower one `IRAlloca(dest, elem_width, n_elems)` via the bump allocator
+(ADR 0014 §D1): assign `dest` the current `next_addr` as its `Int64` base
+address, materialise that address into `locals` via a constant-create
+`Define(dest, base, :add, 0)` (a pointer is just an `Int64`), and return the
+`Define` together with the advanced allocator cursor.
+
+**v1 scope (ADR 0014 §D4):** `n_elems` MUST be `ConstOperand(1)` — a scalar
+alloca. Any other `n_elems` (an array `ConstOperand(N>1)` or a dynamic
+`SSAOperand`) raises a Rule-1 "deferred to v2" error rather than miscompiling
+(arrays / dynamic-N / GEP address arithmetic are the v2 build, ADR 0014 §D4).
+The cursor advances by `1` (the single reserved cell) so consecutive scalar
+allocas get distinct addresses (`through_mem` allocates `__v2`→1, `__v3`→2).
+Cells default to `0` by the zero-init convention; the allocator does not
+pre-populate `s.memory`.
+"""
+function _lower_alloca!(inst::Bennett.IRAlloca,
+                        next_addr::Int64)::Tuple{Define,Int64}
+    n = inst.n_elems
+    (n isa Bennett.ConstOperand && Int64(n.value) == 1) ||
+        error("lower_vm: IRAlloca(", inst.dest, ", elem_width=",
+              inst.elem_width, ", n_elems=", n, ") — the scalar memory ",
+              "floor (ADR 0014 §D4 v1) supports n_elems = ConstOperand(1) ",
+              "only. Arrays (ConstOperand(N>1)), dynamic-N (SSAOperand), and ",
+              "the address arithmetic (IRPtrOffset / IRVarGEP) they need are ",
+              "deferred to v2 (ADR 0014 §D4; Rule 1 fail-loud — do not ",
+              "miscompile).")
+    base = next_addr
+    # Materialise the pointer as an Int64 in `locals`: `dest := base + 0`.
+    # A constant-create Define (the same form the φ-incoming constants use,
+    # `Define(name, value, :add, 0)`), so `dest` holds `base` and downstream
+    # MemoryStore/MemoryLoad resolve it as the cell address.
+    return (Define(inst.dest, base, :add, Int64(0)), next_addr + 1)
 end
 
 # ---------------------------------------------------------------------
@@ -435,6 +513,14 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
 
     out = BasicBlock[]
 
+    # Bump-allocator cursor for `IRAlloca` (ADR 0014 §D1). Monotone across
+    # ALL blocks — every scalar alloca anywhere in the routine gets a fresh
+    # `Int64` base address (start at 1; advance by 1 per scalar alloca). A
+    # pointer is just that `Int64` in `locals`, materialised by the `Define`
+    # `_lower_alloca!` returns. Threaded through the body loop below by
+    # closure over this binding.
+    alloca_cursor = Int64(1)
+
     # --- Phase 2: original blocks (entry block first). ---
     ordered = vcat(by_label[entry_label],
                    [b for b in blocks if b.label !== entry_label])
@@ -488,8 +574,18 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
         # Body: lowered non-φ instructions, then synthetic constant creates.
         body = Instruction[]
         for inst in b.instructions
-            li = _lower_body_inst(inst)
-            li === nothing || push!(body, li)
+            if inst isa Bennett.IRAlloca
+                # Alloca needs the bump-allocator state (ADR 0014 §D1), so it
+                # is lowered here, not in the pure per-instruction dispatch:
+                # assign `dest` the cursor's base, emit `Define(dest, base,
+                # :add, 0)` so the pointer SSA value holds its Int64 address,
+                # and advance the cursor. v1 enforces n_elems == 1 (Rule 1).
+                def, alloca_cursor = _lower_alloca!(inst, alloca_cursor)
+                push!(body, def)
+            else
+                li = _lower_body_inst(inst)
+                li === nothing || push!(body, li)
+            end
         end
         # One Define per registered (name, value), in registration order:
         # the by-value-shared creates AND the within-edge-duplicate extras
