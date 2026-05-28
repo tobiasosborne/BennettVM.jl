@@ -31,6 +31,16 @@ using BennettVM
     # and an end-to-end two-block `run!`. Sits with the other M2.x
     # instruction unit tests; depends only on already-loaded symbols.
     include("test_define.jl")
+    # M_UNBOUNDED (ADR 0012 §D3) — `SelectInstruction`, the reversible
+    # 2-to-1 multiplexer (`bennettvm-8wj`). Unit tests for forward (arm
+    # selection under cond=0/1/nonzero, literal operand), the
+    # operands-survive / overwrite-at-forward properties, constructor
+    # validation, the load-bearing `is_injective(SelectInstruction) ==
+    # false` pin, the deferred-`inverse` raise, and an end-to-end
+    # single-block `run!` (Define-builds-cond + SelectInstruction).
+    # Sits right after `test_define.jl` — its sibling; depends only on
+    # already-loaded symbols.
+    include("test_select.jl")
     include("test_basic_block.jl")
     include("test_label_table.jl")
     include("test_vmprogram.jl")

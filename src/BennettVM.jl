@@ -182,6 +182,27 @@ include("ir/call_instruction.jl")
 # replay path and is deferred (raises descriptively, the
 # `CallInstruction` pattern). Not yet exported.
 include("ir/define_instruction.jl")
+# M_UNBOUNDED (ADR 0012 §D3) — `SelectInstruction`, the reversible 2-to-1
+# multiplexer (`bennettvm-8wj`). LLVM `IRSelect` lowers to a
+# `SelectInstruction` (`target := (cond != 0) ? val_true : val_false`)
+# whose predicate and arms are READ, never destroyed — the structural
+# sibling of `Define` (the non-destructive SSA-create, §D1). LLVM `select`
+# has no RC3 analogue (documented Law-2 exception: it arises from Julia
+# ternaries; Janus/RC3 source has none). Reuses `_resolve` (from
+# `arithmetic_assignment.jl`, Law 2), so MUST follow it in include order;
+# placed right after `define_instruction.jl` (its template) and BEFORE
+# `history/Injective.jl` (which pins its trait). `val_true` / `val_false`
+# are `Union{Symbol,Int64}` because collatz's `or.cond` true-arm is the
+# literal `Const(-1)`. Classified NON-injective
+# (`is_injective(::Type{SelectInstruction}) = false`, wired in
+# `history/Injective.jl`): a 2-to-1 MUX discards the unselected arm, and in
+# a loop the same SSA name is redefined each iteration, so a select may
+# overwrite a prior value; the static trait can't see runtime freshness, so
+# it is conservatively `false` (Rule 1) and the M6.2/M7.6 push gate emits
+# L3 checkpoints around it. Its per-instruction `inverse()` is NOT on the L3
+# replay path and is deferred (raises descriptively, the `Define` /
+# `CallInstruction` pattern). Not yet exported.
+include("ir/select_instruction.jl")
 # M6.1 — `is_injective` trait (`bennettvm-9hf`). The L1 "no-log"
 # layer-1 predicate of PRD v4 §3.3: tells the rest of the VM whether
 # an instruction needs a history entry. Type-level `true` for the

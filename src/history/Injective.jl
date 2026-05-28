@@ -335,6 +335,27 @@ is_injective(::Type{MemorySwap})::Bool = true
 # mark this `true`.
 is_injective(::Type{Define})::Bool = false
 
+# -----------------------------------------------------------------------------
+# Type-level `false` pin — `SelectInstruction` (M_UNBOUNDED, ADR 0012 §D3).
+# -----------------------------------------------------------------------------
+#
+# `SelectInstruction` (`src/ir/select_instruction.jl`) is the reversible
+# 2-to-1 multiplexer `target := (cond != 0) ? val_true : val_false`. Same
+# load-bearing reasoning as `Define` above (ADR 0012 §"The cross-iteration
+# reversibility crux"): in a loop the same SSA name is redefined each
+# iteration, so a select may OVERWRITE a prior value, and the static
+# type-level trait cannot see runtime freshness — it cannot tell a
+# genuinely-fresh create (injective) from a re-definition that overwrites
+# (non-injective). It is *additionally* non-injective even on a fresh
+# create: a 2-to-1 MUX discards the unselected arm, so the forward step is
+# not a bijection on the slice it touches. Per Rule 1 ("fail safe — push
+# when in doubt") it is conservatively `false`, forcing the M6.2/M7.6 push
+# gate to emit L3 `CheckpointEntry`s around every `SelectInstruction`;
+# `unstep!` then reverses it via checkpoint-replay (`src/history/Replay.jl`),
+# which never calls the select's deferred per-instruction `inverse()`. Do
+# NOT mark this `true`.
+is_injective(::Type{SelectInstruction})::Bool = false
+
 """
     is_injective(x::ArithmeticAssignment) -> Bool
 
