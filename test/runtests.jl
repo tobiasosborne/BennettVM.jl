@@ -97,6 +97,17 @@ using BennettVM
     # checkpoint-replay `unrun!` those milestones land; pulls in the
     # oracle + `collatz_vm` factory via `test/reference/collatz.jl`.
     include("test_collatz_forward.jl")
+    # SC9 Case C — matrix_sum (nested loops) forward gate (`bennettvm-k7b`,
+    # ADR 0010). The nested-loop analogue of test_collatz_forward.jl:
+    # lowers `matrix_sum_while(::Int8)` (PRD v4 §3.6.2 Case C) — a
+    # doubly-nested counting `while` — to a 12-block VMProgram and asserts
+    # FORWARD `run!` reproduces the irreversible oracle bit-for-bit on five
+    # in-range inputs (headline: matrix_sum_while(3) == 9). The existing
+    # M_UNBOUNDED ingest lowers the multi-level BasicBlock CFG with ZERO
+    # `src/` changes (bead `bennettvm-720`). Sits after the collatz forward
+    # gate; pulls in the oracles + `matrix_sum_vm` factory via
+    # `test/reference/matrix_sum.jl`.
+    include("test_matrix_sum_forward.jl")
     # M8.2 — per-step inverse test scaffold (`bennettvm-3d8`).
     # Sits AFTER test_delta_roundtrip.jl because the scaffold's M7
     # driver-layer testset depends on `compute_must_cache` (M7.5) and
@@ -117,6 +128,19 @@ using BennettVM
     # pulls in the oracle + `collatz_vm` factory via
     # `test/reference/collatz.jl` (re-include-guarded).
     include("test_collatz_roundtrip.jl")
+    # SC9 Case C — matrix_sum (nested loops) round-trip acceptance gate
+    # (`bennettvm-k7b`, ADR 0010). The nested-loop analogue of
+    # test_collatz_roundtrip.jl: the definitive round-trip proof for the
+    # doubly-nested counting loop the circuit backend cannot represent —
+    # per-step inverse (L3) across six inputs at two K densities, aggregate
+    # run!/unrun! anchored to the oracle (the nested run unwinds BOTH inner-
+    # and outer-loop history under L3, bead `bennettvm-of5`), the SC9
+    # headline assertion (n=3 → 9 → empty history), and the L2-raises
+    # boundary. Sits AFTER test_per_step_inverse.jl (consumes the M8.2
+    # `per_step_inverse_check` scaffold) and after the collatz round-trip
+    # gate; pulls in the oracles + `matrix_sum_vm` factory via
+    # `test/reference/matrix_sum.jl` (re-include-guarded).
+    include("test_matrix_sum_roundtrip.jl")
     # M8.3 — mutation-proof harness for per-instruction inverse
     # (`bennettvm-2kl`). Sits AFTER test_per_step_inverse.jl because
     # the harness depends on the `per_step_inverse_check` scaffold
