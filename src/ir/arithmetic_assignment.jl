@@ -153,12 +153,33 @@ end
 _resolve(x::Symbol, s::IState) = s.locals[x]
 _resolve(x::Int64,  ::IState)  = x
 
-# Apply a binary operator from `BINARY_OPERATORS` to two `Int64`
-# values. Julia's native Int64 arithmetic gives wraparound on overflow,
-# which is what RSSA semantics want (wrap is reversible; trapping is
-# not). The dispatcher is a flat `if`-chain rather than a Dict lookup
-# both for speed and so Rule 1 catches an unknown op at the final
-# `error` clause — even though the constructor has already validated.
+# Apply a binary operator to two `Int64` values, returning an `Int64`.
+# Julia's native Int64 arithmetic gives wraparound on overflow, which is
+# what RSSA semantics want (wrap is reversible; trapping is not). The
+# dispatcher is a flat `if`-chain rather than a Dict lookup both for
+# speed and so Rule 1 catches an unknown op at the final `error` clause
+# — even though the relevant constructor has already validated.
+#
+# Two operator families flow through here:
+#
+#   * `BINARY_OPERATORS` (arithmetic / bitwise / shift / divrem) — the
+#     `ArithmeticAssignment` modop operands. Unsigned ops (`:lshr`,
+#     `:udiv`, `:urem`) reinterpret both operands to `UInt64` and the
+#     result back to `Int64`.
+#
+#   * `COMPARISON_OPERATORS` (LLVM `icmp` predicates) — the `Define`
+#     comparison operands (ADR 0012 §D2). Each returns `Int64(1)` for
+#     true / `Int64(0)` for false (the interpreter's i1→Int64 "nonzero
+#     = true" convention). The unsigned predicates (`:ult` / `:ule` /
+#     `:ugt` / `:uge`) reinterpret both operands to `UInt64` *before*
+#     comparing — matching the `:lshr` / `:udiv` reinterpret discipline
+#     above — so a negative `Int64` (a large `UInt64`) sorts above a
+#     non-negative one; the signed predicates (`:slt` / `:sle` / `:sgt`
+#     / `:sge`) compare the raw `Int64`s directly; `:eq` / `:ne` are
+#     signedness-agnostic.
+#
+# Ref: docs/adr/0012-collatz-lowering.md §D2 (comparison operators);
+#      src/ir/operators.jl (COMPARISON_OPERATORS — signed/unsigned split).
 function _apply_binop(op::Symbol, a::Int64, b::Int64)::Int64
     op === :add  ? a + b :
     op === :sub  ? a - b :
@@ -175,6 +196,17 @@ function _apply_binop(op::Symbol, a::Int64, b::Int64)::Int64
     op === :urem ? reinterpret(Int64, rem(reinterpret(UInt64, a),
                                           reinterpret(UInt64, b))) :
     op === :srem ? rem(a, b) :
+    # Comparison predicates (ADR 0012 §D2) — Int64(1)/Int64(0).
+    op === :eq   ? Int64(a == b) :
+    op === :ne   ? Int64(a != b) :
+    op === :ult  ? Int64(reinterpret(UInt64, a) <  reinterpret(UInt64, b)) :
+    op === :ule  ? Int64(reinterpret(UInt64, a) <= reinterpret(UInt64, b)) :
+    op === :ugt  ? Int64(reinterpret(UInt64, a) >  reinterpret(UInt64, b)) :
+    op === :uge  ? Int64(reinterpret(UInt64, a) >= reinterpret(UInt64, b)) :
+    op === :slt  ? Int64(a <  b) :
+    op === :sle  ? Int64(a <= b) :
+    op === :sgt  ? Int64(a >  b) :
+    op === :sge  ? Int64(a >= b) :
     error("_apply_binop: unsupported op $op (constructor should have caught this)")
 end
 

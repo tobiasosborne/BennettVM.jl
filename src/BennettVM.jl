@@ -92,7 +92,11 @@ include("ir/instructions.jl")
 # four IEEE-754 ops that arrive as `IRCall` to SoftFloat wrappers, NOT
 # as `IRBinOp`), their union `ALL_BINARY_OPERATORS`, and the
 # `is_binary_operator` predicate used by `ArithmeticAssignment`'s
-# constructor (M2.7) to reject typos at construction time. Depends on
+# constructor (M2.7) to reject typos at construction time. Also defines
+# `COMPARISON_OPERATORS` (the LLVM `icmp` predicates, mirroring
+# Bennett.jl's `_IR_ICMP_PREDS`; ADR 0012 §D2) and `is_comparison_operator`
+# — a set disjoint from the arithmetic union, evaluated by `_apply_binop`
+# but NOT accepted by the `ArithmeticAssignment` constructor. Depends on
 # nothing in this module; ordered after `instructions.jl` because its
 # downstream consumer is the `ArithmeticAssignment` concrete subtype.
 # Not yet exported.

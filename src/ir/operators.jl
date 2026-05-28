@@ -2,8 +2,7 @@
     BinaryOperator symbol set (M2.5)
 
 The canonical enumeration of the operator symbols that BennettVM's
-`ArithmeticAssignment` instruction (M2.7) is allowed to carry. Two
-disjoint categories live here:
+instructions are allowed to carry. Three categories live here:
 
   1. `BINARY_OPERATORS` — integer / bitwise / shift / divrem ops that
      arrive in `Bennett.ParsedIR` as `Bennett.IRBinOp` instances.
@@ -15,6 +14,13 @@ disjoint categories live here:
      `modop` field is one of these four symbols; the operator-table
      entry lives here so the symbols are canonicalized in one place
      ahead of that pass.
+  3. `COMPARISON_OPERATORS` — LLVM integer-comparison predicates that
+     arrive in `Bennett.ParsedIR` as `Bennett.IRICmp` instances and
+     lower (per ADR 0012 D2) to a `Define` carrying a comparison `op`.
+     They are evaluated by `_apply_binop` (returning `Int64(0)`/`(1)`)
+     but are deliberately **disjoint** from the two arithmetic sets and
+     are **not** in `ALL_BINARY_OPERATORS` — see the `COMPARISON_OPERATORS`
+     docstring for the membership rationale.
 
 # Why these symbols and no others
 
@@ -172,3 +178,98 @@ false
 Ref: CLAUDE.md Rule 1 — assertions, not silent returns.
 """
 is_binary_operator(op::Symbol) = op in ALL_BINARY_OPERATORS
+
+"""
+    COMPARISON_OPERATORS
+
+LLVM integer-comparison predicate symbols that arrive in
+`Bennett.ParsedIR` as `Bennett.IRICmp` instances and that
+`_apply_binop` evaluates to a 0/1 `Int64` (ADR 0012 §D2). Mirrors
+`Bennett._IR_ICMP_PREDS` verbatim — including order — so a visual diff
+of the two tuples lines up; the length-regression test in
+`test/test_operators.jl` pins `length(COMPARISON_OPERATORS) ==
+length(Bennett._IR_ICMP_PREDS)`, turning the upstream dependency into a
+fail-loud contract (Law 2): if Bennett.jl ever adds an 11th `IRICmp`
+predicate the count assertion goes RED and forces a conscious mirror
+update here.
+
+# Signed vs. unsigned vs. equality
+
+The ten predicates split three ways, exactly as LLVM `icmp` does:
+
+  * **Equality** — `:eq` / `:ne` — width- and signedness-agnostic
+    (`==` / `!=` on the raw `Int64`).
+  * **Unsigned** — `:ult` / `:ule` / `:ugt` / `:uge` — compare the
+    operands as `UInt64` (`reinterpret(UInt64, ·)`), matching the
+    unsigned discipline already used by `:lshr` / `:udiv` / `:urem`
+    in `_apply_binop`. A negative `Int64` reinterprets to a *large*
+    `UInt64`, so e.g. `ult(-1, 0)` is **false**.
+  * **Signed** — `:slt` / `:sle` / `:sgt` / `:sge` — compare the
+    operands as signed `Int64` directly; `slt(-1, 0)` is **true**.
+
+The signed/unsigned split is the load-bearing distinction and is
+exercised by a discriminating test (`slt(-1,0)==1` vs `ult(-1,0)==0`).
+
+# Why NOT in `ALL_BINARY_OPERATORS` (membership decision)
+
+`ALL_BINARY_OPERATORS` is the union the **`ArithmeticAssignment`
+constructor** validates against (`op in BINARY_OPERATORS`, M2.6) — that
+instruction is a *destructive transform* (`x := y ⊕ (lhs op rhs)`) and
+must continue to **reject** comparison predicates so an `IRICmp` op
+never lands on the IRBinOp arm. Comparisons belong on the dedicated
+non-destructive `Define` create (ADR 0012 §D1, a later bead). Keeping
+`COMPARISON_OPERATORS` a separate set therefore leaves the
+`ArithmeticAssignment` op-domain untouched while still letting
+`_apply_binop(:slt, …)` evaluate the predicate. The shared evaluation
+point is `_apply_binop`; the construction-time *domains* stay distinct.
+
+# Ref
+
+  * `docs/adr/0012-collatz-lowering.md` §D2 — comparison-operator spec;
+    the i1→Int64 "nonzero = true" convention.
+  * `/home/tobias/Projects/Bennett.jl/src/ir_types.jl` lines 8-10
+    (`const _IR_ICMP_PREDS`, pin `877341e`) — the upstream truth table
+    this set mirrors; the length-regression test guards the mirror.
+  * `src/ir/arithmetic_assignment.jl` — `_apply_binop`, extended to
+    evaluate these predicates with `reinterpret(UInt64, ·)` for the
+    unsigned arm (matching the existing `:lshr` / `:udiv` discipline).
+"""
+const COMPARISON_OPERATORS = (
+    # Equality (signedness-agnostic)
+    :eq, :ne,
+    # Unsigned (reinterpret(UInt64, ·) comparison)
+    :ult, :ule, :ugt, :uge,
+    # Signed (direct Int64 comparison)
+    :slt, :sle, :sgt, :sge,
+)
+
+"""
+    is_comparison_operator(op::Symbol) -> Bool
+
+Whether `op` is one of the recognised LLVM integer-comparison
+predicates (`COMPARISON_OPERATORS`). Analogous to `is_binary_operator`
+but for the comparison set; the future `Define` constructor (ADR 0012
+§D1) uses it together with `is_binary_operator` to accept either an
+arithmetic op or a comparison predicate, while `ArithmeticAssignment`
+keeps using `is_binary_operator` alone so it continues to reject
+comparisons (Rule 1, fail fast).
+
+# Examples
+
+```julia
+julia> is_comparison_operator(:slt)
+true
+
+julia> is_comparison_operator(:eq)
+true
+
+julia> is_comparison_operator(:add)   # arithmetic, not a comparison
+false
+
+julia> is_comparison_operator(:lt)    # not an LLVM icmp predicate name
+false
+```
+
+Ref: `docs/adr/0012-collatz-lowering.md` §D2; CLAUDE.md Rule 1.
+"""
+is_comparison_operator(op::Symbol) = op in COMPARISON_OPERATORS
