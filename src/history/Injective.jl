@@ -312,6 +312,29 @@ is_injective(::Type{MemorySwap})::Bool = true
 # discrimination for `ArithmeticAssignment`" paragraph for the
 # rationale.
 
+# -----------------------------------------------------------------------------
+# Type-level `false` pin — `Define` (M_UNBOUNDED, ADR 0012 §D1).
+# -----------------------------------------------------------------------------
+#
+# `Define` (`src/ir/define_instruction.jl`) is the reversible SSA-create
+# `target := lhs op rhs`. It would inherit `false` from the default
+# `is_injective(::Type{<:Instruction})` fallback above, but the
+# classification is **load-bearing and deliberate** (ADR 0012 §"The
+# cross-iteration reversibility crux"), so it is pinned explicitly here
+# at the same site as the rest of the taxonomy: in a loop the same SSA
+# name is redefined each iteration, so a `Define` may OVERWRITE a prior
+# value. The static type-level trait cannot see runtime freshness — it
+# cannot tell a genuinely-fresh create (injective) from a re-definition
+# that overwrites (non-injective) — so per Rule 1 ("fail safe — push
+# when in doubt") it must be conservatively `false`. This forces the
+# M6.2/M7.6 push gate to emit L3 `CheckpointEntry`s around every
+# `Define`; `unstep!` then reverses it via checkpoint-replay
+# (`src/history/Replay.jl`), which never calls `Define`'s deferred
+# per-instruction `inverse()`. Tightening to recognise the
+# never-overwritten injective case is deferred (ADR 0012 R3). Do NOT
+# mark this `true`.
+is_injective(::Type{Define})::Bool = false
+
 """
     is_injective(x::ArithmeticAssignment) -> Bool
 

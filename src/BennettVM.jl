@@ -163,6 +163,25 @@ include("ir/memory_instructions.jl")
 # `Instruction` (from `instructions.jl`) and `IState` (from
 # `IState.jl`); MUST follow both. Not yet exported.
 include("ir/call_instruction.jl")
+# M_UNBOUNDED (ADR 0012 §D1) — `Define`, the reversible SSA-create
+# instruction (`bennettvm-d3p`). LLVM `IRBinOp` / `IRICmp` lower to a
+# `Define` (`target := lhs op rhs`) whose operands are READ, never
+# destroyed — the non-destructive create `ArithmeticAssignment` (a
+# destructive transform) cannot express. Reuses `_resolve` /
+# `_apply_binop` (from `arithmetic_assignment.jl`, Law 2) and the
+# `is_binary_operator` / `is_comparison_operator` op-domain predicates
+# (from `operators.jl`), so MUST follow both in include order. Its `op`
+# domain is `BINARY_OPERATORS ∪ COMPARISON_OPERATORS` — `Define` is the
+# create that legitimately carries comparisons (ADR 0012 §D2). Classified
+# NON-injective (`is_injective(::Type{Define}) = false`, wired in
+# `history/Injective.jl`, which MUST follow this include): in a loop the
+# same SSA name is redefined each iteration, so a `Define` may overwrite
+# a prior value; the static trait can't see runtime freshness, so it is
+# conservatively `false` (Rule 1) and the M6.2/M7.6 push gate emits L3
+# checkpoints around it. Its per-instruction `inverse()` is NOT on the L3
+# replay path and is deferred (raises descriptively, the
+# `CallInstruction` pattern). Not yet exported.
+include("ir/define_instruction.jl")
 # M6.1 — `is_injective` trait (`bennettvm-9hf`). The L1 "no-log"
 # layer-1 predicate of PRD v4 §3.3: tells the rest of the VM whether
 # an instruction needs a history entry. Type-level `true` for the

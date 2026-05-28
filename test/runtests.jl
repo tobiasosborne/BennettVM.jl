@@ -23,6 +23,14 @@ using BennettVM
     include("test_control_instructions.jl")
     include("test_memory_instructions.jl")
     include("test_call_instruction.jl")
+    # M_UNBOUNDED (ADR 0012 §D1) — `Define`, the reversible SSA-create
+    # instruction (`bennettvm-d3p`). Unit tests for forward (arithmetic +
+    # comparison families), the operands-survive / overwrite-at-forward
+    # properties, constructor validation, the load-bearing
+    # `is_injective(Define) == false` pin, the deferred-`inverse` raise,
+    # and an end-to-end two-block `run!`. Sits with the other M2.x
+    # instruction unit tests; depends only on already-loaded symbols.
+    include("test_define.jl")
     include("test_basic_block.jl")
     include("test_label_table.jl")
     include("test_vmprogram.jl")
