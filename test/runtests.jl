@@ -98,4 +98,14 @@ using BennettVM
     # pairs the M8.5 (`bennettvm-tnp`) 100-program property test will
     # consume from a single seeded MersenneTwister(0xBE171973).
     include(joinpath("generators", "random_program.jl"))
+    # M8.5 — 100-random-program property test (`bennettvm-tnp`), the M8
+    # capstone. Sits LAST in the M8 family because it composes M8.2's
+    # `per_step_inverse_check` scaffold, M8.4's seeded generator
+    # (`default_rng`, `random_program`, `_structural_eq`,
+    # `_classify_shape`), and M8.3's eval+delete_method+invokelatest
+    # mutation discipline — all three must already be in scope. Walks a
+    # single seeded RNG 100× asserting full round-trip + per-step
+    # inverse at both L3 and L2 regimes, determinism, and a mutation-
+    # proof RED-then-GREEN on `inverse(::ArithmeticAssignment)`.
+    include("test_property_roundtrip.jl")
 end
