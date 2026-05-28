@@ -99,17 +99,20 @@
 #     non-empty-payload mutation would not corrupt the inverse
 #     delegation path. Out of scope; future bead if non-empty payloads
 #     appear.
-#   * **`CallInstruction.inverse()`.** Exists at
-#     `src/ir/call_instruction.jl:288-291` but is unaudited here
-#     because its M7.3 `make_delta` raises unconditionally (v5-deferred
-#     per ADR 0002 §Open Questions item 4), making the L2 path
-#     impossible to drive. A direct `forward+inverse` round-trip on a
-#     CallInstruction would be a meaningful alternative audit; tracked
-#     as bd `bennettvm-7cg` (follow-up to this M8.3 milestone,
-#     `bennettvm-2kl`). Adding a mutation cycle here would require
-#     fabricating a v5 `make_delta` stub or building a direct-call
-#     test fixture that does not go through the scaffold — either is
-#     scope creep against the M8.3 brief.
+#   * **`CallInstruction.inverse()` — NOW partially audited (bd
+#     `bennettvm-7cg`).** Its pc-only dispatch-level `inverse()`
+#     (`src/ir/call_instruction.jl`) IS exercised here via a `:direct`
+#     pc-symmetry round-trip (the `CallInstruction/no-pc` manifest
+#     entry): `forward` bumps pc, the canonical `inverse` un-bumps, and
+#     the mutation that drops the un-bump fires RED. What stays out of
+#     scope: the **L2-scaffold path remains impossible** because the
+#     M7.3 `make_delta(::CallInstruction)` still raises unconditionally
+#     (v5-deferred per ADR 0002 §Open Questions item 4) — no delta is
+#     ever pushed, so `unstep!` never delegates to this inverse via the
+#     M7.4 fast-path. Only the pc-only dispatch-level inverse is
+#     covered; the recursive-callee audit (destruction of `args`,
+#     creation of `targets`, sub-execution of the callee) is
+#     intrinsically a v5 concern and is NOT exercised by this entry.
 #   * **Cross-kind interactions.** Each mutation cycle is independent.
 #
 # # Operational warning
@@ -199,12 +202,24 @@ const _MS_INSTR   = BennettVM.MemorySwap(Int64(10), Int64(20))
 const _MS_PRE     = BennettVM.IState(0,
     Dict{Symbol,Int64}(), :running,
     Dict{Int64,Int64}(10 => Int64(111), 20 => Int64(222)))
+# Direct-path fixture for CallInstruction (bd `bennettvm-7cg`). The L2-
+# scaffold path is impossible to drive (its `make_delta` raises v5-
+# deferred; see src/ir/call_instruction.jl), but the pc-only forward/
+# inverse stubs ARE exercisable via the M6.3 direct round-trip: forward
+# bumps pc 0→1, the canonical inverse un-bumps 1→0. A `:direct` mutation
+# that drops the un-bump leaves pc stale → RED. `:sub` is a label-ish
+# callee symbol; targets/args/callee are pairwise disjoint, so the
+# constructor's SSA-overlap checks pass.
+const _CALL_INSTR = BennettVM.CallInstruction([:x], :sub, [:y], :call)
+const _CALL_PRE   = BennettVM.IState(0,
+    Dict(:y => Int64(1)),
+    :running, Dict{Int64,Int64}())
 
 # Type-tuple lookup for the inverse method signature per kind. Used
 # by both the snapshot/restore primitives and the run driver.
 const _TYPES = Dict(s => (getfield(BennettVM, s), BennettVM.IState, Any)
     for s in (:ArithmeticAssignment, :MemoryAssignment, :SwapInstruction,
-              :MemoryInterchange, :MemorySwap))
+              :MemoryInterchange, :MemorySwap, :CallInstruction))
 
 # ---------------------------------------------------------------------
 # 2. Mutation lifecycle primitives + drivers
@@ -401,6 +416,22 @@ end, :direct, (_MS_INSTR, _MS_PRE)),
         s.pc -= 1; return s
     end
 end, :direct, (_MS_INSTR, _MS_PRE)),
+
+# CallInstruction "no-pc" (bd `bennettvm-7cg`): the pc-only dispatch
+# inverse must un-bump the pc that `forward` bumped. Dropping `s.pc -= 1`
+# leaves pc stale, so forward∘inverse != identity (pc diverges). The
+# only audit reachable at this milestone — the L2-scaffold path is
+# impossible (make_delta v5-deferred) and the recursive-callee audit is
+# intrinsically v5. This `(CallInstruction, IState, Any)` method shadows
+# the canonical pc-only inverse; `_red_direct` then runs forward (pc→1)
+# and the mutated inverse (pc stays 1), giving s_rec != s_pre → RED.
+(:CallInstruction, "no-pc", quote
+    function inverse(instr::CallInstruction, s::IState, prev)::IState
+        # BUG: omit s.pc -= 1 — forward bumped pc, inverse must un-bump.
+        # Leaving pc stale makes forward∘inverse != identity (pc diverges).
+        return s
+    end
+end, :direct, (_CALL_INSTR, _CALL_PRE)),
 ]
 
 # ---------------------------------------------------------------------
@@ -473,16 +504,23 @@ end
     @test :MemoryAssignment     in kinds
     @test :MemoryInterchange    in kinds
     @test :MemorySwap           in kinds
-    @test length(kinds) == 5
-    # Each kind must contribute >=2 *distinct* mutations (Defect 1
-    # post-fix: the prior manifest had MemorySwap with two textually
-    # identical "skip-swap" entries; the one-sided body adds genuine
-    # coverage). Distinctness = unique (kind, label) pairs AND unique
-    # mutation bodies per kind (catches a future copy-paste regression
-    # that lifts the same body under two labels).
-    @test length(_MANIFEST) == 10
+    @test :CallInstruction      in kinds
+    @test length(kinds) == 6
+    # Each of the five L2/injective kinds contributes >=2 *distinct*
+    # mutations (Defect 1 post-fix: the prior manifest had MemorySwap
+    # with two textually identical "skip-swap" entries; the one-sided
+    # body adds genuine coverage). CallInstruction (bd `bennettvm-7cg`)
+    # contributes ONE entry — its only auditable surface is the pc-only
+    # `no-pc` direct round-trip (the L2 path is v5-deferred), so a second
+    # distinct mutation would have to fabricate v5 semantics (scope
+    # creep). The per-kind distinctness loop below only requires unique
+    # bodies per kind (1==1 holds for CallInstruction), not >=2.
+    # Distinctness = unique (kind, label) pairs AND unique mutation
+    # bodies per kind (catches a future copy-paste regression that lifts
+    # the same body under two labels).
+    @test length(_MANIFEST) == 11
     pairs = Set((entry[1], entry[2]) for entry in _MANIFEST)
-    @test length(pairs) == 10
+    @test length(pairs) == 11
     for k in kinds
         bodies = [entry[3] for entry in _MANIFEST if entry[1] === k]
         @test length(Set(string(b) for b in bodies)) == length(bodies)

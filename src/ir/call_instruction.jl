@@ -285,22 +285,26 @@ see this file's top-of-module M2.14 docstring on "structural inverse
 vs. dispatch-level inverse" — same pattern as M2.8 Begin/End and
 M2.9/M2.10 Uncond/Cond entry/exit.
 
-# Unaudited by M8.3 mutation-proof harness
+# pc-symmetry audited by M8.3 mutation-proof harness (bd `bennettvm-7cg`)
 
-This `inverse(::CallInstruction, ...)` method exists but is **not**
-covered by `test/test_mutation_proof.jl` (M8.3, bd `bennettvm-2kl`)
-because its M7.3 `make_delta(::CallInstruction, ...)` raises
+This `inverse(::CallInstruction, ...)` method's **pc symmetry IS now
+audited** by `test/test_mutation_proof.jl` (M8.3) via a `:direct`-mode
+manifest entry (`CallInstruction/no-pc`, added by bd `bennettvm-7cg`,
+follow-up to M8.3 `bennettvm-2kl`). That entry drives the M6.3
+`forward+inverse` round-trip — `forward` bumps `pc`, this canonical
+`inverse` un-bumps it — and mutation-proves the contract by dropping
+the `s.pc -= 1`, confirming the round-trip diverges (RED) and then
+restoring (GREEN). This is the same `:direct` pattern the injective
+kinds (SwapInstruction, MemoryInterchange, MemorySwap) use.
+
+What stays out of scope: the **L2-scaffold path remains impossible to
+drive** because its M7.3 `make_delta(::CallInstruction, ...)` raises
 unconditionally (v5-deferred — see `make_delta` docstring below and
-ADR 0002 §Open Questions item 4). The L2-scaffold path that M8.3
-uses to drive non-injective `inverse()` calls through
-`per_step_inverse_check` is therefore impossible to drive on a
-`CallInstruction`: no delta is ever pushed, so `unstep!` never
-delegates to this method via the M7.4 fast-path. A direct
-`forward+inverse` round-trip on a `CallInstruction` would be a
-meaningful alternative audit — file a P2 bd follow-up issue and
-extend the M8.3 manifest with a `:direct` mode entry analogous to
-the injective kinds (SwapInstruction, MemoryInterchange, MemorySwap)
-if you reach for that audit later.
+ADR 0002 §Open Questions item 4): no delta is ever pushed, so
+`unstep!` never delegates to this method via the M7.4 fast-path. Only
+the pc-only dispatch-level inverse is exercised; the recursive-callee
+semantics (destruction of `args`, creation of `targets`, sub-execution
+of the callee) are intrinsically a v5 concern and are NOT audited.
 """
 function inverse(instr::CallInstruction, s::IState, prev)::IState
     s.pc -= 1
