@@ -37,13 +37,17 @@
 # forced to consciously re-pin or rebaseline — exactly the regression-
 # anchor behavior CLAUDE.md Rule 4 demands.
 #
-# # What is intentionally NOT asserted
+# # What this asserts now (M_UNBOUNDED.1 — real lower_vm)
 #
-# Anything past the digest STDOUT and the two metadata fields
-# `arg_widths` / `return_widths`. The M0.2 `lower_vm` is still a
-# digest-only stub (`src/lower_vm.jl`); the real per-block
-# population lands at M3.x. Asserting more here would couple this
-# test to design decisions that PRD v4 §3 still defers.
+# M_UNBOUNDED.1 (`bennettvm-c39`, ADR 0012) replaced the M0.2 digest
+# stub with the real `ParsedIR` → `VMProgram` ingest pass. This smoke
+# now asserts the REAL lowered shape: a populated `blocks` vector, a
+# matching `LabelTable`, and the `:top` entry label, alongside the
+# preserved `arg_widths` / `return_widths` handoff metadata. The
+# detailed forward-correctness + round-trip gate lives in
+# `test/test_collatz_forward.jl`; this file stays at the Handoff-A
+# integration-smoke layer (Bennett.jl `extract_parsed_ir` → `lower_vm`
+# returns a well-formed program with the expected coarse shape).
 #
 # # M2.17 reshape note
 #
@@ -52,9 +56,10 @@
 # shape (`blocks::Vector{BasicBlock}`, `label_table::LabelTable`,
 # `entry_label::Symbol`, plus the preserved `arg_widths` and
 # `return_widths` metadata). The block/instruction-count regression
-# anchors live in the digest STDOUT assertions below; the struct
-# field assertions now check the M3.x-pending empty-blocks shape
-# (because `lower_vm` is still a digest-only stub).
+# anchors live in the digest STDOUT assertions below; M_UNBOUNDED.1
+# made these the COUNTS OF THE LOWERED PROGRAM (post critical-edge
+# split: 3 original blocks + 4 trampolines = 7 blocks), not of the
+# raw ParsedIR.
 #
 # Ref: /home/tobias/Projects/Bennett.jl/src/Bennett.jl:65 (export)
 #      /home/tobias/Projects/Bennett.jl/src/extract/entry.jl:41 (signature)
@@ -120,31 +125,36 @@ end
     digest = read(pipe.out, String)
     close(pipe.out)
 
-    # (c) Assert on the digest contents against known-correct values.
-    #     The block/instruction-count regression anchors are checked
-    #     in the digest STDOUT assertions further down (M2.17 reshape:
-    #     these numbers no longer live as struct fields). The struct
-    #     field assertions here pin the M3.x-pending empty-blocks
-    #     shape that the digest-stub `lower_vm` returns, plus the
-    #     authentic `arg_widths` / `return_widths` ParsedIR-handoff
-    #     metadata that survived the reshape.
+    # (c) Assert on the lowered VMProgram against known-correct values.
+    #     M_UNBOUNDED.1: `lower_vm` now produces the REAL RSSA-derived
+    #     program. The block count is 7 (3 original blocks — top, L8,
+    #     L46 — plus 4 critical-edge trampolines: top→L46, top→L8,
+    #     L8→L46, L8→L8). The LabelTable has one entry per block. The
+    #     entry label is `:top` (the ParsedIR's first block). The
+    #     `arg_widths` / `return_widths` carry the preserved handoff
+    #     metadata. (The default routine name is `:main` when `opts` is
+    #     not a Symbol, but the entry LABEL is the block label `:top`,
+    #     not the routine name — those are distinct, see ADR 0012 §D4.)
     @test result isa VMProgram
-    @test isempty(result.blocks)                 # lower_vm M0.2 stub returns empty blocks
-    @test length(result.label_table) == 0
-    @test result.entry_label === :main
+    @test length(result.blocks) == 7
+    @test length(result.label_table) == 7
+    @test result.entry_label === :top
     @test result.arg_widths == [8]
     @test result.return_widths == [8]
 
     # Digest format: the strings `"lower_vm digest:"` and
     # `"blocks       = "` are the grep-friendly anchors M0.2 chose
-    # (`src/lower_vm.jl` lines 112-113). M0.4's ADR transcribes these
-    # lines verbatim from the four motivating cases, so the exact
-    # spelling — including the run of spaces before `=` — is part of
-    # the contract, not incidental whitespace.
+    # (`src/lower_vm.jl`). M0.4's ADR transcribes these lines verbatim
+    # from the four motivating cases, so the exact spelling — including
+    # the run of spaces before `=` — is part of the contract, not
+    # incidental whitespace. M_UNBOUNDED.1 made the numbers reflect the
+    # LOWERED program (post edge-split): 7 blocks, 26 flat-stream
+    # instructions (per-block entry+exit markers + lowered body +
+    # synthetic constant creates).
     @test occursin("lower_vm digest:", digest)
     @test occursin("blocks       = ", digest)
-    @test occursin("blocks       = 3", digest)
-    @test occursin("instructions = 17", digest)
+    @test occursin("blocks       = 7", digest)
+    @test occursin("instructions = 26", digest)
     @test occursin("args         = [8]", digest)
     @test occursin("returns      = [8]", digest)
 end

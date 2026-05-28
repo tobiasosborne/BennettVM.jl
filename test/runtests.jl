@@ -88,6 +88,15 @@ using BennettVM
     include("test_delta_roundtrip.jl")
     include("test_unrun.jl")
     include("test_roundtrip.jl")
+    # M_UNBOUNDED.1 — the real `lower_vm` ParsedIR ingest (`bennettvm-c39`,
+    # ADR 0012). Lowers `collatz_steps(::Int8)` (PRD v4 §3.6.2 Case D) to a
+    # VMProgram and asserts FORWARD `run!` reproduces the irreversible
+    # oracle bit-for-bit on three non-overflowing inputs, plus a single
+    # round-trip smoke (run! → unrun! → initial + empty history). Sits
+    # after the M4/M7 round-trip family because the smoke exercises the L3
+    # checkpoint-replay `unrun!` those milestones land; pulls in the
+    # oracle + `collatz_vm` factory via `test/reference/collatz.jl`.
+    include("test_collatz_forward.jl")
     # M8.2 — per-step inverse test scaffold (`bennettvm-3d8`).
     # Sits AFTER test_delta_roundtrip.jl because the scaffold's M7
     # driver-layer testset depends on `compute_must_cache` (M7.5) and

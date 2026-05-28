@@ -288,6 +288,22 @@ include("ir/VMProgram.jl")
 # path. Not exported — internal-access only until M7.6 settles the
 # public-API surface.
 include("analysis/liveness.jl")
+# M_UNBOUNDED.1 (ADR 0012 §D1–D5) — the real `ParsedIR` → `VMProgram`
+# ingest pass (`bennettvm-c39`). Translates a Bennett.jl `ParsedIR`
+# (a CFG of `IRBasicBlock`s over the six IRInst types) into a runnable
+# `VMProgram`: φ-nodes become block params (Mogensen RSSA §3), branch
+# edges are critical-edge-split into trampoline blocks so each edge owns
+# its own φ-arg list, constant φ-incomings are materialised via synthetic
+# `Define`s, and the routine is framed by Begin/End. MUST follow every IR
+# include it emits — `Define` / `SelectInstruction` (the create
+# instructions), the six `ControlInstruction` subtypes
+# (`control_instructions.jl`), `BasicBlock` / `LabelTable` / `VMProgram`,
+# and the operand predicates — and MUST precede `lower_vm.jl`, which is
+# now a thin wrapper over `_lower_parsed_ir`. Forward-only correctness is
+# the gate; the round-trip is the L3 checkpoint-replay layer's job
+# (ADR 0012 "cross-iteration crux"). Not separately exported — reached
+# through `lower_vm`.
+include("ir/ingest.jl")
 include("lower_vm.jl")
 # M3.1 — `initial_state(prog, input)` (`bennettvm-afj`). Gateway to the
 # forward-only interpreter milestone (M3). Consumes a `VMProgram`
