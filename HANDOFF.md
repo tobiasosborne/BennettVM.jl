@@ -2,6 +2,23 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## Current state (2026-05-28 — Session 8 close)
+
+- **Phase:** **Phase 2 (production).** **Bennett.jl pin:** `877341e` (matches this device's Bennett.jl HEAD; `bennettvm-18b` pin-mismatch resolved).
+- **Test suite:** **2872 / 2872 passing** (`julia --project=. -e 'using Pkg; Pkg.test()'`), up from 2108 at Session 7.
+- **M8 milestone — CLOSED.** M8.5 (`012f6cd`, the 100-random-program property capstone, +510 assertions) + the two deferred follow-ups: `s9c` (M8.4 generator hostile review — generator verified SOUND; reviewer's "blocker" was already covered by existing tests) and `7cg` (`1ce192a`, CallInstruction.inverse :direct pc-symmetry audit). Generator-hardening follow-up `bennettvm-jpb` (P3) filed.
+- **🎯 M_UNBOUNDED milestone — CLOSED. `collatz_steps` (SC9 Case D, the load-bearing motivating case) ROUND-TRIPS END-TO-END.** This is the first of the four P0 motivating cases to land.
+  - **ADR 0012** (`docs/adr/0012-collatz-lowering.md`, `7ea1e7c`) — the keystone lowering design, synthesized from a 2+1 independent design pass. Decisions: dedicated `Define` instruction for SSA-creates (D1), `COMPARISON_OPERATORS` (D2), `SelectInstruction` MUX (D3), IRPhi→ConditionalEntry / IRBranch→ConditionalExit+critical-edge-split / IRRet→End (D4), synthetic zero-creates for constant φ-incomings (D5).
+  - **The crux** (both design proposals missed it; orchestrator-caught): collatz's loop reuses SSA temporary names every iteration → each iteration OVERWRITES the last → NOT zero-history. **User chose trace-tape = the existing L3 checkpoint-replay** (`unstep!` restores a full-IState snapshot + replays forward, never calling per-instruction `inverse()`, so overwrites are captured automatically). `Define`/`Select` are therefore `is_injective=false`. **Pebble-game (zero-history loops) deferred to M9.**
+  - **Landed (each Opus coder + review, pushed):** `3vj` comparison ops (`2d3b587`), `d3p` Define (`d04e8cc`), `8wj` Select (`ee2fad3`), `c39` the real `lower_vm` ingest (`127fe57`, `src/ir/ingest.jl` — generic over the 6 IRInst types via critical-edge splitting; hostile-reviewed), `hvx` the SC9 Case D round-trip gate (`523d0c1`, `test/test_collatz_roundtrip.jl`). `h7f` (M_UNBOUNDED.2) closed as superseded-by-L3.
+  - **Key scope finding (in test docstring):** the L3 round-trip invariant alone catches *reversal* bugs but NOT *forward-semantic* bugs (L3 replays a deterministic-but-wrong forward and still closes); the **oracle anchor** (forward result == irreversible Julia `collatz_steps`) is the complementary half. Both mutation-proved.
+
+### What's next (Session 9)
+
+- **The other three P0 motivating cases** (`M_DICT`, `M_DYN`, `M_NESTED`) — but note ALL of them, like collatz, need a real `ParsedIR→VMProgram` ingest. `c39` built the *collatz-shaped* generic ingest (`src/ir/ingest.jl`); generalizing it is **`M_OPCODE`** (audit `lower_vm` vs all 17 IRInst subtypes + fill gaps). M_OPCODE is the natural next foundation before the remaining cases. The motivating-case beads' "intercept the reject" framing is inaccurate — `extract_parsed_ir` already yields the symbolic loop (see `bennettvm-c39` notes); the work is lowering, not interception.
+- **Collatz follow-ups (filed):** `bennettvm-bgc` (P1, ADR R1 — width-masking: the ingest doesn't mask to i8, so oracle agreement holds only for non-overflowing inputs; round-trip is width-independent), `bennettvm-3ah` (P3, ingest hardening: `_phi_const_name` collision for numeric-suffix labels + entry-as-loop-header now fail-loud), `bennettvm-jpb` (P3, generator hardening).
+- **Orchestration note:** another agent was touching beads early in this session; cross-device sync is via `.beads/issues.jsonl` import (no conflicts arose — remote stayed in sync throughout).
+
 ## Current state (2026-05-27 — Session 7 close, partial)
 
 - **Phase:** **Phase 2 (production).**
