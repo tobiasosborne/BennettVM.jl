@@ -152,6 +152,27 @@ using BennettVM
     # gate; pulls in the oracles + `matrix_sum_vm` factory via
     # `test/reference/matrix_sum.jl` (re-include-guarded).
     include("test_matrix_sum_roundtrip.jl")
+    # matrix_tri (triangular nested loops) round-trip acceptance gate
+    # (bead `bennettvm-e4l`, the IRCast end-to-end gate of `bennettvm-hek`;
+    # ADR 0012 §D5 / ADR 0013). The NON-RECTANGULAR-nest analogue of
+    # test_matrix_sum_roundtrip.jl: `matrix_tri_while(::Int8)` is a
+    # doubly-nested `while` whose inner trip count varies with the outer
+    # index (triangular sum `sum_{i=1}^n i(i+1)/2`). It is the program that
+    # surfaced the within-edge synthetic-constant φ-name collision (e4l):
+    # its `top → L7.preheader` edge sends the same constant into two φ-param
+    # slots, which the pre-fix by-value-only dedup collapsed into a
+    # duplicate `UnconditionalExit` arg. This gate is the end-to-end witness
+    # that the cross-edge-share + within-edge-fresh-create fix
+    # (`src/ir/ingest.jl`) lets the triangular nest lower, run forward
+    # matching the oracle, and round-trip — and that the IRCast lowering
+    # (`bennettvm-hek`) handles its sign-extended counters. Per-step inverse
+    # (L3) across eight inputs at two K densities, aggregate run!/unrun!
+    # anchored to the oracle, the headline (n=3 → 10 → empty history), and
+    # the L2-raises boundary. Sits AFTER test_per_step_inverse.jl (consumes
+    # the M8.2 `per_step_inverse_check` scaffold) and after the matrix_sum
+    # round-trip gate; pulls in the oracles + `matrix_tri_vm` factory via
+    # `test/reference/matrix_tri.jl` (re-include-guarded).
+    include("test_matrix_tri_roundtrip.jl")
     # M8.3 — mutation-proof harness for per-instruction inverse
     # (`bennettvm-2kl`). Sits AFTER test_per_step_inverse.jl because
     # the harness depends on the `per_step_inverse_check` scaffold

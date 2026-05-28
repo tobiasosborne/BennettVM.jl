@@ -52,7 +52,7 @@ is never taken — `_dispatch_to_block!` does NOT consult a
 field is **vestigial** here; we pass any symbol not in `params` to
 satisfy the constructor (`ConditionalEntry` rejects `condition ∈ params`).
 
-## 4. Constant φ-incomings need a synthetic create (ADR 0012 §D5)
+## 4. Constant φ-incomings need a synthetic create (ADR 0012 §D5, bead e4l)
 
 `*Exit.args::Vector{Symbol}` is symbol-only, but a φ incoming may be a
 literal (collatz: `value_phi17`'s incoming from `top` is `Const(0)`;
@@ -62,9 +62,26 @@ synthetic `Define(:_phi_const_<src>_<v>, Int64(v), :add, Int64(0))`
 appended to that predecessor's body, and pass the synthetic name as the
 edge arg. The `Define` reads two literals (no operand collision) and is
 non-injective (so L3 checkpoints around it — harmless, it is a fresh
-create). Distinct `(src, v)` pairs share one synthetic name within a
-predecessor, so a predecessor that sends `0` on two edges materialises
-`0` once.
+create).
+
+**Cross-edge sharing vs. within-edge uniqueness (bead e4l, ADR 0012
+§D5).** Two *different* out-edges of a predecessor that both send the
+same constant `v` SHARE one synthetic name: only one out-edge runs at
+runtime, so a single create feeding whichever edge fires is correct, and
+sharing keeps the emitted `Define` count (hence the pinned dispatch/step
+counts of collatz and matrix_sum) untouched. But a *single* edge
+`src → dst` can have TWO distinct φ-param slots both receiving the SAME
+constant `v` from `src` (the triangular nested loop's `top →
+L7.preheader` edge: `0` flows into both `indvars.iv14` and `value_phi18`,
+`1` into both `indvars.iv10` and `value_phi7`). args→params binds
+positionally and DESTRUCTIVELY at the trampoline, so one created value
+cannot feed two param slots — each slot needs its own create. We
+therefore share the by-value name across edges but, within one edge's
+arg list, mint a FRESH counter-based name (and an ADDITIONAL `Define` in
+`src`'s body) for every repeat occurrence. The `UnconditionalExit`
+`allunique(args)` check (`control_instructions.jl`) stays — it is the
+correct SSA single-assignment-within-sender invariant; this fix supplies
+distinct names rather than relaxing the check.
 
 # Routine framing (ADR 0012 §D4)
 
@@ -287,11 +304,37 @@ end
 
 The synthetic SSA name for a constant φ-incoming `value` materialised in
 predecessor block `src` (ADR 0012 §D5): `:_phi_const_<src>_<value>`.
-Keyed by `(src, value)` so a predecessor that sends the same constant on
-two edges materialises it once. Negative values render with a leading
-`-`, which is a legal `Symbol` character.
+This is the *cross-edge-shared* name: keyed by `(src, value)` so two
+DIFFERENT out-edges of `src` that send the same constant share one
+materialised `Define` (only one runs at runtime — see this file's
+docstring §4). Negative values render with a leading `-`, which is a
+legal `Symbol` character.
+
+NOTE (bead `bennettvm-3ah` DEF-3): the `_<src>_<value>` form can collide
+for general block labels with numeric suffixes (e.g. `(src=:a_1, value=3)`
+vs `(src=:a, value=13)` both render `:_phi_const_a_1_3`). Collatz /
+matrix_sum / matrix_tri labels are collision-free, so this is retained as
+the shared name for byte-for-byte stability of their pinned counts; the
+*within-edge duplicate* names (`_phi_const_dup_name`) are counter-based
+and collision-proof, hardening the worst case the e4l fix introduces.
 """
 _phi_const_name(src::Symbol, value::Int64) = Symbol("_phi_const_", src, "_", value)
+
+"""
+    _phi_const_dup_name(src::Symbol, value::Int64, k::Int) -> Symbol
+
+A FRESH, collision-proof synthetic name for the `k`-th *within-one-edge*
+repeat of constant `value` flowing out of `src` (bead `bennettvm-e4l`,
+ADR 0012 §D5). When a single edge's arg list would otherwise repeat a
+by-value-shared `_phi_const_name`, each repeat slot gets its own create
+named `:_phi_const_<src>_<value>_dup<k>` with a monotonically increasing
+per-occurrence counter `k`. The counter guarantees uniqueness regardless
+of label/value shape (it also sidesteps the `bennettvm-3ah` DEF-3 numeric-
+suffix collision noted on `_phi_const_name`): two distinct occurrences
+never collide because their `k` differs.
+"""
+_phi_const_dup_name(src::Symbol, value::Int64, k::Int) =
+    Symbol("_phi_const_", src, "_", value, "_dup", k)
 
 # ---------------------------------------------------------------------
 # Main assembly: ParsedIR → VMProgram.
@@ -306,12 +349,20 @@ Assemble the `VMProgram`. Three phases (see this file's docstring):
      `src → dst` (from `src`'s terminator successors), read `dst`'s
      φ-incomings for `src` (`_phi_incoming_for_edge`); each `SSAOperand`
      becomes its name, each `ConstOperand` becomes a synthetic name to be
-     materialised in `src` (registered in `consts[src]`). The resulting
+     materialised in `src`. A `ConstOperand` value is *shared across
+     edges* (one `Define` per `(src, value)`, registered in `shared[src]`)
+     but made *unique within one edge*: if a by-value-shared name already
+     appears in the CURRENT edge's arg list, a fresh counter-based name
+     (`_phi_const_dup_name`) and an EXTRA `Define` are minted so each
+     param slot gets its own destructively-bound create (bead
+     `bennettvm-e4l`). Every `(name, value)` to materialise in `src` is
+     appended to `const_defs[src]` in registration order; the resulting
      `Symbol` arg list is stored under the edge label.
   2. **Build original blocks.** entry marker by predecessor arity
      (Begin for the entry block, ConditionalEntry for a ≥2-pred join,
-     else UnconditionalEntry); body = lowered non-φ instructions + the
-     synthetic constant `Define`s registered for this block; exit marker
+     else UnconditionalEntry); body = lowered non-φ instructions + one
+     synthetic constant `Define` per `(name, value)` registered for this
+     block in `const_defs` (in registration order); exit marker
      from the terminator (End for IRRet, Conditional/Unconditional Exit
      to the trampoline(s) for IRBranch).
   3. **Build trampoline blocks** — one `UnconditionalEntry([]) →
@@ -327,27 +378,54 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
     entry_label = first(blocks).label
 
     # --- Phase 1: edge args + per-source constant registry. ---
-    # edge_args[(src,dst)] :: Vector{Symbol}  — φ args in dst's φ order.
-    # consts[src][value]   :: Symbol          — synthetic name for a const.
-    # preds[dst]           :: Vector{Symbol}   — incoming trampoline labels.
+    # edge_args[(src,dst)]  :: Vector{Symbol}        — φ args in dst's φ order.
+    # shared[src][value]    :: Symbol                — CROSS-EDGE-shared
+    #     synthetic name for a const (one per (src,value); only one of
+    #     `src`'s out-edges runs, so sharing is safe and keeps the pinned
+    #     collatz/matrix_sum Define counts byte-identical).
+    # const_defs[src]       :: Vector{Tuple{Symbol,Int64}} — every (name,
+    #     value) to emit as a `Define` in `src`'s body (Phase 2), in
+    #     registration order: the by-value-shared creates AND the extra
+    #     per-occurrence creates minted for within-edge duplicates (e4l).
+    # preds[dst]            :: Vector{Symbol}        — incoming trampoline labels.
     edge_args = Dict{Tuple{Symbol,Symbol},Vector{Symbol}}()
-    consts = Dict{Symbol,Dict{Int64,Symbol}}(b.label => Dict{Int64,Symbol}()
-                                              for b in blocks)
+    shared = Dict{Symbol,Dict{Int64,Symbol}}(b.label => Dict{Int64,Symbol}()
+                                             for b in blocks)
+    const_defs = Dict{Symbol,Vector{Tuple{Symbol,Int64}}}(
+        b.label => Tuple{Symbol,Int64}[] for b in blocks)
     preds = Dict{Symbol,Vector{Symbol}}(b.label => Symbol[] for b in blocks)
+    dup_counter = 0  # monotone, collision-proof across all within-edge dups.
     for src_block in blocks
         src = src_block.label
         for dst in _successors(src_block.terminator)
             incoming = _phi_incoming_for_edge(by_label[dst], src)
             args = Symbol[]
+            used = Set{Symbol}()  # names already bound IN THIS edge's args.
             for op in incoming
                 if op isa Bennett.SSAOperand
                     push!(args, op.name)
-                else  # ConstOperand — materialise in `src`, share by value.
+                    push!(used, op.name)
+                else  # ConstOperand — materialise in `src`.
                     v = Int64(op.value)
-                    name = get!(consts[src], v) do
-                        _phi_const_name(src, v)
+                    # Cross-edge-shared name (one Define per (src,value)).
+                    name = get!(shared[src], v) do
+                        nm = _phi_const_name(src, v)
+                        push!(const_defs[src], (nm, v))
+                        nm
+                    end
+                    if name in used
+                        # Within-THIS-edge duplicate: the shared name is
+                        # already bound to a prior param slot of this same
+                        # edge. args→params binds positionally and
+                        # destructively, so this slot needs its OWN create
+                        # (bead e4l). Mint a fresh collision-proof name +
+                        # an EXTRA Define in src's body.
+                        dup_counter += 1
+                        name = _phi_const_dup_name(src, v, dup_counter)
+                        push!(const_defs[src], (name, v))
                     end
                     push!(args, name)
+                    push!(used, name)
                 end
             end
             edge_args[(src, dst)] = args
@@ -413,7 +491,11 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
             li = _lower_body_inst(inst)
             li === nothing || push!(body, li)
         end
-        for (v, name) in consts[b.label]
+        # One Define per registered (name, value), in registration order:
+        # the by-value-shared creates AND the within-edge-duplicate extras
+        # (bead e4l). Each materialises `value` into a distinct SSA name so
+        # every param slot the edge feeds gets its own destructive create.
+        for (name, v) in const_defs[b.label]
             push!(body, Define(name, Int64(v), :add, Int64(0)))
         end
         # Exit marker from the terminator.
