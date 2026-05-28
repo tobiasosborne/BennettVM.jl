@@ -106,6 +106,17 @@ using BennettVM
     # (`bennettvm-bii`, seeded random program generator), and M8.5
     # (`bennettvm-tnp`, 100-random-programs property test).
     include("test_per_step_inverse.jl")
+    # M_UNBOUNDED.3 — collatz round-trip / SC9 Case D acceptance gate
+    # (`bennettvm-hvx`, ADR 0012). The definitive round-trip proof for
+    # the unbounded `while` the circuit backend cannot compile: per-step
+    # inverse (L3) across multiple non-overflowing inputs at two K
+    # densities, aggregate run!/unrun! anchored to the oracle, the SC9
+    # headline assertion, and the L2-raises boundary documenting the
+    # L3-only reversal contract. Sits AFTER test_per_step_inverse.jl
+    # because it consumes the M8.2 `per_step_inverse_check` scaffold;
+    # pulls in the oracle + `collatz_vm` factory via
+    # `test/reference/collatz.jl` (re-include-guarded).
+    include("test_collatz_roundtrip.jl")
     # M8.3 — mutation-proof harness for per-instruction inverse
     # (`bennettvm-2kl`). Sits AFTER test_per_step_inverse.jl because
     # the harness depends on the `per_step_inverse_check` scaffold
