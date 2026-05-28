@@ -2,6 +2,73 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## Current state (2026-05-28 — Session 9 close)
+
+- **Phase 2.** Bennett.jl pin `877341e` (current; unchanged). **Suite 3330/3330.**
+  6 commits pushed (`e9dfd7f..a4815a1`).
+- **🧭 ARCHITECTURE PIVOT (ADR 0013, lead-approved incl. Dict model D3).**
+  The recon that drove it: **Cases A (dynamic `Vector`) and B (`Dict`) cannot
+  reach BennettVM through Bennett.jl's Julia-function extractor** — GC
+  allocation emits a TLS GC-frame inline-asm rejected at
+  `Bennett.jl/src/extract/instructions.jl:2103` (`Bennett-5oyt/U15`) BEFORE
+  any `ParsedIR` exists; `Dict` is additionally rejected by design
+  (`Bennett-800b`). Verified across `mem=:auto/:persistent`, `optimize=false`.
+  The bead-chain "intercept the reject in ingest" framing is therefore
+  **empirically impossible**. Lead directive: **BennettVM must be a
+  reversible VM over LLVM opcodes — useful to ANY emitter (C/Rust/Julia),
+  sensible without Bennett.jl; Bennett.jl changes are welcome/anticipated.**
+  (Saved to auto-memory: `bennettvm-language-agnostic`, `bennettvm-raison-detre`.)
+- **ADR 0013** = the architecture: contract = LLVM-opcode IR (`ParsedIR` /
+  `.ll`/`.bc`); reversible heap = a **store-level floor** (PRD §3.2/§3.7
+  exchange mandate); **Dict = D3** (Bennett.jl recognizes Dict ops → neutral
+  `IRMap*` ops → a BennettVM reversible-map ADT it controls; no rehash gap).
+- **ADR 0014** = memory-floor lowering (L3 baseline; bump-allocator
+  addressing; **defers the PRD §3.7 L1 Exchange optimization** to bead `uom`,
+  same trace-tape-now pattern as collatz/pebble-game).
+
+### What landed this session (all pushed, hostile-reviewed where Core)
+- **SC9 Case C (nested loops)** — `matrix_sum_while(Int8(3))==9` round-trips.
+  The PRD's `for i,j` form folds to `n*n`; the `while`-form is a genuine
+  nested CFG the EXISTING ingest lowers with zero src changes (ADR 0010).
+  `bennettvm-720/of5` satisfied by existing ingest + L3.
+- **`IRCast`** (sext/zext/trunc) — `CastInstruction`, Define-templated
+  (`bennettvm-hek`). + **`matrix_tri`** (triangular nested `while`) round-trips.
+- **e4l ingest fix** — within-edge synthetic φ-const name collision
+  (two φ-params taking the same constant on one edge → duplicate exit arg).
+  Fix preserves cross-edge sharing (collatz/matrix_sum counts byte-identical).
+- **Memory floor v1** (`bennettvm-x9j`, ADR 0014) — `MemoryStore`/`MemoryLoad`
+  (scalar, L3) + bump-allocator `IRAlloca`. **EMITTER-AGNOSTIC PROOF:** a **C**
+  function (`clang-18 -O0`) round-trips end-to-end via
+  `extract_parsed_ir_from_ll` (committed `test/reference/through_mem.{c,ll}`).
+- **M_OPCODE.1** audit → `docs/coverage-matrix.md` (16 IRInst subtypes).
+
+### SC9 scorecard
+- ✅ **D** (collatz) · ✅ **C** (nested loops) · 🔨 **A** (dynamic memory —
+  memory floor v1 scalar done) · ⏳ **B** (Dict — D3 ADT, not started).
+
+### What's next (Session 10) — and the Bennett.jl dependency
+Cases A & B BOTH ultimately need **Bennett.jl-side work** (lead pre-approved
+in principle; per Rule 14 show the specific diff before editing
+`../Bennett.jl/src`):
+- **A (Julia `Vector`)** needs the **`mem=:vm` arm** (ADR 0013 D-4 / task#11):
+  (1) trivial — drop the `movq %fs:0` TLS inline-asm; (2) core — emit
+  dynamic-N `IRAlloca` + `IRLoad`/`IRStore` for Julia heap past the GC wall;
+  (3) small — `IRCall.callee_name::Symbol`. Plus the **U16** 2-index aggregate
+  GEP reject (`bennettvm-dzd`) blocks even C arrays — needs a Bennett.jl GEP
+  extension.
+- **BennettVM-side autonomous runway** before that fork: **v2 GEP**
+  (`IRPtrOffset`/`IRVarGEP` → Define address arithmetic), testable via a
+  pointer-arg C function (the SUPPORTED 1-index GEP form; aggregate arrays are
+  U16-blocked). Then v3 dynamic-N alloca.
+- **B (Dict)** = D3 reversible-map ADT (reframes `bennettvm-jrc`) + Bennett.jl
+  Dict→`IRMap*` recognition.
+
+### Key open beads
+`uom` (L1 Exchange, P2), `dzd` (v2 GEP reach / U16, P2), `b5g` (resolve_ptr
+polish, P3), the SSA-dup latent gap (P2), `3ah` (_phi_const collision, P3),
+task#11/`zg5`/`kl3`/`fu5` (Bennett.jl mem=:vm + M13 dispatch — all need
+user approval). ADRs 0008/0009 (per-case) subsumed by ADR 0013.
+
 ## Current state (2026-05-28 — Session 8 close)
 
 - **Phase:** **Phase 2 (production).** **Bennett.jl pin:** `877341e` (matches this device's Bennett.jl HEAD; `bennettvm-18b` pin-mismatch resolved).
