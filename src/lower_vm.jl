@@ -47,15 +47,20 @@ empty-blocks-stub `entry_label`). The name is metadata on the Begin/End
 markers and the `BeginInstruction.params` validation in
 `initial_state`; it does not affect forward execution otherwise.
 
-# The digest (preserved, now computed from the real output)
+# The digest (preserved, now `@debug`-gated)
 
-The M0.2 four-line digest STDOUT is preserved for M0.4 ADR transcription
-and `grep`-friendliness, but the numbers are now read off the **lowered**
-`VMProgram` (block + instruction counts after critical-edge splitting),
-not the raw `ParsedIR`. A future agent comparing the digest to the raw
-ParsedIR block count should expect them to differ: the lowered program
-has more blocks (one trampoline per CFG edge) and more instructions
-(synthetic constant creates + the per-block entry/exit markers).
+The digest fields (block + instruction counts after critical-edge
+splitting, arg/return widths) are preserved for M0.4 ADR transcription,
+but emitted via `@debug`, not `println` (ADR 0003 side-fix 0). `lower_vm`
+is the library entry point on the `target=:reversible_vm` dispatch path,
+where an unconditional `println` would spam stdout on every compile and
+pollute `Pkg.test()` — a library entry point must be quiet by default.
+The digest is silent unless `JULIA_DEBUG=BennettVM` (or `=all`) is set.
+The numbers are read off the **lowered** `VMProgram`, not the raw
+`ParsedIR`. A future agent comparing the digest to the raw ParsedIR
+block count should expect them to differ: the lowered program has more
+blocks (one trampoline per CFG edge) and more instructions (synthetic
+constant creates + the per-block entry/exit markers).
 
 # Width note (ADR 0012 R1)
 
@@ -74,14 +79,18 @@ function lower_vm(parsed::Bennett.ParsedIR; opts=nothing)::VMProgram
     prog = _lower_parsed_ir(parsed, routine)
 
     # Digest, computed from the lowered VMProgram (post-edge-split).
-    # Multi-line, two-space-indented, grep-friendly — the M0.4 ADR
-    # transcription anchor. `println` over a single string preserves
-    # order and avoids `@info`'s `[ Info: ` decoration.
-    println("lower_vm digest:")
-    println("  blocks       = ", length(prog.blocks))
-    println("  instructions = ", n_instructions(prog))
-    println("  args         = ", prog.arg_widths)
-    println("  returns      = ", prog.return_widths)
+    # Gated behind `@debug` (ADR 0003 side-fix 0): `lower_vm` is the
+    # library entry point reached on the `target=:reversible_vm` dispatch
+    # path, where EVERY compile would otherwise spam stdout (and pollute
+    # `Pkg.test()`). A library entry point must be quiet by default; the
+    # digest is silent unless `JULIA_DEBUG=BennettVM` (or `=all`) is set,
+    # at which point Julia surfaces it as a `┌ Debug: lower_vm digest`
+    # group. The fields (block + instruction counts after critical-edge
+    # splitting, arg/return widths) are preserved verbatim as the M0.4
+    # ADR transcription anchor — see `test/test_handoff_smoke.jl`, which
+    # asserts the same numbers via `@test_logs (:debug, …)`.
+    @debug "lower_vm digest" blocks = length(prog.blocks) instructions =
+        n_instructions(prog) args = prog.arg_widths returns = prog.return_widths
 
     return prog
 end

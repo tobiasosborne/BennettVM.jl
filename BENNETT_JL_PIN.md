@@ -19,9 +19,24 @@ deltas. Zero `src/` changes. Specifically:
 - `.beads/`: routine tracker churn.
 
 `ParsedIR` (`Bennett.jl/src/ir_types.jl`), `IRBasicBlock`, `IRInst`,
-the LLVM extractor, `lower_circuit`, `target=:circuit` dispatch — all
-unchanged at the source level. Phase-2 integration (Handoff A) is
-therefore unaffected; repin is safe.
+the LLVM extractor, `lower_circuit` — all unchanged at the source
+level. Phase-2 integration (Handoff A) is therefore unaffected; repin
+is safe.
+
+> **Correction (2026-05-31, ADR 0003 side-fix 1).** Earlier revisions of
+> this file referred to a `target=:circuit` *dispatch* in Bennett.jl.
+> That is **false** pre-keystone. Verified against
+> `Bennett.jl/src/lowering/driver.jl:34`: `target` is whitelisted against
+> `(:gate_count, :depth)` only — there is **no `:circuit` symbol, no
+> `:vm`/`:reversible_vm` symbol, and no `target=`-based backend
+> dispatch** anywhere in `Bennett.jl/src/`. `target=` is purely an
+> **optimization objective** (`:gate_count` default; `:depth` flips
+> `mul=:auto → :qcla_tree`), not a backend selector. The backend-dispatch
+> arm (`target=:reversible_vm` → the VM, `:gate_count`/`:depth` → the
+> circuit) is introduced by the keystone, not present today. The pinned
+> SHA below does **not** change with this correction; **the pin SHA
+> updates with the `target=:reversible_vm` keystone (bead `bennettvm-a5j`
+> / ADR 0003)**, when the Bennett.jl `src/` hook lands under Rule 14.
 
 Bd issue `bennettvm-18b` closes with this commit.
 

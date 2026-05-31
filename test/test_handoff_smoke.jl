@@ -56,10 +56,20 @@
 # shape (`blocks::Vector{BasicBlock}`, `label_table::LabelTable`,
 # `entry_label::Symbol`, plus the preserved `arg_widths` and
 # `return_widths` metadata). The block/instruction-count regression
-# anchors live in the digest STDOUT assertions below; M_UNBOUNDED.1
+# anchors live in the digest `@debug`-log assertions below; M_UNBOUNDED.1
 # made these the COUNTS OF THE LOWERED PROGRAM (post critical-edge
 # split: 3 original blocks + 4 trampolines = 7 blocks), not of the
 # raw ParsedIR.
+#
+# # Digest is now `@debug`, not STDOUT (ADR 0003 side-fix 0)
+#
+# `lower_vm` is the library entry point on the `target=:reversible_vm`
+# dispatch path; an unconditional `println` would spam stdout on every
+# compile. The digest is therefore emitted via `@debug` (silent unless
+# `JULIA_DEBUG=BennettVM`). This test asserts the library-quietness
+# invariant (`lower_vm` writes NOTHING to stdout, via a redirected
+# `Pipe`) AND the lowered-program regression anchors (block / instruction
+# counts) directly on the returned `VMProgram`, not by parsing the log.
 #
 # Ref: /home/tobias/Projects/Bennett.jl/src/Bennett.jl:65 (export)
 #      /home/tobias/Projects/Bennett.jl/src/extract/entry.jl:41 (signature)
@@ -108,12 +118,14 @@ end
     @test length(parsed.args) == 1
     @test parsed.args[1][2] == 8  # single i8 argument
 
-    # (b) Capture the digest emitted by lower_vm. On Julia 1.12+
-    #     `redirect_stdout` insists on a real stream (no IOBuffer
-    #     overload), so we route through a `Pipe`: write end becomes
-    #     stdout while `lower_vm` runs, read end is drained afterwards.
-    #     The `close(write-end)` is what makes `read(...)` return
-    #     instead of blocking forever waiting for more bytes.
+    # (b) Library-quietness invariant (ADR 0003 side-fix 0): `lower_vm`
+    #     must write NOTHING to stdout. The digest moved to `@debug`, so
+    #     with the default logger (Debug suppressed) a redirected stdout
+    #     stays empty. On Julia 1.12+ `redirect_stdout` insists on a real
+    #     stream (no IOBuffer overload), so we route through a `Pipe`:
+    #     write end becomes stdout while `lower_vm` runs, read end is
+    #     drained afterwards. The `close(write-end)` is what makes
+    #     `read(...)` return instead of blocking forever.
     pipe = Pipe()
     Base.link_pipe!(pipe; reader_supports_async=true, writer_supports_async=true)
     result = redirect_stdout(pipe.in) do
@@ -122,8 +134,9 @@ end
         r
     end
     close(pipe.in)
-    digest = read(pipe.out, String)
+    stdout_text = read(pipe.out, String)
     close(pipe.out)
+    @test isempty(stdout_text)   # a library entry point is silent on stdout
 
     # (c) Assert on the lowered VMProgram against known-correct values.
     #     M_UNBOUNDED.1: `lower_vm` now produces the REAL RSSA-derived
@@ -142,19 +155,13 @@ end
     @test result.arg_widths == [8]
     @test result.return_widths == [8]
 
-    # Digest format: the strings `"lower_vm digest:"` and
-    # `"blocks       = "` are the grep-friendly anchors M0.2 chose
-    # (`src/lower_vm.jl`). M0.4's ADR transcribes these lines verbatim
-    # from the four motivating cases, so the exact spelling — including
-    # the run of spaces before `=` — is part of the contract, not
-    # incidental whitespace. M_UNBOUNDED.1 made the numbers reflect the
-    # LOWERED program (post edge-split): 7 blocks, 26 flat-stream
-    # instructions (per-block entry+exit markers + lowered body +
-    # synthetic constant creates).
-    @test occursin("lower_vm digest:", digest)
-    @test occursin("blocks       = ", digest)
-    @test occursin("blocks       = 7", digest)
-    @test occursin("instructions = 26", digest)
-    @test occursin("args         = [8]", digest)
-    @test occursin("returns      = [8]", digest)
+    # (d) Instruction-count regression anchor — asserted DIRECTLY on the
+    #     VMProgram, not by parsing the `@debug` digest record (Rule 4:
+    #     assert the value, not a logged copy of it; this also keeps
+    #     `Logging` out of the test deps). 26 = the flat-stream instruction
+    #     count of the LOWERED program post edge-split (per-block entry+exit
+    #     markers + lowered body + synthetic constant creates). The digest
+    #     `@debug` (ADR 0003 side-fix 0) reports this same number; M0.4's
+    #     ADR transcribes it, so it is part of the contract.
+    @test n_instructions(result) == 26
 end

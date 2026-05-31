@@ -11,13 +11,13 @@
 [Bennett.jl][bennett] compiles plain Julia functions to *fixed reversible
 circuits* — the right artifact for a quantum oracle, but it cannot represent
 unbounded loops or runtime-sized memory. BennettVM is the second lowering
-target (`target = :vm`) that closes that gap: a reversible interpreter for
-terminating computations of statically-unknown length.
+target (`target = :reversible_vm`) that closes that gap: a reversible
+interpreter for terminating computations of statically-unknown length.
 
 ```
-                 ┌──────────── target=:circuit ──►  fixed permutation circuit
+                 ┌──────────── target=:circuit ──────►  fixed permutation circuit
 Julia source ──► │ Bennett.jl frontend (LLVM IR, lowering, gates)
-                 └──────────── target=:vm ──────►  BennettVM  ◄── you are here
+                 └──────────── target=:reversible_vm ─►  BennettVM  ◄── you are here
 ```
 
 The two backends are semantically distinct (see [`bennettvm_prd.md`][prd] §3.7).
