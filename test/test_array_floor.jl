@@ -20,9 +20,10 @@
 #      `VarGEP.forward` computes `s.locals[dest] = base + index*stride`, a
 #      runtime element-address create reversed via L3 (the MemoryLoad
 #      pattern; NO new delta in this unit — the L2 (addr,old) store-delta is
-#      a later bead, `bennettvm-ekc`). Dynamic-N (`SSAOperand` n_elems) stays
-#      OUT OF SCOPE (later bead `bennettvm-0zn`) and keeps its fail-loud
-#      guard.
+#      a later bead, `bennettvm-ekc`). Dynamic-N (`SSAOperand` n_elems) is now
+#      LIFTED (bead `bennettvm-0zn`): it lowers to a `DynAlloca` rather than
+#      raising — testset (7) tracks that lift (full semantics in
+#      `test/test_alloca_delta.jl`).
 #
 # # Addressing convention (the load-bearing choice; report item (d))
 #
@@ -57,8 +58,8 @@
 #      at K ∈ {1, 4}).
 #   6. **Bump allocator reserves N cells** — the array base and the next
 #      alloca's base differ by N (distinct, non-overlapping regions).
-#   7. **v1→v2 guard** (Rule 1): dynamic-N `IRAlloca` (`SSAOperand` n_elems)
-#      still raises a clear "deferred" message (bead `bennettvm-0zn`).
+#   7. **v1→v2 lift**: dynamic-N `IRAlloca` (`SSAOperand` n_elems) now lowers
+#      to a `DynAlloca` (bead `bennettvm-0zn`), no longer a "deferred" reject.
 #   8. **Edge cases**: a non-positive `ConstOperand(N<=0)` alloca fails loud
 #      (malformed IR); a scalar-then-array alloca mix yields non-overlapping
 #      regions (cursor monotonicity: array base = scalar base + 1).
@@ -271,12 +272,16 @@ _istate_af(locals::Dict{Symbol,Int64}) = _IState_AF(1, locals, :running)
     end
 
     # ------------------------------------------------------------------
-    # (7) v1→v2 guard: dynamic-N alloca still raises (deferred, bead 0zn).
+    # (7) v1→v2 lift: dynamic-N alloca now LOWERS to a DynAlloca (bead 0zn).
     # ------------------------------------------------------------------
-    @testset "dynamic-N IRAlloca raises (deferred to bead 0zn)" begin
-        # SSAOperand n_elems is the dynamic-N (VLA) case — OUT OF SCOPE for
-        # Unit 1; the bump allocator cannot reserve a runtime-sized region at
-        # lowering time. Lowering must fail LOUD (Rule 1), not miscompile.
+    @testset "dynamic-N IRAlloca lowers to DynAlloca (bead 0zn)" begin
+        # SSAOperand n_elems is the dynamic-N (VLA) case. As of bead 0zn it is
+        # NO LONGER rejected: it lowers to a `DynAlloca` (`src/ir/alloca.jl`)
+        # whose forward materialises the pointer at a frozen compile-time base
+        # and whose L2 (base, n) delta retracts the region on reverse. (The
+        # full DynAlloca behaviour — delta, round-trip, soundness lemma — is
+        # pinned in `test_alloca_delta.jl`; here we only confirm the ingest
+        # dispatch produces a DynAlloca, the positive half of the v1→v2 lift.)
         dyn_block = Bennett.IRBasicBlock(
             :entry,
             Bennett.IRInst[
@@ -285,11 +290,13 @@ _istate_af(locals::Dict{Symbol,Int64}) = _IState_AF(1, locals, :running)
             Bennett.IRRet(Bennett.SSAOperand(:__dyn), 32),
         )
         dyn_parsed = Bennett.ParsedIR(32, [(:__n, 32)], [dyn_block], [32])
-        err = try lower_vm(dyn_parsed; opts=:dyn); nothing catch e; e end
-        @test err isa ErrorException
-        @test occursin("IRAlloca", err.msg)
-        @test occursin("SSAOperand", err.msg)   # the dynamic-N operand kind
-        @test occursin("0zn", err.msg)          # the deferral bead
+        dyn_vm = lower_vm(dyn_parsed; opts=:dyn)
+        dyn_entry = first(dyn_vm.blocks)
+        dynallocas = filter(i -> i isa BennettVM.DynAlloca, dyn_entry.instructions)
+        @test length(dynallocas) == 1
+        @test dynallocas[1].dest == :__dyn
+        @test dynallocas[1].n_operand == :__n
+        @test dynallocas[1].base == 1            # frozen compile-time base
 
         # Static array alloca (ConstOperand(N>1)) now LOWERS (no longer the
         # scalar-floor "deferred to v2" reject) — the positive half of the

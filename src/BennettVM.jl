@@ -276,6 +276,26 @@ include("ir/memory_floor.jl")
 # per-instruction `inverse()` is NOT on the L3 replay path and is deferred
 # (raises descriptively, the `MemoryLoad` pattern). Not yet exported.
 include("ir/array_index.jl")
+# bead `bennettvm-0zn` — `DynAlloca`, the dynamic-N allocation create + an L2
+# `(base, n)` delta (ADR 0009 Decision 2a; ADR 0013 §D-2 dynamic-N row; ADR
+# 0014 §D1/D4 — lifts the dynamic-N deferral). An `IRAlloca` whose `n_elems` is
+# an `SSAOperand` (a C VLA / Julia `Vector{T}(undef, n)`) cannot reserve its
+# region at lowering time, so `forward` materialises the pointer at a FROZEN
+# compile-time `base` (there is no runtime bump-allocator state in `IState`) and
+# does NO zeroing (cells stay absent=0). Reversal is an L2 `(base, n)` delta
+# captured PRE-`forward()` via `predelta_payload` (the `MemoryStore` template,
+# Law 2), whose `inverse` UNCONDITIONALLY deletes the whole region
+# `base..base+n-1` and removes the pointer — sound under L2/L3 store interleave
+# because the bump allocator guarantees those cells were absent pre-alloca and
+# owned exclusively by this allocation (the file's soundness lemma). Reuses
+# nothing from `array_index.jl` directly but is the dynamic-size sibling of
+# `VarGEP`/`MemoryStore`, so it is placed right after `array_index.jl` and
+# BEFORE `history/Injective.jl` (which PINS its `is_injective(::Type{DynAlloca})
+# = false` trait — the include MUST precede Injective so the specialisation can
+# dispatch on the concrete type). NO `make_delta` (the sole L2 path is
+# `predelta_payload`, like `MemoryStore`); the raising `prev::Any` inverse is
+# the never-taken L3 catch-all (Rule 1). Not yet exported.
+include("ir/alloca.jl")
 # M6.1 — `is_injective` trait (`bennettvm-9hf`). The L1 "no-log"
 # layer-1 predicate of PRD v4 §3.3: tells the rest of the VM whether
 # an instruction needs a history entry. Type-level `true` for the

@@ -256,6 +256,73 @@ A's actual need**), width masking", l.75–78):
   the C/`.ll` route without it**, so this ADR's gate does not block on the
   Bennett.jl change.
 
+## Decision 2a refinement (2026-05-31, bead 0zn impl)
+
+Implementing the dynamic-N alloca (`bennettvm-0zn`) surfaced two points
+that sharpen Decision 2a's original wording without changing its intent.
+
+**(i) No runtime bump pointer exists → single-dynamic-array fixed
+compile-time base + fail-loud on alloca-after-dynamic.** Decision 2a §2(a)
+spoke of advancing "the ADR-0014 §D1 bump allocator by `n` cells" at
+runtime and "retract[ing] the bump pointer to `base`" on reverse. But
+`IState` (`src/ir/IState.jl:134-151`: `pc`, `locals`, `status`, `memory`)
+carries **no runtime allocator state** — there is no live bump pointer to
+advance by a runtime `n`. The implemented strategy is therefore a
+**single dynamic array per routine at a frozen compile-time base**: the
+ingest bump cursor at the point of the dynamic alloca becomes
+`DynAlloca.base`, frozen, owning the open-ended address tail `[base, ∞)`
+exclusively. The cursor is NOT advanced (the runtime size is unknown at
+lowering). Consequently **any alloca after a dynamic one fails loud**
+(Rule 1) — a second region would alias the frozen base
+(`src/ir/ingest.jl:345-357`, the `saw_dynamic` guard + the dynamic-N
+dispatch). The same single-region precondition is also enforced at
+RUNTIME: `DynAlloca.forward` (`src/ir/alloca.jl`) fails loud (Rule 1) if
+its `dest` pointer is already live, i.e. the alloca is RE-executing under
+the frozen base (a loop / back-edge reaches it) — the unconditional-delete
+L2 inverse would corrupt the prior allocation, so re-execution is rejected
+rather than miscompiled. Multi-dynamic-array support AND in-loop dynamic
+allocas (threading a runtime bump pointer through `IState`) are deferred to
+a new bead with the exact forcing condition: *a routine emitting ≥2
+dynamic-N allocas, a dynamic-N alloca followed by any further alloca, or a
+dynamic-N alloca reached by a back-edge (re-executed).*
+
+**(ii) The `DynAlloca` runtime instruction** (`src/ir/alloca.jl:135`).
+`forward` (`:164`) materialises the pointer `s.locals[dest] = base` and
+bumps `pc`; it does **NOT** zero the region — cells stay ABSENT and read
+as `0` by the floor's absent=0 convention (`MemoryLoad.forward` /
+`IState.memory`), matching the ADR 0014 §D1 zero-init convention ("cells
+default to 0 by the zero-init convention", §D1:46 — the "does not
+pre-populate `s.memory`" phrasing is `src/ir/ingest.jl:317`'s, not §D1's;
+Law 1) and LLVM `alloca`'s uninitialised semantics. This
+refines §2(a)'s "zero-clears the reserved cells" wording: under absent=0 a
+deleted cell and a zeroed cell read identically *forward*, but only
+**deletion** preserves the `IState.==`-by-Dict-content round-trip
+invariant (the missing-sentinel trap `MemoryStore` documents — writing `0`
+into a previously-absent cell leaves a phantom `{addr=>0}` key that breaks
+equality). The L2 `(base, n)` delta is captured PRE-`forward()` via
+`predelta_payload` (`:182`, resolving `n = s.locals[n_operand]`,
+fail-loud if absent), the `MemoryStore` L2 template (Law 2); there is NO
+`make_delta` (the sole L2 path is the pre-state hook).
+
+**(iii) The unconditional-delete soundness lemma**
+(`inverse(::DynAlloca, s, ::NamedTuple)`, `src/ir/alloca.jl:213`). On
+reverse the L2 inverse UNCONDITIONALLY deletes the whole region
+`base … base+n-1` (removing KEYS, never writing `0`) and removes the
+pointer. This restores the exact pre-alloca heap **regardless of whether
+the region's element stores reversed via L2 (per-write `(addr,old_value)`
+delta) or L3 (whole-state checkpoint)**: the frozen-base bump allocator
+guarantees every address in `[base, base+n-1]` was absent pre-alloca and
+belongs exclusively to this allocation's lifetime, so deleting the whole
+region is the exact inverse of "open this region" once any element writes
+have themselves been reversed (history is LIFO — the alloca pushed first,
+pops last). The `n <= 0` case makes the loop empty (only the pointer is
+undone). This is proven under L2/L3 interleave by `test/test_alloca_delta.jl`
+testset 5 (an L3 checkpoint forced between the alloca and a region store,
+the store reversing via L3 replay while the alloca reverses via its L2
+delta), satisfying the Decision-4 rung-7 "mixed-history loop" gate
+(l.232-241). Both mutation-proofs (delete range off-by-one; pointer-undo
+elided) confirmed RED then restored (Rule 5).
+
 ## Consequences
 
 - **`bennettvm-s4r`** (this ADR) closes on commit of this file.

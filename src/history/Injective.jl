@@ -433,6 +433,30 @@ is_injective(::Type{MemoryLoad})::Bool  = false
 # `true` until that L1 form lands.
 is_injective(::Type{VarGEP})::Bool = false
 
+# -----------------------------------------------------------------------------
+# Type-level `false` pin — `DynAlloca` (dynamic-N alloca, ADR 0009 Decision 2a).
+# -----------------------------------------------------------------------------
+#
+# `DynAlloca` (`s.locals[dest] := base` at a frozen compile-time base,
+# `src/ir/alloca.jl`) is the runtime-sized allocation create LLVM `alloca` with
+# an `SSAOperand` n_elems (a C VLA / Julia `Vector{T}(undef, n)`) lowers to (ADR
+# 0009 Decision 2a; ADR 0013 §D-2 dynamic-N row). It is conservatively
+# NON-injective for TWO reasons: (1) it materialises a pointer `dest`, and in a
+# loop the same SSA name is redefined each iteration, so a re-allocation may
+# OVERWRITE a prior value (the cross-iteration crux shared with `Define` /
+# `MemoryLoad` / `VarGEP`); (2) it opens a region whose later element writes
+# must be undone on reverse, which the alloca's L2 `(base, n)` delta records.
+# Unlike `VarGEP` / `MemoryLoad` (L3-only, no delta), `DynAlloca` carries an L2
+# delta captured PRE-`forward()` (the `predelta_payload` hook, like
+# `MemoryStore`) whose `inverse` UNCONDITIONALLY deletes the whole region
+# `base..base+n-1` and removes the pointer (the unconditional-delete soundness
+# lemma in `src/ir/alloca.jl`). Per Rule 1 ("fail safe — push when in doubt") it
+# is `false`, so the M6.2/M7.6 push gate records a history entry; when the
+# alloca slot is in the must_cache set the push is its L2 `(base, n)`
+# DeltaEntry (the pre-state-capture path), else an L3 CheckpointEntry — both
+# sound. Do NOT mark this `true`.
+is_injective(::Type{DynAlloca})::Bool = false
+
 """
     is_injective(x::ArithmeticAssignment) -> Bool
 

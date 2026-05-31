@@ -222,6 +222,20 @@ using BennettVM
     # trap). Sits right after the Unit-1 array floor it builds on; reuses
     # the same hand-built array `ParsedIR` shape and the M8.2 scaffold.
     include("test_store_delta.jl")
+    # SC9 Case A — dynamic-N alloca + (base, n) L2 delta (bead
+    # `bennettvm-0zn`; ADR 0009 Decision 2a). The runtime-sized allocation
+    # rung: an `IRAlloca` with an `SSAOperand` n_elems (a C VLA / Julia
+    # `Vector(undef, n)`) lowers to a `DynAlloca` (`src/ir/alloca.jl`) whose
+    # `forward` materialises the pointer at a FROZEN compile-time base (no
+    # runtime bump state in IState) and whose L2 `(base, n)` delta retracts
+    # the whole region on reverse — UNCONDITIONALLY deleting `base..base+n-1`,
+    # sound under L2/L3 store interleave (the soundness lemma). Lands the
+    # ingest dynamic-N dispatch + the single-dynamic-array fail-loud guard
+    # (`src/ir/ingest.jl`) and the `is_injective(::Type{DynAlloca}) = false`
+    # pin (`src/history/Injective.jl`). Sits right after the Unit-2 store
+    # delta it composes with (the region's element stores) and reuses the same
+    # hand-built array `ParsedIR` shape + the M8.2 `per_step_inverse_check`.
+    include("test_alloca_delta.jl")
     # M8.3 — mutation-proof harness for per-instruction inverse
     # (`bennettvm-2kl`). Sits AFTER test_per_step_inverse.jl because
     # the harness depends on the `per_step_inverse_check` scaffold

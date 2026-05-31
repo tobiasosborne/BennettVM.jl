@@ -38,9 +38,10 @@
 #   8. **Bump-allocator scheme** — two scalar allocas get DISTINCT Int64 base
 #      addresses (1 and 2), pinned via the lowered `Define` bodies and the
 #      live `locals` after a forward run.
-#   9. **v1 scope guard** (Rule 1): an array `IRAlloca` (`ConstOperand(N>1)`)
-#      and a dynamic `IRAlloca` (`SSAOperand` n_elems) each raise the
-#      "deferred to v2" error at lowering — pinned via `occursin`.
+#   9. **scope lift**: an array `IRAlloca` (`ConstOperand(N>1)`) lowers under
+#      the array floor (Unit 1), and a dynamic `IRAlloca` (`SSAOperand`
+#      n_elems) now lowers to a `DynAlloca` (bead `bennettvm-0zn`) — neither
+#      is a "deferred to v2" reject any longer.
 #
 # # Mutation-proof (Rule 5) — performed manually, reverted, NOT in tree
 #
@@ -268,17 +269,19 @@ _istate(locals::Dict{Symbol,Int64}, mem::Dict{Int64,Int64}) =
     end
 
     # ------------------------------------------------------------------
-    # (9) scope guard: dynamic-N alloca raises (deferred to bead 0zn).
-    #     NOTE: the static-array case (ConstOperand(N>1)) NO LONGER raises —
-    #     it lowers under the array floor (ADR 0009 Case A Unit 1,
-    #     test/test_array_floor.jl). Only the dynamic-N (SSAOperand) case is
-    #     still out of scope here. This testset was tightened from the
-    #     original "array & dynamic-N raise" to track that v1→v2 lift.
+    # (9) scope lift: dynamic-N alloca now lowers to a DynAlloca (bead 0zn).
+    #     NOTE: the static-array case (ConstOperand(N>1)) lowers under the
+    #     array floor (ADR 0009 Case A Unit 1, test/test_array_floor.jl); the
+    #     dynamic-N (SSAOperand) case is now lifted too — it lowers to a
+    #     `DynAlloca` (`src/ir/alloca.jl`) instead of raising. This testset
+    #     was retargeted from the original "dynamic-N raises (deferred 0zn)"
+    #     to track that v2 lift; the full DynAlloca semantics live in
+    #     test/test_alloca_delta.jl.
     # ------------------------------------------------------------------
-    @testset "scope guard — dynamic-N IRAlloca raises (deferred to bead 0zn)" begin
+    @testset "scope lift — dynamic-N IRAlloca lowers to DynAlloca (bead 0zn)" begin
         # Dynamic-N alloca: SSAOperand n_elems (the VLA / Case A dynamic-size
-        # case). The bump allocator cannot reserve a runtime-sized region at
-        # lowering time, so this must fail LOUD (Rule 1), not miscompile.
+        # case). As of bead 0zn it lowers to a `DynAlloca` (frozen-base +
+        # (base, n) L2 delta), no longer a Rule-1 reject.
         dyn_block = Bennett.IRBasicBlock(
             :entry,
             Bennett.IRInst[
@@ -287,10 +290,11 @@ _istate(locals::Dict{Symbol,Int64}, mem::Dict{Int64,Int64}) =
             Bennett.IRRet(Bennett.SSAOperand(:__dyn), 32),
         )
         dyn_parsed = Bennett.ParsedIR(32, [(:__n, 32)], [dyn_block], [32])
-        err_dyn = try lower_vm(dyn_parsed; opts=:dyn); nothing catch e; e end
-        @test err_dyn isa ErrorException
-        @test occursin("IRAlloca", err_dyn.msg)
-        @test occursin("SSAOperand", err_dyn.msg)
-        @test occursin("0zn", err_dyn.msg)
+        dyn_vm = lower_vm(dyn_parsed; opts=:dyn)
+        dynallocas = filter(i -> i isa BennettVM.DynAlloca,
+                            first(dyn_vm.blocks).instructions)
+        @test length(dynallocas) == 1
+        @test dynallocas[1].dest == :__dyn
+        @test dynallocas[1].n_operand == :__n
     end
 end

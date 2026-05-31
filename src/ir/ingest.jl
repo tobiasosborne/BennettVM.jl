@@ -296,46 +296,71 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
 end
 
 """
-    _lower_alloca!(inst::Bennett.IRAlloca, next_addr::Int64)
-        -> Tuple{Define, Int64}
+    _lower_alloca!(inst::Bennett.IRAlloca, next_addr::Int64, saw_dynamic::Bool)
+        -> Tuple{Instruction, Int64, Bool}
 
 Lower one `IRAlloca(dest, elem_width, n_elems)` via the bump allocator
-(ADR 0014 §D1): assign `dest` the current `next_addr` as its `Int64` base
-address, materialise that address into `locals` via a constant-create
-`Define(dest, base, :add, 0)` (a pointer is just an `Int64`), and return the
-`Define` together with the advanced allocator cursor.
+(ADR 0014 §D1 / ADR 0009 Decision 2a). Returns the lowered instruction, the
+(possibly advanced) allocator cursor, and a flag recording whether THIS alloca
+was dynamic-N (so the caller can enforce the single-dynamic-array invariant).
 
-**Static-size scope (ADR 0014 §D1 + ADR 0009 Decision 4 rung 2):** `n_elems`
-MUST be `ConstOperand(N)` with `N >= 1` — a **statically-sized** alloca. The
-cursor advances by `N` cells, reserving cells `base … base+N-1` (one cell per
-element — the VM is CELL-addressed, one `Int64` per cell, so `elem_width` (in
-bits) does NOT enter the address; the cell stride a downstream `VarGEP` uses
-is `1`, matching this `+N` step — `src/ir/array_index.jl` "stride is in
-cells"). `N == 1` is the scalar case (ADR 0014; `through_mem` allocates
-`__v2`→1, `__v3`→2) — the `+N` advance specialises to `+1`. Cells default to
-`0` by the zero-init convention; the allocator does not pre-populate
-`s.memory`.
+**Static-size path (ADR 0014 §D1 + ADR 0009 Decision 4 rung 2):** when `n_elems`
+is `ConstOperand(N)` with `N >= 1`, assign `dest` the current `next_addr` as its
+`Int64` base, materialise that address into `locals` via a constant-create
+`Define(dest, base, :add, 0)` (a pointer is just an `Int64`), and advance the
+cursor by `N` cells, reserving cells `base … base+N-1` (one cell per element —
+the VM is CELL-addressed, one `Int64` per cell, so `elem_width` (in bits) does
+NOT enter the address; the cell stride a downstream `VarGEP` uses is `1`,
+matching this `+N` step — `src/ir/array_index.jl` "stride is in cells").
+`N == 1` is the scalar case (ADR 0014; `through_mem` allocates `__v2`→1,
+`__v3`→2) — the `+N` advance specialises to `+1`. Cells default to `0` by the
+zero-init convention; the allocator does not pre-populate `s.memory`. Returns
+the `Define`, `next_addr + N`, and `false` (not dynamic).
 
-A dynamic `n_elems::SSAOperand` (the VLA / Case A dynamic-N case) is OUT OF
-SCOPE for this unit and raises a Rule-1 "deferred" error rather than
-miscompiling: the bump allocator cannot reserve a runtime-sized region at
-lowering time, and reversing it needs the `(base, n)` L2 delta (ADR 0009
-Decision 2a) plus a runtime-base strategy — both deferred to bead
-`bennettvm-0zn`. A non-positive `ConstOperand(N<=0)` is malformed IR and also
-fails loud (an alloca reserves at least one cell).
+**Dynamic-N path (ADR 0009 Decision 2a; bead `bennettvm-0zn`):** when `n_elems`
+is an `SSAOperand` (a C VLA / Julia `Vector{T}(undef, n)`), the region size is
+unknown at lowering time, so the cursor CANNOT advance over it. Emit a
+`DynAlloca(dest, n_operand, base = next_addr)` (`src/ir/alloca.jl`): `forward`
+materialises the pointer at this FROZEN compile-time base at runtime, and an L2
+`(base, n)` delta retracts the region on reverse. The cursor is RETURNED
+UNCHANGED (the runtime-sized region owns the open-ended tail `[base, ∞)`); the
+returned flag is `true`. There is no runtime bump-allocator state in `IState`,
+so only ONE dynamic array per routine is sound: a SECOND allocation after a
+dynamic one would alias the frozen base — `saw_dynamic == true` therefore FAILS
+LOUD (Rule 1) before any further alloca is lowered (the caller passes the
+running flag in).
+
+A non-positive `ConstOperand(N<=0)` is malformed IR and fails loud (an alloca
+reserves at least one cell). A dynamic-N alloca AFTER a previous dynamic-N
+alloca (`saw_dynamic == true`) fails loud regardless of `n_elems` kind.
 """
 function _lower_alloca!(inst::Bennett.IRAlloca,
-                        next_addr::Int64)::Tuple{Define,Int64}
+                        next_addr::Int64,
+                        saw_dynamic::Bool)::Tuple{Instruction,Int64,Bool}
+    # Single-dynamic-array invariant (Rule 1): no alloca may follow a dynamic-N
+    # alloca — the frozen-base strategy cannot admit a second region without a
+    # runtime bump pointer (deferred; see ADR 0009 §Consequences / the impl
+    # bead). Checked FIRST so both a static and a dynamic alloca after a dynamic
+    # one fail loud (not just a second dynamic one).
+    saw_dynamic &&
+        error("lower_vm: IRAlloca(", inst.dest, ", elem_width=",
+              inst.elem_width, ", n_elems=", inst.n_elems, ") follows a ",
+              "dynamic-N alloca. The single-dynamic-array fixed-base strategy ",
+              "(ADR 0009 Decision 2a) freezes the bump cursor at the dynamic ",
+              "region's base, which owns the open-ended address tail; a second ",
+              "allocation would ALIAS that frozen base. Multi-dynamic-array ",
+              "support needs a runtime bump pointer threaded through IState ",
+              "(deferred bead). Rule 1 fail-loud — do not miscompile.")
     n = inst.n_elems
+    if n isa Bennett.SSAOperand
+        # Dynamic-N: emit a DynAlloca; do NOT advance the cursor.
+        return (DynAlloca(inst.dest, n.name, next_addr), next_addr, true)
+    end
     n isa Bennett.ConstOperand ||
         error("lower_vm: IRAlloca(", inst.dest, ", elem_width=",
-              inst.elem_width, ", n_elems=", n, ") — a dynamic-N alloca ",
-              "(n_elems::SSAOperand, the VLA / Case A dynamic-size case) is ",
-              "OUT OF SCOPE for the static-array floor. The bump allocator ",
-              "cannot reserve a runtime-sized region at lowering time, and ",
-              "reversing it needs the (base, n) L2 delta + a runtime-base ",
-              "strategy (ADR 0009 Decision 2a). Deferred to bead ",
-              "bennettvm-0zn (Rule 1 fail-loud — do not miscompile).")
+              inst.elem_width, ", n_elems=", n, ") — n_elems must be a ",
+              "ConstOperand (static-N) or SSAOperand (dynamic-N); a sentinel ",
+              "operand here indicates an unhandled IR shape (Rule 1).")
     nelems = Int64(n.value)
     nelems >= 1 ||
         error("lower_vm: IRAlloca(", inst.dest, ", elem_width=",
@@ -350,7 +375,7 @@ function _lower_alloca!(inst::Bennett.IRAlloca,
     # The cursor advances by `N` cells (CELL-addressed: one Int64 per element,
     # cells base … base+N-1), so a VarGEP with cell stride 1 lands on exactly
     # the cell this alloca reserved for element i (ADR 0009 Decision 2b).
-    return (Define(inst.dest, base, :add, Int64(0)), next_addr + nelems)
+    return (Define(inst.dest, base, :add, Int64(0)), next_addr + nelems, false)
 end
 
 # ---------------------------------------------------------------------
@@ -569,12 +594,20 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
     out = BasicBlock[]
 
     # Bump-allocator cursor for `IRAlloca` (ADR 0014 §D1). Monotone across
-    # ALL blocks — every scalar alloca anywhere in the routine gets a fresh
-    # `Int64` base address (start at 1; advance by 1 per scalar alloca). A
+    # ALL blocks — every static alloca anywhere in the routine gets a fresh
+    # `Int64` base address (start at 1; advance by N per static alloca). A
     # pointer is just that `Int64` in `locals`, materialised by the `Define`
     # `_lower_alloca!` returns. Threaded through the body loop below by
-    # closure over this binding.
+    # closure over these bindings.
+    #
+    # `saw_dynamic_alloca` (ADR 0009 Decision 2a; bead `bennettvm-0zn`):
+    # tracks whether a dynamic-N `IRAlloca` (a VLA / `Vector(undef, n)`) has
+    # been lowered to a `DynAlloca`. A dynamic alloca does NOT advance the
+    # cursor (its runtime-sized region owns the open-ended address tail), so
+    # the single-dynamic-array fixed-base strategy admits exactly one — any
+    # alloca AFTER a dynamic one fails loud in `_lower_alloca!` (Rule 1).
     alloca_cursor = Int64(1)
+    saw_dynamic_alloca = false
 
     # --- Phase 2: original blocks (entry block first). ---
     ordered = vcat(by_label[entry_label],
@@ -630,13 +663,17 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
         body = Instruction[]
         for inst in b.instructions
             if inst isa Bennett.IRAlloca
-                # Alloca needs the bump-allocator state (ADR 0014 §D1), so it
-                # is lowered here, not in the pure per-instruction dispatch:
-                # assign `dest` the cursor's base, emit `Define(dest, base,
-                # :add, 0)` so the pointer SSA value holds its Int64 address,
-                # and advance the cursor. v1 enforces n_elems == 1 (Rule 1).
-                def, alloca_cursor = _lower_alloca!(inst, alloca_cursor)
-                push!(body, def)
+                # Alloca needs the bump-allocator state (ADR 0014 §D1 / ADR
+                # 0009 Decision 2a), so it is lowered here, not in the pure
+                # per-instruction dispatch. A static `ConstOperand(N)` alloca
+                # emits a `Define(dest, base, :add, 0)` and advances the cursor
+                # by N; a dynamic `SSAOperand` alloca emits a `DynAlloca` (with
+                # an L2 (base, n) delta), leaves the cursor frozen, and sets the
+                # single-dynamic-array flag so any further alloca fails loud.
+                ainstr, alloca_cursor, was_dyn =
+                    _lower_alloca!(inst, alloca_cursor, saw_dynamic_alloca)
+                saw_dynamic_alloca = saw_dynamic_alloca || was_dyn
+                push!(body, ainstr)
             else
                 li = _lower_body_inst(inst)
                 li === nothing || push!(body, li)
