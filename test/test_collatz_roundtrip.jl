@@ -253,35 +253,40 @@ const _COLLATZ_RESULT_KEY = Symbol("value_phi1.lcssa")
     end
 
     # ------------------------------------------------------------------
-    # (4) L2-raises boundary — documents the L3-ONLY reversal contract.
+    # (4) compute_must_cache set is globally L2-usable (bead `bennettvm-5pp`).
     # ------------------------------------------------------------------
-    # Driving the scaffold with `must_cache_set = compute_must_cache(vm)`
-    # selects collatz's non-injective `Define` body slots for the L2
-    # delta-history path. The forward sweep then reaches
-    # `make_delta(::Define, …)`, which RAISES — `Define`'s L1/L2 inverse
-    # is deferred (ADR 0012 R3); reversal is L3-only. Pinning this raise
-    # turns the L3-only contract into an executable assertion (Rule 1 —
-    # fail loud at the documented boundary) rather than a prose claim.
-    # The error names `Define` (the offending non-injective kind) and the
-    # `make_delta` site, so a future regression that silently added an L2
-    # path for `Define` would change this message and fail the `occursin`
-    # pins — surfacing the contract change rather than hiding it.
-    @testset "L2 mode raises (Define inverse deferred → L3-only)" begin
+    # PRE-5pp this testset pinned the OPPOSITE: `compute_must_cache(vm)`
+    # then marked collatz's non-injective `Define`/`Select` slots, so
+    # driving the scaffold with that set reached `make_delta(::Define, …)`
+    # and RAISED (`Define`'s L2 inverse is deferred, ADR 0012 R3). Bead 5pp
+    # made `compute_must_cache` mark ONLY L2-capable non-injective slots
+    # (those with a working `make_delta` / `predelta_payload`), so the
+    # L3-only creates (`Define`/`Select`/`VarGEP`/`MemoryLoad`/`Cast`) are
+    # EXCLUDED — the set is now PASSABLE as a global `must_cache_set`
+    # without raising, which is the improvement 5pp shipped. (The
+    # fail-loud-on-forced-`Define`-in-L2 contract — `make_delta(::Define)`
+    # raises — now lives in `test/test_liveness.jl` testset 11.)
+    @testset "compute_must_cache set is L2-usable (5pp): runs + round-trips" begin
         set = BennettVM.compute_must_cache(vm)
-        @test !isempty(set)   # liveness selects collatz's non-injective slots
-
-        err = try
-            per_step_inverse_check(
-                vm, Dict(_COLLATZ_RESULT_KEY_ARG => Int64(7));
-                checkpoint_interval = typemax(Int),  # suppress L3 entirely
-                must_cache_set = set,
-                label = "M_UNBOUNDED.3/collatz/L2-boundary")
-            nothing
-        catch e
-            e
+        # Every marked slot is L2-capable (the 5pp invariant). collatz's
+        # creates are all `Define`/`Select` (L3-only), so the set is empty
+        # here — the loop is vacuous but pins the contract if that changes.
+        for b in vm.blocks
+            for (i, instr) in enumerate(b.instructions)
+                (b.label, i) in set && @test BennettVM.is_l2_capable(typeof(instr))
+            end
         end
-        @test err isa ErrorException
-        @test occursin("make_delta", err.msg)   # the L2 push site
-        @test occursin("Define", err.msg)        # the deferred non-inj kind
+        # The set is now usable: run + round-trip under it (real K so the
+        # L3-only slots get checkpoints) reaches the oracle and reverses to
+        # empty history — pre-5pp this raised at `make_delta(::Define)`.
+        rs = initial_state(vm, Dict(_COLLATZ_RESULT_KEY_ARG => Int64(7)))
+        run!(rs, vm; max_steps = 10_000, checkpoint_interval = 8,
+             must_cache_set = set)
+        @test is_halted(rs)
+        @test result(rs)[_COLLATZ_RESULT_KEY] == 16
+        unrun!(rs, vm)
+        @test rs.current == rs.initial
+        @test isempty(rs.history)
+        @test rs.step_count == 0
     end
 end
