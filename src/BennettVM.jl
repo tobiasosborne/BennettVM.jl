@@ -450,4 +450,18 @@ include("history/Replay.jl")
 
 export VMProgram, lower_vm, n_instructions, initial_state, is_halted, result, step!, run!, unstep!, unrun!
 
+# bead `bennettvm-a5j` / ADR 0003 §D2 — register the VM backend with Bennett.jl
+# at LOAD time. `__init__` runs after the module image loads (NOT during
+# precompilation, where cross-module global mutation is illegal), so assigning
+# into Bennett's `Ref` here is the sanctioned hook. `import Bennett` (top of
+# module) makes the name reachable; `lower_vm` is the registered entry point
+# (one positional `ParsedIR` → `VMProgram`). Bennett.jl never names BennettVM —
+# the dependency arrow points up only (BennettVM depends on Bennett; a reverse
+# hard-dep would be a forbidden cycle). Idempotent under repeated loads / Revise.
+# This is what makes `Bennett.reversible_compile(f; target=:reversible_vm)` reach
+# `lower_vm`; see `docs/adr/0003-target-reversible-vm-dispatch.md`.
+function __init__()
+    Bennett._REVERSIBLE_VM_BACKEND[] = lower_vm
+end
+
 end # module BennettVM

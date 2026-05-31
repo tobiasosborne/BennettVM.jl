@@ -3,10 +3,22 @@
 Per PRD v3 §7.5 and CLAUDE.md Rule 14, BennettVM.jl pins Bennett.jl
 during initial development to insulate against frontend churn.
 
-**Pinned SHA:** `877341ec388004a69636ac4530d4d9abf2439486`
-**Pinned date:** 2026-05-26 (repinned from `5731cec22a1fd29efe02d4dc21c2a57e655ecb47` of 2026-05-23)
+**Pinned SHA:** `f73a5ed` (Bennett-33zr: target=:reversible_vm dispatch arm)
+**Pinned date:** 2026-05-31 (repinned from `877341ec388004a69636ac4530d4d9abf2439486` of 2026-05-26)
 **Bennett.jl HEAD commit at pin time:**
-`Bennett-7kzr + Bennett-jefu: docs refresh — README architectural limits + drift fixes`
+`Bennett-33zr: target=:reversible_vm dispatch arm — registration hook to BennettVM`
+
+## Repin rationale (2026-05-31)
+
+The keystone (bead `bennettvm-a5j` / ADR 0003) landed the `target=:reversible_vm`
+dispatch arm in Bennett.jl `src/Bennett.jl` (the registration-hook `Ref` +
+intercept + tabulate guards). BennettVM's `__init__` now writes `lower_vm` into
+`Bennett._REVERSIBLE_VM_BACKEND`, so BennettVM MUST be tested against a Bennett.jl
+that defines that `Ref` — repinned to `f73a5ed`. (The dep is a path dep,
+`../Bennett.jl`, so the working tree is authoritative; this SHA documents the
+tested-against commit.) Bennett.jl full `Pkg.test` GREEN at `f73a5ed`
+(688498 Pass / 2 pre-existing Broken / 0 fail); BennettVM full suite GREEN with
+the `__init__` active.
 
 ## Repin rationale (2026-05-26)
 
