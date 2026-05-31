@@ -180,11 +180,11 @@ The load-bearing differences:
 
 | Topic | **Bennett.jl** | **BennettVM.jl** |
 |---|---|---|
-| **Beads sync** | `bd dolt push` in session close (embedded Dolt remote) | **JSONL only:** `bd export -o .beads/issues.jsonl`; **NO `bd dolt push`**. After `git pull`, **`bd import`** to load the JSONL into the local Dolt DB (git pull ≠ bd sync — see `memory/bd-import-after-pull`) |
+| **Beads sync** | **JSONL git sync** — `bd export -o .beads/issues.jsonl` + commit. `bd dolt push` is UNUSED / never worked; ignore its errors (user, 2026-05-31). `.beads/embeddeddolt/` is git-tracked too but is NOT the sync channel — the JSONL is. | **JSONL only:** `bd export -o .beads/issues.jsonl`; **NO `bd dolt push`**. After `git pull`, **`bd import`** to load the JSONL into the local Dolt DB (git pull ≠ bd sync — see `memory/bd-import-after-pull`) |
 | **Worklog** | **Mandatory Rule 0:** prepend a session block to the highest `worklog/NNN_*.md`; new chunk at ~280 lines. **Never run `scripts/shard_worklog.py` (destructive).** | No worklog rule |
 | **LOC limit** | None (god-files `lower.jl` ~2.9k, `extract/heap.jl` ~2.85k; splits tracked as beads) | **Rule 10: ~200 LOC/file** (excl. docstrings) |
 | **Commit msg** | `Bennett-<id>: scope: summary`; worklog is provenance | Full `Source:/Reuse:/Validation:/Review:/Rollback:` template |
-| **Dolt cache** | **Bundle `.beads/embeddeddolt/` into the same commit as the source change** (`Bennett-58rl`); never a standalone "bd sync" commit | JSONL committed with the change |
+| **Dolt cache** | `.beads/embeddeddolt/` is git-tracked and changes with bead ops, but committing it does NOT sync a bead — you MUST also `bd export -o .beads/issues.jsonl` (the JSONL is the sync channel). Don't rely on the embeddeddolt commit alone. | JSONL committed with the change; `.beads/embeddeddolt/` is gitignored (per-machine) |
 | **Multi-agent** | 3+1 (2 proposers + implementer + reviewer) for `ir_extract.jl`/`lower.jl`/`bennett_transform.jl`/`gates.jl`/`ir_types.jl` + phi resolution | tiered (Trivial/Small/Core); hostile reviewer always on Core |
 | **Tests** | `Pkg.test()` (~28 min, 274 files); single-file **must** use `--check-bounds=yes` (`Bennett-2mj3`); `BENNETT_T5_TESTS=0` to skip the corpus | `Pkg.test()` (~35s, currently 3482); single-file `--check-bounds=yes` (same lesson) |
 | **Phase system** | none | Phase 0/1/2 with `PHASE.md` gate (currently Phase 2) |
@@ -241,8 +241,10 @@ commit; work isn't done until `git push` succeeds.
    contract BennettVM already implements. (Create a BennettVM tracking bead
    cross-linked to `Bennett-spqu`.)
 3. **Re-pin** Bennett.jl `877341e → 7904560` in `BENNETT_JL_PIN.md` (safe).
-4. **Hygiene:** in Bennett.jl use `bd dolt push` + the worklog; in BennettVM use
-   `bd export`/`bd import` + the commit template. Don't cross the streams.
+4. **Hygiene:** BOTH repos sync beads via `bd export -o .beads/issues.jsonl` +
+   git (NOT `bd dolt push` — unused/never-worked, ignore its errors). Bennett.jl
+   also needs the worklog + `Bennett-<id>:` commits; BennettVM uses `bd import`
+   after pull + the full commit template. Don't cross the streams.
 
 ---
 
