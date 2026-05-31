@@ -268,26 +268,17 @@ _istate(locals::Dict{Symbol,Int64}, mem::Dict{Int64,Int64}) =
     end
 
     # ------------------------------------------------------------------
-    # (9) v1 scope guard: array / dynamic-N alloca raise (deferred to v2).
+    # (9) scope guard: dynamic-N alloca raises (deferred to bead 0zn).
+    #     NOTE: the static-array case (ConstOperand(N>1)) NO LONGER raises —
+    #     it lowers under the array floor (ADR 0009 Case A Unit 1,
+    #     test/test_array_floor.jl). Only the dynamic-N (SSAOperand) case is
+    #     still out of scope here. This testset was tightened from the
+    #     original "array & dynamic-N raise" to track that v1→v2 lift.
     # ------------------------------------------------------------------
-    @testset "v1 scope — array & dynamic-N IRAlloca raise (deferred to v2)" begin
-        # Array alloca: ConstOperand(N>1). Lowering must fail LOUD (Rule 1),
-        # not silently reserve one cell and miscompile.
-        arr_block = Bennett.IRBasicBlock(
-            :entry,
-            Bennett.IRInst[
-                Bennett.IRAlloca(:__arr, 32, Bennett.ConstOperand(4)),
-            ],
-            Bennett.IRRet(Bennett.SSAOperand(:__arr), 32),
-        )
-        arr_parsed = Bennett.ParsedIR(32, [(:__n, 32)], [arr_block], [32])
-        err_arr = try lower_vm(arr_parsed; opts=:arr); nothing catch e; e end
-        @test err_arr isa ErrorException
-        @test occursin("IRAlloca", err_arr.msg)
-        @test occursin("ConstOperand(1)", err_arr.msg)
-        @test occursin("v2", err_arr.msg)
-
-        # Dynamic-N alloca: SSAOperand n_elems. Also deferred to v2.
+    @testset "scope guard — dynamic-N IRAlloca raises (deferred to bead 0zn)" begin
+        # Dynamic-N alloca: SSAOperand n_elems (the VLA / Case A dynamic-size
+        # case). The bump allocator cannot reserve a runtime-sized region at
+        # lowering time, so this must fail LOUD (Rule 1), not miscompile.
         dyn_block = Bennett.IRBasicBlock(
             :entry,
             Bennett.IRInst[
@@ -299,6 +290,7 @@ _istate(locals::Dict{Symbol,Int64}, mem::Dict{Int64,Int64}) =
         err_dyn = try lower_vm(dyn_parsed; opts=:dyn); nothing catch e; e end
         @test err_dyn isa ErrorException
         @test occursin("IRAlloca", err_dyn.msg)
-        @test occursin("v2", err_dyn.msg)
+        @test occursin("SSAOperand", err_dyn.msg)
+        @test occursin("0zn", err_dyn.msg)
     end
 end

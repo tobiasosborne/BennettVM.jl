@@ -409,6 +409,30 @@ is_injective(::Type{CastInstruction})::Bool = false
 is_injective(::Type{MemoryStore})::Bool = false
 is_injective(::Type{MemoryLoad})::Bool  = false
 
+# -----------------------------------------------------------------------------
+# Type-level `false` pin — `VarGEP` (array floor, ADR 0009 Case A Unit 1).
+# -----------------------------------------------------------------------------
+#
+# `VarGEP` (`dest := base + index*stride`, `src/ir/array_index.jl`) is the
+# runtime element-address create LLVM `getelementptr` / Bennett.jl `IRVarGEP`
+# lowers to (ADR 0009 Decision 2b). It is a non-destructive SSA-create
+# (base / index are READ, never consumed) reversed EXCLUSIVELY via L3
+# checkpoint-replay — the address-arithmetic analogue of `Define` /
+# `MemoryLoad`. Same cross-iteration reasoning as those (ADR 0012 §"The
+# cross-iteration reversibility crux"): in a loop the same SSA name `dest` is
+# redefined each iteration, so a `VarGEP` may OVERWRITE a prior value, and the
+# static type-level trait cannot see runtime freshness — it cannot tell a
+# genuinely-fresh create (injective) from a re-definition that overwrites
+# (non-injective). Per Rule 1 ("fail safe — push when in doubt") it is
+# conservatively `false`, forcing the M6.2/M7.6 push gate to emit L3
+# `CheckpointEntry`s around every `VarGEP`; `unstep!` then reverses it via
+# checkpoint-replay (`src/history/Replay.jl`), which never calls the gep's
+# deferred per-instruction `inverse()`. The L1 form (a DESTRUCTIVE
+# `ArithmeticAssignment addr := base + idx*stride`, no-history; ADR 0013 §D-2
+# GEP row) is the deferred optimization, not this baseline. Do NOT mark this
+# `true` until that L1 form lands.
+is_injective(::Type{VarGEP})::Bool = false
+
 """
     is_injective(x::ArithmeticAssignment) -> Bool
 

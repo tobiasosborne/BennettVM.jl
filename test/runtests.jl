@@ -193,6 +193,22 @@ using BennettVM
     # to empty history under L3 (P0.6). The executable demonstration that
     # BennettVM is useful to ANY LLVM emitter, not just Julia.
     include("test_memory_floor_cll.jl")
+    # SC9 Case A Unit 1 — static-size array floor (bead precursor to
+    # `bennettvm-ekc`; ADR 0009 Decisions 2b & 4). The array analogue of
+    # test_memory_floor.jl: pins the new `VarGEP` instruction
+    # (`src/ir/array_index.jl`, `dest := base + index*stride`, stride in
+    # CELLS) and the `_lower_alloca!` lift to `ConstOperand(N>=1)` (bump
+    # allocator reserves N consecutive cells). A hand-built static-array
+    # ParsedIR (alloca N=4; arr[0..3]=…; gep arr[idx]; load; ret) lowered via
+    # the real `lower_vm`, run forward matching an irreversible oracle
+    # bit-for-bit across all in-range indices, and round-tripped under L3 via
+    # the `per_step_inverse_check` scaffold at K ∈ {1, 4}. Also pins the
+    # VarGEP forward arithmetic (base=5,index=3,stride=1 → 8), the
+    # non-injective L3 classification, the deferred per-instruction inverse,
+    # and the dynamic-N (SSAOperand) v1→v2 guard (still deferred, bead 0zn).
+    # Sits right after the scalar memory-floor gates (consumes the same M8.2
+    # scaffold and the same MemoryStore/MemoryLoad floor).
+    include("test_array_floor.jl")
     # M8.3 — mutation-proof harness for per-instruction inverse
     # (`bennettvm-2kl`). Sits AFTER test_per_step_inverse.jl because
     # the harness depends on the `per_step_inverse_check` scaffold

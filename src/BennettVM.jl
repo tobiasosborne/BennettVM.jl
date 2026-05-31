@@ -253,6 +253,29 @@ include("ir/cast_instruction.jl")
 # deferred (raises descriptively, the `Define` / `CastInstruction` pattern).
 # Not yet exported.
 include("ir/memory_floor.jl")
+# SC9 Case A Unit 1 (ADR 0009 Decision 2b) — `VarGEP`, the runtime
+# element-address create that lifts the scalar memory floor to a static-size
+# array. LLVM `getelementptr` / Bennett.jl `IRVarGEP(dest, base, index,
+# elem_width)` lowers to `VarGEP(dest, base, index, stride)` whose forward is
+# `s.locals[dest] = base + index*stride` (stride in CELLS — the VM is
+# cell-addressed, one Int64 per cell; `elem_width` does NOT enter the
+# address). The base/index operands are READ, never destroyed — a
+# non-destructive SSA-create, the address-arithmetic analogue of `Define` /
+# `MemoryLoad`. The produced pointer (an `Int64` cell address in `locals`)
+# flows unchanged into a downstream `MemoryStore` / `MemoryLoad` (whose
+# `resolve_ptr` already accepts any `Int64` ptr value — no store/load change,
+# Law 2). Reuses `_resolve` (from `arithmetic_assignment.jl`, Law 2), so MUST
+# follow it; placed right after `memory_floor.jl` (its sibling L3 floor) and
+# BEFORE `history/Injective.jl` (which pins its trait). Classified
+# NON-injective (`is_injective(::Type{VarGEP}) = false`, wired in
+# `history/Injective.jl`): in a loop the same SSA name is redefined each
+# iteration, so a gep may overwrite a prior value; the static trait can't see
+# runtime freshness, so per Rule 1 it is conservatively `false` and the
+# M6.2/M7.6 push gate emits L3 checkpoints around it. NO `make_delta` (L3-only
+# this unit; the lossy-store L2 (addr,old) delta is a later bead). Its
+# per-instruction `inverse()` is NOT on the L3 replay path and is deferred
+# (raises descriptively, the `MemoryLoad` pattern). Not yet exported.
+include("ir/array_index.jl")
 # M6.1 — `is_injective` trait (`bennettvm-9hf`). The L1 "no-log"
 # layer-1 predicate of PRD v4 §3.3: tells the rest of the VM whether
 # an instruction needs a history entry. Type-level `true` for the

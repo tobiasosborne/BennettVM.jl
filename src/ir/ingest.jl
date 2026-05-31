@@ -183,6 +183,14 @@ instruction — see this file's docstring §1).
     NOT `nothing` — the caller appends it unconditionally.
   * `IRLoad(dest, ptr, width)`     → `MemoryLoad(dest, ptr.name)` (the scalar
     memory floor, ADR 0014 §D2).
+  * `IRVarGEP(dest, base, index, elem_width)` → `VarGEP(dest, base.name,
+    lower(index), stride=1)` (the array element-address create, ADR 0009
+    Decision 2b). `base` is an `SSAOperand` naming an alloca dest. The cell
+    stride is `1` (the VM is CELL-addressed, one `Int64` per cell, so
+    `elem_width` (in BITS) does NOT enter the address) — it matches the bump
+    allocator's `+N` cursor step. The produced pointer flows unchanged into a
+    downstream `MemoryStore` / `MemoryLoad`. `IRVarGEP` produces an SSA value
+    (`dest`), so this returns a real `Instruction`, NOT `nothing`.
   * `IRPhi`                         → `nothing` (handled as a param).
 
 `IRAlloca` is NOT handled here — it needs the bump-allocator state threaded
@@ -247,16 +255,43 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
                   "Address arithmetic (IRPtrOffset / IRVarGEP) is deferred ",
                   "to v2 (Rule 1).")
         return MemoryLoad(inst.dest, inst.ptr.name)
+    elseif inst isa Bennett.IRVarGEP
+        # LLVM `getelementptr` → the runtime element-address create (ADR 0009
+        # Decision 2b, SC9 Case A Unit 1). `dest := base + index*stride`,
+        # stride in CELLS. `base` is an SSAOperand naming an alloca dest (a
+        # pointer is an Int64 cell address in `locals`, materialised by the
+        # bump allocator — `_lower_alloca!`). `index` is the 0-based element
+        # index (a runtime SSAOperand or an LLVM constant index), lowered via
+        # `_lower_operand`. The VM is CELL-addressed (one Int64 per cell), and
+        # the bump allocator reserves one cell per element, so the cell stride
+        # is `1` REGARDLESS of `inst.elem_width` (which is in BITS and does NOT
+        # enter the address) — it matches `_lower_alloca!`'s `+N` cursor step
+        # so `gep(arr, i)` lands on the cell the alloca reserved for element i
+        # (see `src/ir/array_index.jl` "stride is in cells"). The produced
+        # pointer flows unchanged into a downstream MemoryStore / MemoryLoad
+        # (whose `resolve_ptr` accepts any Int64 ptr value — no store/load
+        # change, Law 2). The `dest` SSA value is the produced pointer, so this
+        # returns a real `Instruction`, not `nothing`.
+        inst.base isa Bennett.SSAOperand ||
+            error("lower_vm: IRVarGEP base is ", typeof(inst.base),
+                  " (dest=", inst.dest, ") — the array floor (ADR 0009 ",
+                  "Decision 2b) requires an SSAOperand base naming an alloca ",
+                  "dest (a pointer is an Int64 cell address in locals). A ",
+                  "non-SSA base means a malformed or unsupported GEP shape ",
+                  "(Rule 1 fail-loud).")
+        return VarGEP(inst.dest, inst.base.name,
+                      _lower_operand(inst.index), Int64(1))
     elseif inst isa Bennett.IRPhi
         return nothing   # φ → block parameter; not a body instruction.
     else
         error("lower_vm: unsupported IRInst body subtype ", typeof(inst),
               " — the slice handles IRBinOp / IRICmp / IRSelect / IRPhi ",
-              "(ADR 0012), IRCast (ADR 0013 §D-5), and IRStore / IRLoad ",
-              "(the scalar memory floor, ADR 0014 §D2) only. IRAlloca is ",
-              "lowered at the call site via the bump allocator (ADR 0014 ",
-              "§D1). IRPtrOffset / IRVarGEP / IRExtractValue / IRCall are ",
-              "deferred (Rule 1).")
+              "(ADR 0012), IRCast (ADR 0013 §D-5), IRStore / IRLoad (the ",
+              "scalar memory floor, ADR 0014 §D2), and IRVarGEP (the array ",
+              "element-address create, ADR 0009 Decision 2b) only. IRAlloca ",
+              "is lowered at the call site via the bump allocator (ADR 0014 ",
+              "§D1). IRPtrOffset / IRExtractValue / IRCall are deferred ",
+              "(Rule 1).")
     end
 end
 
@@ -270,32 +305,52 @@ address, materialise that address into `locals` via a constant-create
 `Define(dest, base, :add, 0)` (a pointer is just an `Int64`), and return the
 `Define` together with the advanced allocator cursor.
 
-**v1 scope (ADR 0014 §D4):** `n_elems` MUST be `ConstOperand(1)` — a scalar
-alloca. Any other `n_elems` (an array `ConstOperand(N>1)` or a dynamic
-`SSAOperand`) raises a Rule-1 "deferred to v2" error rather than miscompiling
-(arrays / dynamic-N / GEP address arithmetic are the v2 build, ADR 0014 §D4).
-The cursor advances by `1` (the single reserved cell) so consecutive scalar
-allocas get distinct addresses (`through_mem` allocates `__v2`→1, `__v3`→2).
-Cells default to `0` by the zero-init convention; the allocator does not
-pre-populate `s.memory`.
+**Static-size scope (ADR 0014 §D1 + ADR 0009 Decision 4 rung 2):** `n_elems`
+MUST be `ConstOperand(N)` with `N >= 1` — a **statically-sized** alloca. The
+cursor advances by `N` cells, reserving cells `base … base+N-1` (one cell per
+element — the VM is CELL-addressed, one `Int64` per cell, so `elem_width` (in
+bits) does NOT enter the address; the cell stride a downstream `VarGEP` uses
+is `1`, matching this `+N` step — `src/ir/array_index.jl` "stride is in
+cells"). `N == 1` is the scalar case (ADR 0014; `through_mem` allocates
+`__v2`→1, `__v3`→2) — the `+N` advance specialises to `+1`. Cells default to
+`0` by the zero-init convention; the allocator does not pre-populate
+`s.memory`.
+
+A dynamic `n_elems::SSAOperand` (the VLA / Case A dynamic-N case) is OUT OF
+SCOPE for this unit and raises a Rule-1 "deferred" error rather than
+miscompiling: the bump allocator cannot reserve a runtime-sized region at
+lowering time, and reversing it needs the `(base, n)` L2 delta (ADR 0009
+Decision 2a) plus a runtime-base strategy — both deferred to bead
+`bennettvm-0zn`. A non-positive `ConstOperand(N<=0)` is malformed IR and also
+fails loud (an alloca reserves at least one cell).
 """
 function _lower_alloca!(inst::Bennett.IRAlloca,
                         next_addr::Int64)::Tuple{Define,Int64}
     n = inst.n_elems
-    (n isa Bennett.ConstOperand && Int64(n.value) == 1) ||
+    n isa Bennett.ConstOperand ||
         error("lower_vm: IRAlloca(", inst.dest, ", elem_width=",
-              inst.elem_width, ", n_elems=", n, ") — the scalar memory ",
-              "floor (ADR 0014 §D4 v1) supports n_elems = ConstOperand(1) ",
-              "only. Arrays (ConstOperand(N>1)), dynamic-N (SSAOperand), and ",
-              "the address arithmetic (IRPtrOffset / IRVarGEP) they need are ",
-              "deferred to v2 (ADR 0014 §D4; Rule 1 fail-loud — do not ",
-              "miscompile).")
+              inst.elem_width, ", n_elems=", n, ") — a dynamic-N alloca ",
+              "(n_elems::SSAOperand, the VLA / Case A dynamic-size case) is ",
+              "OUT OF SCOPE for the static-array floor. The bump allocator ",
+              "cannot reserve a runtime-sized region at lowering time, and ",
+              "reversing it needs the (base, n) L2 delta + a runtime-base ",
+              "strategy (ADR 0009 Decision 2a). Deferred to bead ",
+              "bennettvm-0zn (Rule 1 fail-loud — do not miscompile).")
+    nelems = Int64(n.value)
+    nelems >= 1 ||
+        error("lower_vm: IRAlloca(", inst.dest, ", elem_width=",
+              inst.elem_width, ", n_elems=ConstOperand(", nelems, ")) — a ",
+              "static alloca must reserve at least one cell (N >= 1); ",
+              "N=", nelems, " is malformed IR (Rule 1 fail-loud).")
     base = next_addr
     # Materialise the pointer as an Int64 in `locals`: `dest := base + 0`.
     # A constant-create Define (the same form the φ-incoming constants use,
     # `Define(name, value, :add, 0)`), so `dest` holds `base` and downstream
-    # MemoryStore/MemoryLoad resolve it as the cell address.
-    return (Define(inst.dest, base, :add, Int64(0)), next_addr + 1)
+    # MemoryStore / MemoryLoad / VarGEP resolve it as the cell base address.
+    # The cursor advances by `N` cells (CELL-addressed: one Int64 per element,
+    # cells base … base+N-1), so a VarGEP with cell stride 1 lands on exactly
+    # the cell this alloca reserved for element i (ADR 0009 Decision 2b).
+    return (Define(inst.dest, base, :add, Int64(0)), next_addr + nelems)
 end
 
 # ---------------------------------------------------------------------
