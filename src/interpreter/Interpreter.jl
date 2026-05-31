@@ -788,25 +788,45 @@ M4.3's `unstep!` sets it. The `checkpoint_interval=typemax(Int)`
 spelling is kept for symmetry (M4.3 still passes it for clarity)
 but is redundant when `replay_mode=true`.
 
-## `s_pre` simplification — pass `s.current` (the ADR's pre-state arg)
+## Pre-`forward()` L2 capture — the `predelta_payload` hook (M_DYN)
 
 ADR 0002 §"Payload construction order" specifies `make_delta(instr,
 s_pre, step)` where `s_pre` is the IState *before* `forward()`
-mutates it. The empty-payload finding (ADR 0002 §"DeltaEntry
-payload schema") establishes that every current non-injective
-instruction's `make_delta` *ignores* `s_pre` (the payload is
-`NamedTuple()`). M7.6 therefore passes `s.current` (post-forward)
-rather than capturing `deepcopy(s.current)` BEFORE forward(), which
-would be a wasted deepcopy at every non-injective step.
+mutates it. M7.6 originally short-cut this by passing `s.current`
+(post-`forward()`) as `s_pre`, safe ONLY because the empty-payload
+finding (ADR 0002 §"DeltaEntry payload schema") established that
+every then-existing non-injective instruction's `make_delta`
+*ignored* `s_pre`.
 
-**Future caveat.** If a future Phase-2.x bead introduces a
-non-injective instruction whose `make_delta` reads `s_pre`'s
-fields (a non-self-inverse modop, a new memory-with-residue
-instruction), M7.6's push site MUST be revisited to capture
-`deepcopy(s.current)` *before* forward() and pass the captured
-snapshot as `s_pre`. The current shortcut is safe ONLY because all
-existing `make_delta` methods ignore `s_pre`. Filed under ADR
-0002 §"Open questions" item 5.
+M_DYN (bd `bennettvm-ekc`, ADR 0009 Decision 2b) lands the FIRST L2
+delta that needs pre-`forward()` state: `MemoryStore`'s `inverse`
+must restore the cell value the overwrite destroyed, which is gone
+the instant `forward()` runs. The short-cut would have produced a
+delta carrying the JUST-WRITTEN value — a silent reversibility
+corruption (the worst Rule 1 / Rule 2 failure mode). So the push
+site now captures pre-state explicitly via a `predelta_payload`
+hook, at step (3a) above:
+
+  * `predelta_payload(instr, s_pre)::Union{Nothing,NamedTuple}`
+    (default `nothing` in `src/history/delta.jl`; specialised in the
+    instruction's own file per ADR 0002 Design Decision 3). Returns
+    the MINIMAL pre-`forward()` NamedTuple the L2 `inverse` needs —
+    for `MemoryStore`, `(addr, old_value, was_present)`, an O(1)
+    capture of one cell.
+  * The capture runs at (3a), BEFORE `forward()`, gated on the SAME
+    predicate as the L2 push branch (`!replay_mode &&
+    !is_injective(instr) && must_cache(...)`) — that predicate is
+    `forward()`-independent, so evaluating it pre-`forward()` is
+    sound and avoids re-walking the block layout twice.
+  * **No full deepcopy.** Capturing `deepcopy(s.current)` per step
+    would be the L3 cost (a whole-IState snapshot), defeating L2's
+    space win (ADR 0009 Decision 2b; PRD §3.3 forbids full snapshots
+    on the L2 path). We capture only the per-instruction NamedTuple.
+  * **Backward-compatible.** Every instruction whose `make_delta` is
+    pre-state-independent inherits the `nothing` default; the push
+    gate (7) then takes the unchanged `make_delta(instr, s.current,
+    step)` (empty-payload) path. `replay_mode=true` suppresses the
+    capture AND the push uniformly (no history writes during replay).
 
 ## Backward compatibility
 
@@ -916,12 +936,59 @@ function step!(s::RState, prog::VMProgram;
     # raises in `_instruction_at` (Rule 1).
     instr = _instruction_at(prog, s.current.pc)
 
+    # (3a) M_DYN (bd `bennettvm-ekc`) — PRE-`forward()` L2 delta capture.
+    # An L2 delta whose `inverse` needs information DESTROYED by
+    # `forward()` (the canonical case: `MemoryStore`, whose overwrite
+    # loses the prior cell value) MUST capture that information BEFORE
+    # `forward()` runs. The `predelta_payload(instr, s_pre)` hook
+    # (`src/ir/<instr>.jl`; default `nothing` in `src/history/delta.jl`)
+    # returns the minimal pre-state NamedTuple for such an instruction,
+    # or `nothing` for every instruction whose `make_delta` is
+    # pre-state-independent (the empty-payload finding, ADR 0002).
+    #
+    # We compute the capture HERE, before `forward()`, but ONLY when the
+    # L2 branch at the push gate (7) would actually fire — i.e. when the
+    # step is not replayed, the instruction is non-injective, AND its
+    # (block_label, body_idx) is in `must_cache_set`. That gate decision
+    # depends solely on `instr`, `pc_before`, `must_cache_set`, and
+    # `replay_mode`, NONE of which `forward()` mutates, so it is sound to
+    # evaluate it pre-`forward()`. Computing the L2 predicate once and
+    # reusing it at the push gate (7) keeps the two in lockstep.
+    #
+    # MINIMALITY (the L2 space win — report item (b)). We do NOT
+    # `deepcopy(s.current)` per step: that is the L3 cost (a full IState
+    # snapshot), and paying it here would defeat the entire reason L2
+    # exists (ADR 0009 Decision 2b: per-write O(1) delta, NOT a
+    # whole-state snapshot; PRD §3.3 forbids full snapshots on the L2
+    # path). We capture ONLY what `predelta_payload` asks for — for
+    # `MemoryStore` that is one cell's value + its presence bit, an O(1)
+    # NamedTuple. When `predelta_payload` returns `nothing` (every
+    # existing non-injective instruction except `MemoryStore`), the push
+    # gate falls back to the empty-payload `make_delta(instr, s.current,
+    # step)` path unchanged — zero behavioural change for them.
+    #
+    # `local` so `pre_l2` / `pre_payload` are visible at the push gate.
+    local pre_l2::Bool = false
+    local pre_payload::Union{Nothing,NamedTuple} = nothing
+    if !replay_mode && !is_injective(instr)
+        (block_label, body_idx) = _block_index_at(prog, pc_before)
+        if must_cache(must_cache_set, block_label, body_idx)
+            pre_l2 = true
+            pre_payload = predelta_payload(instr, s.current)
+        end
+    end
+
     # (4) Dispatch into `forward`. The per-subtype methods (M2.6–M2.14)
     # mutate `s.current` in place — pc, locals, memory as appropriate.
     # Any unknown Instruction subtype falls through to the M2.4 generic
     # fallback, which raises with state context (Rule 1). If `forward`
     # throws, the exception propagates and `step_count` is NOT
-    # incremented (the brief's "no increment on exception" rule).
+    # incremented (the brief's "no increment on exception" rule). The
+    # (3a) pre-state capture above is read-only on `s.current`, so a
+    # throwing `forward` still leaves NO partial history entry: the push
+    # at (7) is what appends to `s.history`, and it only runs AFTER a
+    # successful `forward` (the exception-safety invariant the M4.2
+    # forward-FIRST ordering protects — see the docstring above).
     forward(instr, s.current)
 
     # (5) Cross-block dispatch on Uncond/Cond Exit (M3.6). See M3.6
@@ -964,27 +1031,34 @@ function step!(s::RState, prog::VMProgram;
     if !replay_mode
         if is_injective(instr)
             # L1 (M6.2). No push.
-        else
-            (block_label, body_idx) = _block_index_at(prog, pc_before)
-            if must_cache(must_cache_set, block_label, body_idx)
-                # L2 (M7.6). Per ADR 0002 §"DeltaEntry payload schema",
-                # all current `make_delta` methods ignore their `s_pre`
-                # argument (empty-payload finding). Passing `s.current`
-                # (post-forward) is therefore safe; a future
-                # non-empty-payload make_delta would require capturing
-                # `deepcopy(s.current)` BEFORE forward() at (4) — see
-                # this docstring's §"s_pre simplification" and ADR
-                # 0002 §"Open questions" item 5.
-                push!(s.history,
-                      make_delta(instr, s.current, s.step_count))
-            elseif s.step_count > 0 &&
-                   s.step_count % checkpoint_interval == 0
-                # L3 (M4.2). The deepcopy is inside CheckpointEntry's
-                # constructor (`src/history/CheckpointEntry.jl`);
-                # doing it a second time here would be redundant and
-                # confusing.
-                push!(s.history, CheckpointEntry(s.current, s.step_count))
-            end
+        elseif pre_l2
+            # L2 (M7.6 / M_DYN). The (block_label, body_idx) ∈
+            # must_cache_set decision was made at (3a), before
+            # `forward()`, and recorded in `pre_l2`; recomputing it here
+            # would re-walk the block layout for no gain and risk the two
+            # decisions drifting apart. `pre_payload` is the pre-`forward()`
+            # NamedTuple `predelta_payload` returned at (3a):
+            #
+            #   * NON-`nothing` (e.g. `MemoryStore`'s (addr, old_value,
+            #     was_present)) → wrap it directly in a `DeltaEntry`. This
+            #     is the M_DYN pre-state path: the destroyed cell value was
+            #     captured BEFORE `forward()` overwrote it.
+            #   * `nothing` (every other non-injective instruction, whose
+            #     `make_delta` is pre-state-independent — the ADR 0002
+            #     empty-payload finding) → fall back to
+            #     `make_delta(instr, s.current, step)`, the post-`forward()`
+            #     M7.6 path, unchanged.
+            entry = pre_payload === nothing ?
+                make_delta(instr, s.current, s.step_count) :
+                DeltaEntry(instr, pre_payload, s.step_count)
+            push!(s.history, entry)
+        elseif s.step_count > 0 &&
+               s.step_count % checkpoint_interval == 0
+            # L3 (M4.2). The deepcopy is inside CheckpointEntry's
+            # constructor (`src/history/CheckpointEntry.jl`);
+            # doing it a second time here would be redundant and
+            # confusing.
+            push!(s.history, CheckpointEntry(s.current, s.step_count))
         end
     end
 

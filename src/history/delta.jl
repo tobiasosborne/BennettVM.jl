@@ -397,3 +397,60 @@ function make_delta(instr::Instruction, s_pre::IState, step::Integer)::DeltaEntr
           "instruction's own file (src/ir/<instr>.jl) — ADR 0002 §Design ",
           "Decision 3. Pre-state pc=", s_pre.pc, ", step=", step, ".")
 end
+
+"""
+    predelta_payload(instr::Instruction, s_pre::IState)
+        -> Union{Nothing,NamedTuple}
+
+PRE-`forward()` L2-delta capture hook (M_DYN, bd `bennettvm-ekc`,
+ADR 0009 Decision 2b). Returns the minimal pre-`forward()` state an
+L2 `inverse` needs that `forward()` is about to DESTROY — or
+`nothing` if the instruction's L2 delta is pre-state-independent
+(the dominant case: the ADR 0002 §"DeltaEntry payload schema"
+empty-payload finding).
+
+# Why a separate hook (not just `make_delta` called pre-`forward()`)
+
+`make_delta(instr, s_pre, step)` builds a complete `DeltaEntry`,
+including the `step` field — but the step count is only finalised
+AFTER `forward()` succeeds (`step!` increments `s.step_count` post-
+forward, M4.2). `predelta_payload` separates the *pre-state capture*
+(which MUST happen before `forward()`) from the *entry construction*
+(which happens at the push gate, with the finalised step index). The
+`step!` push gate (`src/interpreter/Interpreter.jl` step (3a)/(7))
+wraps a non-`nothing` payload in `DeltaEntry(instr, payload, step)`;
+a `nothing` return falls back to the post-`forward()`
+`make_delta(instr, s.current, step)` path unchanged.
+
+# The default is `nothing` (Rule 1 / backward-compat)
+
+Every instruction whose L2 inverse recomputes from surviving post-
+`forward()` state (every non-injective instruction shipped before
+M_DYN — `ArithmeticAssignment(:add/:sub)`, `MemoryAssignment`, …)
+inherits this `nothing` default, so the `step!` push gate's behaviour
+for them is bit-for-bit identical to pre-M_DYN. Only `MemoryStore`
+(`src/ir/memory_floor.jl`) specialises this to a non-`nothing`
+return — its overwrite destroys the prior cell value, which no
+post-`forward()` state can recover (the L2 contrast with the
+self-inverse / paired-inverse instructions). The value-shaped
+NamedTuple return keeps the capture O(1): no `deepcopy(s.current)`,
+so L2's per-write space win (ADR 0009 Decision 2b; PRD §3.3 forbids
+full snapshots on the L2 path) is preserved.
+
+# Ref
+
+  * `docs/adr/0009-dynamic-size-memory.md` Decision 2b/4.4 — the
+    indexed-store (addr, old_value) delta + per-write O(1) mandate.
+  * `docs/adr/0002-enzyme-min-cut-mapping.md` §"DeltaEntry payload
+    schema" — the empty-payload finding that makes `nothing` the
+    correct default for the pre-M_DYN instruction set; §Design
+    Decision 3 — per-instruction-file location for the override.
+  * `src/ir/memory_floor.jl` — the sole non-`nothing` specialisation
+    (`MemoryStore`) and the matching L2
+    `inverse(::MemoryStore, s, ::NamedTuple)`.
+  * `src/interpreter/Interpreter.jl` (M_DYN) — the `step!` push gate
+    step (3a)/(7) that calls this hook before `forward()`.
+  * `CLAUDE.md` Rule 1 (fail safe — the conservative `nothing`
+    default keeps the empty-payload path alive when uncertain).
+"""
+predelta_payload(::Instruction, ::IState)::Union{Nothing,NamedTuple} = nothing

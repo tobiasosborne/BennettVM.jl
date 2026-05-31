@@ -209,6 +209,19 @@ using BennettVM
     # Sits right after the scalar memory-floor gates (consumes the same M8.2
     # scaffold and the same MemoryStore/MemoryLoad floor).
     include("test_array_floor.jl")
+    # SC9 Case A Unit 2 — indexed lossy store + (addr, old_value) L2 delta
+    # (bead `bennettvm-ekc`; ADR 0009 Decision 2b/4.4). The FIRST L2 delta
+    # that needs PRE-`forward()` state: a `MemoryStore` reverses via the
+    # cheap M7.4 delta fast-path (capturing the overwritten cell's value +
+    # presence BEFORE forward()) instead of an L3 full-state checkpoint.
+    # Lands the `step!` `predelta_payload` pre-state hook
+    # (`src/interpreter/Interpreter.jl`, capturing O(1) per store — NO full
+    # IState deepcopy), `MemoryStore`'s `predelta_payload` +
+    # `inverse(::MemoryStore, s, ::NamedTuple)` (`src/ir/memory_floor.jl`),
+    # and the absent-cell delete branch (the ADR 0008 Dict missing-sentinel
+    # trap). Sits right after the Unit-1 array floor it builds on; reuses
+    # the same hand-built array `ParsedIR` shape and the M8.2 scaffold.
+    include("test_store_delta.jl")
     # M8.3 — mutation-proof harness for per-instruction inverse
     # (`bennettvm-2kl`). Sits AFTER test_per_step_inverse.jl because
     # the harness depends on the `per_step_inverse_check` scaffold

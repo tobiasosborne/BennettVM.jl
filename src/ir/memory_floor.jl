@@ -257,6 +257,93 @@ function inverse(instr::MemoryStore, s::IState, prev)::IState
           "must_cache_set. State: pc=$(s.pc).")
 end
 
+# === M_DYN — L2 (addr, old_value) delta (ADR 0009 Decision 2b/4.4) ===
+#
+# `MemoryStore` is the FIRST BennettVM L2 delta that needs PRE-`forward()`
+# state. The forward overwrites `M[addr]`, destroying the prior cell value;
+# that value is unrecoverable from the post-state alone (the "is_injective =
+# false" rationale at the top of this file). So instead of the L3 whole-state
+# checkpoint, an L2 delta captures the ONE overwritten cell — `(addr,
+# old_value, was_present)` — read BEFORE `forward()` runs, then restores it on
+# reverse. Per-write O(1) (ADR 0009 Decision 2b; PRD §3.3 forbids full
+# snapshots on the L2 path), versus the L3 `deepcopy(IState)`.
+
+"""
+    predelta_payload(instr::MemoryStore, s::IState)
+        -> @NamedTuple{addr::Int64, old_value::Int64, was_present::Bool}
+
+PRE-`forward()` capture for `MemoryStore`'s L2 delta (M_DYN, bd
+`bennettvm-ekc`). Called by `step!` (step (3a)) BEFORE `forward()`
+overwrites the target cell. Records:
+
+  * `addr` — the resolved `Int64` cell address (`resolve_ptr`), so the
+    inverse needs no live SSA pointer at reverse time.
+  * `old_value` — `get(s.memory, addr, Int64(0))`, the prior cell
+    contents under the absent=0 convention.
+  * `was_present` — `haskey(s.memory, addr)`, the LOAD-BEARING bit (see
+    the `inverse` below): distinguishes a cell that genuinely held `0`
+    from a cell that was ABSENT (also reads as `0`).
+
+This is the sole non-`nothing` `predelta_payload` specialisation at this
+milestone (`src/history/delta.jl` defines the `nothing` default for every
+pre-state-independent instruction).
+"""
+function predelta_payload(instr::MemoryStore, s::IState)
+    a = resolve_ptr(instr.ptr, s)
+    return (addr = a,
+            old_value = get(s.memory, a, Int64(0)),
+            was_present = haskey(s.memory, a))
+end
+
+"""
+    inverse(instr::MemoryStore, s::IState, p::NamedTuple) -> IState
+
+L2 reverse of a `MemoryStore` using the `(addr, old_value, was_present)`
+payload captured by `predelta_payload` BEFORE `forward()` ran. This
+NamedTuple method is MORE SPECIFIC than the raising
+`inverse(::MemoryStore, s, ::Any)` catch-all above, so the M7.4 `unstep!`
+fast-path (`src/history/Replay.jl`, which calls `inverse(entry.instruction,
+s.current, entry.payload::NamedTuple)`) dispatches HERE; the catch-all
+stays for the (never-reached) L3 path.
+
+# ABSENT-CELL is load-bearing (the missing-sentinel trap, ADR 0008 Dict)
+
+`IState.memory` uses absent=0 (`forward`/`MemoryLoad` read `get(.., 0)`),
+but `Base.:(==)(::IState, ::IState)` compares `a.memory == b.memory` by
+Dict CONTENT — so `{addr=>0}` is NOT equal to the initial `{}`. Restoring
+`old_value=0` into a cell that was ABSENT before the store would therefore
+leave a phantom `{addr=>0}` key and break round-trip equality. The fix is
+the `was_present` branch: when the cell was absent, `delete!` it (do NOT
+write `0` back); when present, `setindex!` the captured `old_value`. This
+is the same missing-sentinel issue ADR 0008 documents for the Dict ADT.
+
+# pc convention
+
+Decrements `s.pc -= 1`, mirroring `ArithmeticAssignment.inverse` and the
+±1 per-step symmetry every NamedTuple inverse follows
+(`src/ir/arithmetic_assignment.jl`). The M7.4 fast-path does NOT adjust pc
+itself, so the per-instruction inverse owns the decrement.
+
+# Ref
+
+  * `docs/adr/0009-dynamic-size-memory.md` Decision 2b/4.4 — the
+    (addr, old_value) delta + per-write O(1) mandate.
+  * `docs/adr/0008-*.md` — the Dict missing-sentinel issue the
+    `was_present`→`delete!` branch mirrors.
+  * `src/history/Replay.jl` (M7.4) — the unstep! fast-path call site.
+  * `src/ir/arithmetic_assignment.jl` — the NamedTuple-inverse / pc-±1
+    convention this method follows.
+"""
+function inverse(instr::MemoryStore, s::IState, p::NamedTuple)::IState
+    if p.was_present
+        s.memory[p.addr] = p.old_value      # cell held a value → restore it
+    else
+        delete!(s.memory, p.addr)           # cell was ABSENT → delete, NOT {a=>0}
+    end
+    s.pc -= 1
+    return s
+end
+
 """
     inverse(instr::MemoryLoad, s::IState, prev) -> IState
 
