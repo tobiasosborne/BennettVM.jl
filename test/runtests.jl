@@ -236,6 +236,21 @@ using BennettVM
     # delta it composes with (the region's element stores) and reuses the same
     # hand-built array `ParsedIR` shape + the M8.2 `per_step_inverse_check`.
     include("test_alloca_delta.jl")
+    # SC9 Case A — `frtN` END-TO-END round-trip (bead `bennettvm-xld`; ADR
+    # 0009 Decision 3). THE Case A executable proof: a REAL clang-18 C VLA
+    # program (`test/reference/frtN.c` -> committed, hand-trimmed/named `.ll`)
+    # flows through Bennett's language-agnostic `extract_parsed_ir_from_ll`,
+    # the real `lower_vm` (dynamic-N `DynAlloca` + single-index `IRVarGEP`),
+    # runs forward matching `frtN_oracle(n) = sum(i^2 for i<n)` bit-for-bit
+    # (incl. n=5 -> 30), and round-trips to empty history under a MIXED L2/L3
+    # stack (the two heap-state loops reverse via L3 checkpoint-replay; the
+    # array element writes push L2 `(addr, old_value)` deltas; the alloca
+    # pushes an L2 `(base, n)` delta — Decision 4 rung 7). Clang-free at test
+    # time (committed `.ll`, Rule 12). Composes every Case A rung beneath it
+    # (the array floor, the store delta, the alloca delta) on a real emitter's
+    # output rather than a hand-built ParsedIR. Sits right after the
+    # `test_alloca_delta.jl` DynAlloca unit it builds on.
+    include("test_dyn_roundtrip.jl")
     # M8.3 — mutation-proof harness for per-instruction inverse
     # (`bennettvm-2kl`). Sits AFTER test_per_step_inverse.jl because
     # the harness depends on the `per_step_inverse_check` scaffold
