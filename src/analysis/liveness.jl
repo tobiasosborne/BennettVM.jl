@@ -11,19 +11,36 @@ must be captured to invert the step?* — the dataflow-graph min-cut
 problem solved heuristically by Enzyme on LLVM IR (Moses–Churavy 2020
 NeurIPS §2 "Cache"), instantiated on BennettVM's RSSA IR per ADR 0002.
 
-# What M7.5 ships: the conservative stub
+# What M7.5 ships (+ the bd `bennettvm-5pp` L2-capability gate)
 
 M7.5 is the **stub** liveness pass. It returns the conservative
-upper bound on the true min-cut: **every non-injective instruction is
-included in the must-cache set**. The classification is read directly
-from `is_injective` (M6.1, `src/history/Injective.jl`). The stub does
-NOT attempt to identify non-injective outputs that are recomputable
-from later live values and exclude them — that is the upgrade path
-deferred behind the M1 cost-measurement bead (PRD v4 §Part IX M1).
-The stub gracefully degrades to the conservative L2 behaviour: every
-non-injective step pushes a DeltaEntry (typically with empty payload
-per ADR 0002 §DeltaEntry payload schema), which is already a strict
-improvement over an L3-only fallback (which would `deepcopy` the
+upper bound on the true min-cut, refined by `bennettvm-5pp` to exclude
+the instructions that have no working L2 path: **every non-injective
+AND L2-capable instruction is included in the must-cache set; a
+non-injective-but-not-L2-capable instruction is NOT included and falls
+through to L3**. The classification reads `is_injective` (M6.1,
+`src/history/Injective.jl`) AND `is_l2_capable`
+(`src/history/delta.jl`). The stub does NOT attempt to identify
+L2-capable outputs that are recomputable from later live values and
+exclude them — that finer tightening is the upgrade path deferred
+behind the M1 cost-measurement bead (PRD v4 §Part IX M1).
+
+The L2-capability gate (bd `bennettvm-5pp`) is a soundness fix, not
+just a refinement: the M7.5 original marked EVERY non-injective slot,
+but `Define` / `VarGEP` / `MemoryLoad` / `CastInstruction` /
+`SelectInstruction` / `CallInstruction` have NO working L2 path (a
+raising `make_delta` fallback, a `nothing` `predelta_payload`). Routing
+them through the L2 push gate raised the RAISING generic `make_delta`
+(`src/history/delta.jl`) the moment they executed, so
+`compute_must_cache(vm)` could not be used as the global
+`must_cache_set` for any program containing one. Gating on
+`is_l2_capable` leaves those L3-only — `step!`'s K-multiple checkpoint
+gate handles them, which is the only sound reversal they have. For the
+instructions that ARE L2-capable (`ArithmeticAssignment`,
+`MemoryAssignment`, `MemoryStore`, `DynAlloca`), the L2 entry (an empty
+NamedTuple per ADR 0002 §DeltaEntry payload schema, or a small
+pre-state NamedTuple for the memory-floor creates) is a strict space
+improvement over the L3-only fallback (which would `deepcopy` the
 entire `IState`).
 
 # Why this is correct as a stub
@@ -121,14 +138,27 @@ This file does NOT:
 
 Stub min-cut analysis. Returns the set of `(block_label, instr_idx)`
 pairs whose instructions must push a `DeltaEntry` during forward
-execution. The stub is conservative: every non-injective instruction
-(per M6.1's `is_injective` trait) is included.
+execution. A slot is included iff its instruction is **both
+non-injective AND L2-capable** — `!is_injective(instr) &&
+is_l2_capable(typeof(instr))` (bd `bennettvm-5pp`).
+
+A non-injective-but-**not**-L2-capable instruction (`Define`, `VarGEP`,
+`MemoryLoad`, `CastInstruction`, `SelectInstruction`, `CallInstruction`
+— each lacking a working `make_delta` / `predelta_payload`, so its only
+sound reversal is L3 checkpoint-replay) is **NOT** included; it falls
+through to the L3 path at `step!`'s K-multiple gate. Marking it would
+route it through the L2 push gate and hit the RAISING generic
+`make_delta` fallback (`src/history/delta.jl`), which is the bug
+`bennettvm-5pp` fixes: before it, `compute_must_cache(vm)` raised the
+moment such an instruction executed and so could not be passed as a
+global `must_cache_set` for any program containing one (the dynamic-
+array tests had to hand-build L2 sets excluding the L3-only creates).
 
 A future tightening (post-Phase-2 measurements per PRD v4 §Part IX
-M1) ports Enzyme's recomputation-cost heuristic to skip outputs that
-are derivable from later live values, but the stub does not attempt
-this — see this file's top-of-module docstring "What M7.5 ships" for
-the rationale.
+M1) ports Enzyme's recomputation-cost heuristic to further skip
+L2-capable outputs that are derivable from later live values, but the
+stub does not attempt this — see this file's top-of-module docstring
+"What M7.5 ships" for the rationale.
 
 # How "instruction index" is defined
 
@@ -164,7 +194,20 @@ function compute_must_cache(prog::VMProgram)::Set{Tuple{Symbol, Int}}
     result = Set{Tuple{Symbol, Int}}()
     for block in prog.blocks
         for (idx, instr) in enumerate(block.instructions)
-            if !is_injective(instr)
+            # bd `bennettvm-5pp`: a slot is L2-cached iff it is BOTH
+            # non-injective (needs SOME history) AND L2-capable (has a
+            # working `make_delta` / `predelta_payload` + NamedTuple
+            # `inverse` — `is_l2_capable`, `src/history/delta.jl`). A
+            # non-injective-but-not-L2-capable instruction (Define /
+            # VarGEP / MemoryLoad / CastInstruction / SelectInstruction /
+            # CallInstruction) is NOT marked — it falls through to the L3
+            # checkpoint path (`step!`'s K-multiple gate), which is the
+            # only sound option for it. Marking it would route it through
+            # the L2 push gate and hit the RAISING generic `make_delta`
+            # fallback (`src/history/delta.jl`) — the bug `bennettvm-5pp`
+            # fixes, which previously made `compute_must_cache(vm)`
+            # un-passable as a global must_cache_set for any such program.
+            if !is_injective(instr) && is_l2_capable(typeof(instr))
                 push!(result, (block.label, idx))
             end
         end

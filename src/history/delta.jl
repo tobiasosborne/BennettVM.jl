@@ -428,11 +428,14 @@ Every instruction whose L2 inverse recomputes from surviving post-
 `forward()` state (every non-injective instruction shipped before
 M_DYN — `ArithmeticAssignment(:add/:sub)`, `MemoryAssignment`, …)
 inherits this `nothing` default, so the `step!` push gate's behaviour
-for them is bit-for-bit identical to pre-M_DYN. Only `MemoryStore`
-(`src/ir/memory_floor.jl`) specialises this to a non-`nothing`
-return — its overwrite destroys the prior cell value, which no
-post-`forward()` state can recover (the L2 contrast with the
-self-inverse / paired-inverse instructions). The value-shaped
+for them is bit-for-bit identical to pre-M_DYN. Two instructions
+specialise this to a non-`nothing` return: `MemoryStore`
+(`src/ir/memory_floor.jl`) captures `(addr, old_value, was_present)` —
+its overwrite destroys the prior cell value; and `DynAlloca`
+(`src/ir/alloca.jl`) captures `(base, n)` — the runtime region size its
+inverse needs to retract `base..base+n-1`. Neither is recoverable from
+post-`forward()` state (the L2 contrast with the self-inverse /
+paired-inverse instructions). The value-shaped
 NamedTuple return keeps the capture O(1): no `deepcopy(s.current)`,
 so L2's per-write space win (ADR 0009 Decision 2b; PRD §3.3 forbids
 full snapshots on the L2 path) is preserved.
@@ -445,12 +448,127 @@ full snapshots on the L2 path) is preserved.
     schema" — the empty-payload finding that makes `nothing` the
     correct default for the pre-M_DYN instruction set; §Design
     Decision 3 — per-instruction-file location for the override.
-  * `src/ir/memory_floor.jl` — the sole non-`nothing` specialisation
-    (`MemoryStore`) and the matching L2
-    `inverse(::MemoryStore, s, ::NamedTuple)`.
+  * `src/ir/memory_floor.jl` / `src/ir/alloca.jl` — the non-`nothing`
+    specialisations (`MemoryStore` → `(addr, old_value, was_present)`;
+    `DynAlloca` → `(base, n)`) and their matching L2
+    `inverse(::T, s, ::NamedTuple)` methods.
   * `src/interpreter/Interpreter.jl` (M_DYN) — the `step!` push gate
     step (3a)/(7) that calls this hook before `forward()`.
   * `CLAUDE.md` Rule 1 (fail safe — the conservative `nothing`
     default keeps the empty-payload path alive when uncertain).
 """
 predelta_payload(::Instruction, ::IState)::Union{Nothing,NamedTuple} = nothing
+
+"""
+    is_l2_capable(::Type{<:Instruction}) -> Bool
+
+The L2 "can this non-injective instruction be reversed by an L2
+`DeltaEntry`?" trait (bd `bennettvm-5pp`). Returns `true` iff the
+instruction type has a *working* L2 delta path: a non-raising
+`make_delta` **or** a non-`nothing` `predelta_payload`, AND a matching
+`inverse(::T, s, payload::NamedTuple)` specialisation that the M7.4
+`unstep!` fast-path (`src/history/Replay.jl`) can dispatch to. The
+default is **`false`** — the fail-safe analogue of `is_injective`'s
+conservative `false` default.
+
+# Why this trait exists (the bug `bennettvm-5pp` fixes)
+
+`compute_must_cache` (`src/analysis/liveness.jl`) marks the slots whose
+forward step should push a `DeltaEntry` (the L2 path) rather than fall
+through to an L3 `CheckpointEntry`. The M7.5 stub marked **every**
+non-injective body slot. But that is unsound for the L3-only creates:
+`Define` / `VarGEP` / `MemoryLoad` / `CastInstruction` /
+`SelectInstruction` have NO working L2 path — their `make_delta`
+inherits the RAISING generic fallback (`make_delta(::Instruction, …)`
+above), and their `predelta_payload` inherits the `nothing` default.
+`CallInstruction` is the same shape (its specialised `make_delta`
+*also* raises — cross-call deltas are v5-deferred, ADR 0002 §Open
+Questions item 4). Routing any of them through the L2 push gate
+(`src/interpreter/Interpreter.jl` step (7): `pre_payload === nothing ?
+make_delta(instr, s.current, step) : DeltaEntry(...)`) hits the raising
+`make_delta` fallback. Consequently `compute_must_cache(vm)` could NOT
+be passed as the global `must_cache_set` for any program containing
+such an instruction — it raised the moment that instruction executed
+non-injectively (which is why the dynamic-array tests in
+`test/test_alloca_delta.jl` / `test/test_store_delta.jl` had to
+hand-build L2 sets that EXCLUDE the L3-only creates). frtN (SC9 Case A)
+needs the automatic `compute_must_cache(vm)` path to work, so this
+trait lets `compute_must_cache` mark a slot iff it is BOTH
+non-injective AND L2-capable; a non-injective-but-not-L2-capable
+instruction is left out of the set and falls through to L3 (sound).
+
+# The fail-safe default (Rule 1)
+
+Defaulting to `false` means a future non-injective instruction added
+WITHOUT an L2 path is automatically routed to L3 (the safety net),
+never to the raising L2 path — the same "push the safe entry when in
+doubt" discipline `is_injective`'s `false` default expresses for L1.
+Marking a type `true` is therefore a deliberate assertion that its L2
+machinery exists; the four specialisations below were each verified
+against the live source (Rule 3) — see the per-specialisation comments.
+
+# Why this lives in `delta.jl` (not `Injective.jl`)
+
+`is_l2_capable` is an L2-layer concept: it asserts the presence of the
+very machinery this file defines — `make_delta` (the generic raising
+fallback above), `predelta_payload` (the `nothing` default above), and
+the `DeltaEntry` the push gate builds. Co-locating the trait with the
+generic methods it abstracts over keeps the "what makes an instruction
+L2-capable" definition next to the methods that *are* L2-capability.
+`Injective.jl` is the L1 trait's home; this is its L2 sibling, and
+`compute_must_cache` consumes the two together (`is_injective`
+short-circuits to L1; `is_l2_capable` gates L2 vs L3). `delta.jl` is
+included after every per-instruction file and before
+`analysis/liveness.jl`, so the four specialisations can name their
+types and `compute_must_cache` can call the trait.
+
+# Ref
+
+  * Bead `bennettvm-5pp` — this trait's bead; the `compute_must_cache`
+    soundness fix it enables.
+  * `src/history/delta.jl` (this file) — the raising `make_delta`
+    fallback and the `nothing` `predelta_payload` default that the
+    L3-only creates inherit (the reason routing them through L2 raises).
+  * `src/history/Injective.jl` (M6.1) — the L1 sibling trait whose
+    `false`-default / explicit-`true`-specialisation pattern this
+    mirrors.
+  * `src/analysis/liveness.jl` (M7.5, this bead) — the sole consumer:
+    `compute_must_cache` now marks a slot iff `!is_injective(instr) &&
+    is_l2_capable(typeof(instr))`.
+  * CLAUDE.md Rule 1 (fail safe — L3 not the raising L2 path when in
+    doubt), Rule 2 (the trait records which instructions have a real
+    L2 path vs deferred to L3 / v5), Rule 11 (literate).
+"""
+is_l2_capable(::Type{<:Instruction})::Bool = false
+
+# -----------------------------------------------------------------------------
+# The four `true` specialisations — instructions with a verified L2 path.
+# Each was checked against the live per-instruction source (Rule 3); the
+# others (Define / VarGEP / MemoryLoad / CastInstruction / SelectInstruction /
+# CallInstruction) keep the `false` default → fall through to L3.
+# -----------------------------------------------------------------------------
+
+# `ArithmeticAssignment` — non-raising `make_delta` returns an empty-payload
+# `DeltaEntry` (`src/ir/arithmetic_assignment.jl`, the `make_delta` method),
+# with the matching `inverse(::ArithmeticAssignment, s, ::NamedTuple)` (same
+# file). L2 path verified. (Reached only for `:add` / `:sub`; `:xor` is L1 per
+# M6.1's value-level `is_injective`, so `compute_must_cache` never routes it
+# here anyway.)
+is_l2_capable(::Type{ArithmeticAssignment})::Bool = true
+
+# `MemoryAssignment` — non-raising `make_delta` (empty payload) +
+# `inverse(::MemoryAssignment, s, ::NamedTuple)` (`src/ir/memory_instructions.jl`).
+# L2 path verified.
+is_l2_capable(::Type{MemoryAssignment})::Bool = true
+
+# `MemoryStore` — has NO `make_delta` (would hit the raising fallback) but a
+# non-`nothing` `predelta_payload` returning `(addr, old_value, was_present)`
+# (`src/ir/memory_floor.jl`) + `inverse(::MemoryStore, s, ::NamedTuple)` (same
+# file). The push gate's `pre_payload !== nothing` branch builds the DeltaEntry
+# directly, so the raising `make_delta` is never reached. L2 path verified.
+is_l2_capable(::Type{MemoryStore})::Bool = true
+
+# `DynAlloca` — same shape as `MemoryStore`: NO `make_delta`, but a
+# non-`nothing` `predelta_payload` returning `(base, n)` (`src/ir/alloca.jl`)
+# + `inverse(::DynAlloca, s, ::NamedTuple)` (same file). L2 path verified.
+is_l2_capable(::Type{DynAlloca})::Bool = true
