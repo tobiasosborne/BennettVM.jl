@@ -309,4 +309,19 @@ using BennettVM
     # inverse at both L3 and L2 regimes, determinism, and a mutation-
     # proof RED-then-GREEN on `inverse(::ArithmeticAssignment)`.
     include("test_property_roundtrip.jl")
+    # M_OPCODE.3 — the executable coverage matrix (bead `bennettvm-d7t`).
+    # Turns every row of `docs/coverage-matrix.md` into an `@test`: for each
+    # of the 16 concrete Bennett.jl `IRInst` subtypes, asserts the matrix's
+    # DONE (11) / GAP (4) / N/A (1) status holds against the REAL `lower_vm`
+    # ingest (`src/ir/ingest.jl`). DONE rows lower to the documented VM
+    # instruction type (and two end-to-end witnesses run all 11 through
+    # run!/unrun! against a hand-computed oracle); GAP rows raise a Rule-1
+    # fail-loud error naming the unsupported op; IRSwitch (N/A) is documented
+    # as frontend-pre-expanded with a belt-and-suspenders fail-loud assertion.
+    # A future ingest change that silently starts/stops handling a subtype
+    # trips a RED test here cross-referenced to the matrix row it contradicts
+    # (prose rots; this file does not). Sits LAST as the coverage capstone —
+    # it builds only hand-built ParsedIR fragments via the same idiom as
+    # test_memory_floor.jl, so it depends only on already-loaded symbols.
+    include("test_opcode_coverage.jl")
 end

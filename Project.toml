@@ -10,8 +10,15 @@ Bennett = "d4e5f6a7-b8c9-4d0e-a1b2-c3d4e5f6a7b8"
 julia = "1.10"
 
 [extras]
+# `InteractiveUtils` (stdlib) is a TEST-ONLY dependency: test_opcode_coverage.jl
+# (bead bennettvm-d7t) calls `subtypes(Bennett.IRInst)` to pin the 16-way
+# IRInst taxonomy against the LIVE Bennett.jl type tree, so a pin bump that
+# adds/removes a subtype trips the coverage test. `subtypes` lives in
+# InteractiveUtils, not Base; under `Pkg.test()` the sandboxed test env only
+# sees declared deps, so it must be listed here + in the test target.
+InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Random", "Test"]
+test = ["InteractiveUtils", "Random", "Test"]
