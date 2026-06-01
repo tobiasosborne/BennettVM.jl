@@ -130,24 +130,58 @@ the caller's variable, defeating the in-place mutation convention the
   decision table row "Direction flag" makes this explicit. Do not be
   tempted to add a direction field here; it belongs on the `RState`-
   level wrapper that lands in a later bead.
+
+- `revmap::RevMap` (= `Dict{Int64,Int64}`). The BennettVM reversible-map
+  ADT (`src/ir/revmap.jl`, ADR 0008 Decision 1; SC9 Case B). A single
+  hash-table-valued register for the three `IRMap*` ops
+  (`IRMapInsert` / `IRMapDelete` / `IRMapGet`), modelling a Julia
+  `Dict{Int64,Int64}` whose `setindex!` / `delete!` history is replayable.
+  It is a **dedicated field, NOT in `locals`** (which is scalars only),
+  and it mirrors `memory::Dict{Int64,Int64}` exactly — same `Dict` type,
+  same empty default, same participation in `==`/`hash`/`deepcopy`/L3
+  checkpoint. ADR 0008 **Finding 3** is the load-bearing reason it must
+  live *inside* `IState`: an external map would (a) be invisible to
+  `IState.==`, so a round-trip test that never reversed the map would
+  spuriously pass (Rule 4 — a test that passes without checking the
+  invariant is broken), and (b) be omitted from `CheckpointEntry`'s
+  `deepcopy(IState)` snapshot, corrupting L3 replay. v1 is a SINGLE map
+  per IState (the canonical `fdict` body has one `Dict`); the three ops
+  operate on `s.revmap` with no map-handle operand. Multi-map is out of
+  scope (a follow-up bead). Default is an empty `RevMap`, set by the 3-
+  and 4-arg constructors, so every existing `IState(pc, locals, status)`
+  and `IState(pc, locals, status, memory)` call site (111 of them across
+  `src/` + `test/`) keeps compiling and behaving identically; the 5-arg
+  constructor sets it explicitly (used by the `IRMap*` unit tests).
 """
 mutable struct IState
     pc::Int
     locals::Dict{Symbol,Int64}
     status::Symbol
     memory::Dict{Int64,Int64}
+    revmap::Dict{Int64,Int64}   # RevMap, the reversible-map ADT (ADR 0008).
 
     # 3-arg constructor: preserves every existing call site (M2.1
-    # through M2.10) — empty memory is the right default for any
-    # instruction that doesn't touch the heap.
+    # through M2.10) — empty memory AND empty revmap are the right
+    # defaults for any instruction that touches neither heap nor map.
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol) =
-        new(pc, locals, status, Dict{Int64,Int64}())
+        new(pc, locals, status, Dict{Int64,Int64}(), Dict{Int64,Int64}())
 
-    # 4-arg constructor: explicit memory. Used by M2.11+ tests and by
-    # any lowering pass that materializes a heap snapshot up front.
+    # 4-arg constructor: explicit memory, empty revmap. Used by M2.11+
+    # tests and by any lowering pass that materializes a heap snapshot up
+    # front. Preserved verbatim so the memory-floor / array-floor call
+    # sites keep their meaning (memory explicit, revmap defaulted empty).
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}) =
-        new(pc, locals, status, memory)
+        new(pc, locals, status, memory, Dict{Int64,Int64}())
+
+    # 5-arg constructor: explicit memory AND revmap (ADR 0008 Decision 1).
+    # Used by the `IRMap*` unit tests to build an IState with a populated
+    # map. The trailing `revmap` is unambiguous — distinct in arity from
+    # the 4-arg form — so adding it does not change which constructor any
+    # existing 3-/4-arg call site resolves to.
+    IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
+           memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64}) =
+        new(pc, locals, status, memory, revmap)
 end
 
 """
@@ -207,12 +241,18 @@ Ref: spike/RETROSPECTIVE.md Q2.1 (the Dict-identity trap that
      motivated this override).
 Ref: bennettvm_prd.md §3.10 (`Base.==`/`Base.hash` overrides are
      unconditional on `IState`).
+Ref: docs/adr/0008-dict-reversibility.md Finding 3 — the `revmap`
+     field MUST participate in `==`/`hash` (and hence the round-trip
+     invariant), or a `Dict` round-trip test that never reversed the
+     map would spuriously pass; the same content-comparing pattern as
+     `memory`.
 """
 function Base.:(==)(a::IState, b::IState)
     a.pc == b.pc &&
     a.status === b.status &&
     a.locals == b.locals &&  # Dict's overloaded ==, content-comparing.
-    a.memory == b.memory     # M2.11: same content-comparing pattern.
+    a.memory == b.memory &&  # M2.11: same content-comparing pattern.
+    a.revmap == b.revmap     # ADR 0008 Finding 3: RevMap content participates.
 end
 
 function Base.hash(s::IState, h::UInt)
@@ -220,5 +260,6 @@ function Base.hash(s::IState, h::UInt)
     h = hash(s.status, h)
     h = hash(s.locals, h)   # Dict's hash respects content.
     h = hash(s.memory, h)   # M2.11: heap content participates in hash.
+    h = hash(s.revmap, h)   # ADR 0008 Finding 3: RevMap content participates.
     return h
 end

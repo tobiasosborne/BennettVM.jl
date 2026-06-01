@@ -572,3 +572,15 @@ is_l2_capable(::Type{MemoryStore})::Bool = true
 # non-`nothing` `predelta_payload` returning `(base, n)` (`src/ir/alloca.jl`)
 # + `inverse(::DynAlloca, s, ::NamedTuple)` (same file). L2 path verified.
 is_l2_capable(::Type{DynAlloca})::Bool = true
+
+# `IRMapInsert` / `IRMapDelete` (reversible-map ADT, ADR 0008; `src/ir/
+# revmap.jl`) — same shape as `MemoryStore`: NO `make_delta` (would hit the
+# raising fallback), but a non-`nothing` `predelta_payload` returning
+# `(key, prior=value-or-missing)` + a matching `inverse(::T, s, ::NamedTuple)`
+# (same file). The push gate's `pre_payload !== nothing` branch builds the
+# DeltaEntry directly, so the raising `make_delta` is never reached. L2 path
+# verified against `src/ir/revmap.jl`. (`IRMapGet` is NOT L2-capable — it has
+# no `predelta_payload` and is L3-only, like `MemoryLoad`, so it keeps the
+# `false` default above.)
+is_l2_capable(::Type{IRMapInsert})::Bool = true
+is_l2_capable(::Type{IRMapDelete})::Bool = true

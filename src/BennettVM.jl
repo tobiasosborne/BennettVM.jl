@@ -296,6 +296,32 @@ include("ir/array_index.jl")
 # `predelta_payload`, like `MemoryStore`); the raising `prev::Any` inverse is
 # the never-taken L3 catch-all (Rule 1). Not yet exported.
 include("ir/alloca.jl")
+# SC9 Case B (ADR 0008; bead `bennettvm-jrc`) — `RevMap` + `IRMapInsert` /
+# `IRMapDelete` / `IRMapGet`, the reversible-map ADT and its three IR ops.
+# `RevMap` is `const Dict{Int64,Int64}` (mirroring `memory`); the map lives
+# as a dedicated `IState.revmap` field (NOT in `locals`), so it participates
+# in `==`/`hash`/`deepcopy`/L3-checkpoint automatically (ADR 0008 Decision 1
+# / Finding 3 — an external map would make a Dict round-trip test spuriously
+# pass and corrupt L3 replay). `IRMapInsert` / `IRMapDelete` ≅ `MemoryStore`:
+# non-injective, L2 `(key, prior=value-or-missing)` delta captured PRE-
+# `forward()` via `predelta_payload` (the missing-sentinel handles absent
+# keys; `IRMapDelete`'s missing-sentinel is a senior-grade hardening over ADR
+# Finding 4's bare `(key, old_val)` so an absent-key delete round-trips), with
+# a NamedTuple `inverse` and a raising `prev::Any` catch-all (L3 path).
+# `IRMapGet` ≅ `MemoryLoad`: map-injective (no map delta) but its SSA `dest`
+# write is non-injective → `is_injective = false`, no predelta, the
+# `inverse(::IRMapGet, s, prev)` catch-all RAISES; reversed only by L3. Its
+# `forward` FAILS LOUD on an absent key (a Dict getindex is a KeyError, not
+# zero-init memory — the ADR 0008 design call, distinct from MemoryLoad's
+# zero-init heap). Reuses `_resolve` (from `arithmetic_assignment.jl`, Law 2),
+# so MUST follow it; placed right after `alloca.jl` (its sibling L2-delta
+# instruction) and BEFORE `history/Injective.jl` (which PINS the three
+# `is_injective(::Type{IRMap*}) = false` traits — the include MUST precede
+# Injective so the specialisations can dispatch on the concrete types) and
+# BEFORE `history/delta.jl` (which marks `IRMapInsert` / `IRMapDelete`
+# `is_l2_capable = true`). v1 is a SINGLE map per IState; multi-map is a
+# follow-up bead. Not yet exported.
+include("ir/revmap.jl")
 # M6.1 — `is_injective` trait (`bennettvm-9hf`). The L1 "no-log"
 # layer-1 predicate of PRD v4 §3.3: tells the rest of the VM whether
 # an instruction needs a history entry. Type-level `true` for the

@@ -457,6 +457,40 @@ is_injective(::Type{VarGEP})::Bool = false
 # sound. Do NOT mark this `true`.
 is_injective(::Type{DynAlloca})::Bool = false
 
+# -----------------------------------------------------------------------------
+# Type-level `false` pin — `IRMapInsert` / `IRMapDelete` / `IRMapGet`
+# (reversible-map ADT, ADR 0008 §Decision 2; SC9 Case B).
+# -----------------------------------------------------------------------------
+#
+# The three `IRMap*` ops (`src/ir/revmap.jl`) mutate / read the `RevMap`
+# (`IState.revmap`, a `Dict{Int64,Int64}` mirroring `memory`). All three are
+# NON-injective, partitioning exactly as the memory floor does (ADR 0008
+# Finding 4):
+#
+#   * `IRMapInsert` (`revmap[k] := v`) is a plain OVERWRITE-or-create — it loses
+#     the prior binding, so the forward step is not a bijection on the map (the
+#     `MemoryStore` non-injective contrast). Reversed by its L2 `(key, prior)`
+#     delta (`predelta_payload` + the NamedTuple `inverse`) when L2-marked, else
+#     L3 checkpoint-replay.
+#   * `IRMapDelete` (`delete!(revmap, k)`) removes a binding — non-injective for
+#     the same reason; reversed by the SAME L2 `(key, prior)` delta shape, else
+#     L3.
+#   * `IRMapGet` (`dest := revmap[k]`) is map-injective (a pure read) but its
+#     SSA `dest` write is non-injective on a loop re-definition (the
+#     cross-iteration crux shared with `MemoryLoad` / `Define`, ADR 0012). The
+#     static type-level trait cannot see runtime freshness, so per Rule 1 ("fail
+#     safe — push when in doubt") it is conservatively `false`. It has NO L2
+#     path (no `predelta_payload`); reversed EXCLUSIVELY via L3.
+#
+# This forces the M6.2/M7.6 push gate to record a history entry for each:
+# `IRMapInsert` / `IRMapDelete` push their L2 `DeltaEntry` when in the
+# must_cache set (else an L3 `CheckpointEntry`); `IRMapGet` always takes L3.
+# `IState.revmap` is in the snapshot and in `==`/`hash` (`src/ir/IState.jl`),
+# so checkpoint-replay reverses the map automatically. Do NOT mark these `true`.
+is_injective(::Type{IRMapInsert})::Bool = false
+is_injective(::Type{IRMapDelete})::Bool = false
+is_injective(::Type{IRMapGet})::Bool    = false
+
 """
     is_injective(x::ArithmeticAssignment) -> Bool
 

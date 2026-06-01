@@ -251,6 +251,20 @@ using BennettVM
     # output rather than a hand-built ParsedIR. Sits right after the
     # `test_alloca_delta.jl` DynAlloca unit it builds on.
     include("test_dyn_roundtrip.jl")
+    # SC9 Case B — RevMap reversible-map ADT + IRMap* ops unit gate (bead
+    # `bennettvm-jrc`, ADR 0008). The Dict analogue of the memory-floor op
+    # units: pins the `RevMap` (`IState.revmap`, a `Dict{Int64,Int64}`
+    # mirroring `memory`) + the three `IRMap*` ops (`src/ir/revmap.jl`) at the
+    # OP level — forward semantics, the L2 `(key, prior)` delta round-trip via
+    # `predelta_payload` → `inverse(::NamedTuple)` (incl. the absent-key /
+    # missing-sentinel cases for IRMapInsert AND IRMapDelete), the raising
+    # `prev::Any` catch-all for all three, the `is_injective == false` pins,
+    # and the load-bearing IState integration (ADR 0008 Finding 3: `==`/`hash`
+    # SEE the revmap; deepcopy copies it independently). Does NOT build a
+    # hand-built VMProgram round-trip through run!/unrun! — that is the
+    # separate bead `bennettvm-l49`. Self-contained: depends only on
+    # already-loaded BennettVM symbols. Sits right after the Case A heap family.
+    include("test_revmap.jl")
     # M8.3 — mutation-proof harness for per-instruction inverse
     # (`bennettvm-2kl`). Sits AFTER test_per_step_inverse.jl because
     # the harness depends on the `per_step_inverse_check` scaffold
