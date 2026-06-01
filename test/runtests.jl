@@ -265,6 +265,21 @@ using BennettVM
     # separate bead `bennettvm-l49`. Self-contained: depends only on
     # already-loaded BennettVM symbols. Sits right after the Case A heap family.
     include("test_revmap.jl")
+    # SC9 Case B — hand-built IRMap* round-trip unit gate (bead
+    # `bennettvm-l49`, ADR 0008 Decision 4a/6, Consequences bead 2). The
+    # EXECUTABLE PROOF of the `RevMap` ADT: a hand-built `VMProgram` (no
+    # Bennett.jl ingest — the `Dict`→`IRMap*` recognition arm is BLOCKED on
+    # `Bennett-800b`) driven through the FULL interpreter loop. Part A is the
+    # straight-line `fdict` gate (forward vs the `fdict_ref` oracle +
+    # round-trip BOTH via L3 fallback and via the L2 `(key, prior)` inverse,
+    # the M8.2 blind-spot discipline); Part B is a GENUINE back-edge loop CFG
+    # (ConditionalEntry/Exit + back-edge, `Define`-built like collatz) whose
+    # body does an IRMapInsert AND an IRMapGet into a RE-DEFINED dest each
+    # iteration — the cross-iteration crux — asserting a MIXED L2-insert /
+    # L3-control-flow round-trip to empty history (ADR 0008 Finding 3 makes
+    # `IState.==` SEE the revmap). Complements the OP-level `test_revmap.jl`
+    # (does NOT duplicate it). Sits right after its op-unit sibling.
+    include("test_revmap_roundtrip.jl")
     # M8.3 — mutation-proof harness for per-instruction inverse
     # (`bennettvm-2kl`). Sits AFTER test_per_step_inverse.jl because
     # the harness depends on the `per_step_inverse_check` scaffold
