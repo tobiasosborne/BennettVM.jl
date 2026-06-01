@@ -7,6 +7,68 @@
 
 ---
 
+## Session — 2026-06-01 — Case B VM-side (RevMap) + opcode coverage + FP ADR
+
+**Agents:** Opus 4.8 (1M) orchestrator, foreground. Per-bead delegation: Opus
+coding subagents + Sonnet hostile reviewers. Serial Julia (Rule 7); the one
+non-Julia task (the FP ADR) ran concurrently with a Julia test agent — the only
+permitted parallelism. (Note: this WORKLOG had drifted — its previous top was
+Session 4; Sessions 5–11, incl. the M5–M8 milestones, the collatz keystone, and
+the `target=:reversible_vm` dispatch arm + Case A `frtN`, are recorded in git +
+HANDOFF.md, not here.)
+
+**Result:** **Suite 3694 → 3942** (clean baseline confirmed at session start).
+6 commits pushed. **SC9 Case B VM-side is complete.**
+
+### Bead-by-bead
+- **`jrc` — RevMap ADT + IRMap* ops** (commit `3025464`). ADR 0008's child-bead 1.
+  `const RevMap = Dict{Int64,Int64}` as a dedicated `IState` field (Finding 3 — it
+  MUST live in IState so the round-trip `==`/L3-checkpoint can see it; an external
+  map would spuriously pass and corrupt replay). `IRMapInsert`/`IRMapDelete` mirror
+  `MemoryStore` (L2 predelta, NamedTuple inverse, the `was_present`/`missing`
+  sentinel — hardened so a delete of an absent key round-trips, a senior-grade
+  improvement over ADR Finding 4's bare `(key,old_val)`). `IRMapGet` mirrors
+  `MemoryLoad` (L3-only, `is_injective=false`); absent-key forward fails loud (a
+  Dict get is not zero-init heap). 68 tests, 2 mutation probes RED→GREEN, hostile
+  APPROVE-WITH-NITS (loop-body coverage correctly owned by `l49`).
+- **M_DICT reconciliation** (commit `d48bd90`). Closed `8i5`/`usf`/`l19`
+  (M_DICT.3/.4/.5, written pre-ADR-0008) as superseded: their VM-side ops landed in
+  `jrc`; their "intercept the reject in ingest" framing was debunked by ADR 0008
+  Finding 2; the ingest recognition is owned solely by `0do`. `usf`'s
+  `is_injective(getindex)=true` was factually wrong (ADR 0008 Finding 4 → false).
+- **`l49` — hand-built round-trip gate** (commit `b1789a4`). Part A straight-line
+  `fdict` (both L2 must_cache + L3 paths); Part B a **genuine back-edge loop CFG**
+  (not the documented fallback) proving insert L2 deltas interleave with L3
+  control-flow/get checkpoints across iterations, incl. the `{0=>0}` missing-sentinel
+  case end-to-end. Hostile review caught that the coder's mutation-proof docstring
+  misattributed the RED signal to the aggregate `current==initial` — which STAYS
+  GREEN because `unstep!`'s `s.initial` fallback masks a broken per-op inverse (the
+  M8.2 blind-spot); `per_step_inverse_check` is the real catch. Docstring corrected.
+- **`81y` — ADR 0011, FP inheritance** (commit `6fe925b`). FP = inherited Bennett.jl
+  SoftFloat dispatch (UInt64 + `IRCall` to `soft_f*`); resolves PRD §8.1. Honest:
+  decision only, `IRCall` is a GAP, wiring is `8ox` (unblocked). Surfaced two PRD
+  inaccuracies (`soft_uitofp` absent; 60 exports not ~30) — fold into `278`/`bk9`.
+- **`d7t` — executable opcode-coverage matrix** (commit `32b4b7d`). 16 IRInst rows
+  asserted vs live `lower_vm`; `testset 0` pins the taxonomy via `subtypes(IRInst)`
+  (needs `InteractiveUtils` in the test target — Pkg.test sandbox only sees declared
+  deps). No discrepancy vs `docs/coverage-matrix.md`.
+
+### Beads filed / lessons
+- Filed **`gqd`** (P3): unvalidated ConditionalEntry predecessor labels — latent
+  landmine for future backward-dispatch/pebble.
+- Rule 3 paid off repeatedly: a subagent confabulated that ADR 0011 "already
+  existed" (it was new/untracked); another found a broken untracked WIP
+  `test_opcode_coverage.jl`. Verify subagent claims and untracked files.
+- `bd create` flag is `--type`, not `--issue-type` (stale CLAUDE.md example).
+
+### Stopped (user request)
+Stopped cleanly after letting two in-flight independent agents (`d7t`, `81y`)
+finish rather than stranding their work. The cross-repo "both repos together"
+unblocks (`0do` Dict recognition; Case A `mem=:vm` Vector arm) are Rule-14
+Bennett.jl `src/` changes awaiting per-diff user approval — NOT started.
+
+---
+
 ## Session 4 — 2026-05-26 — M4 closed (history layer L3 complete)
 
 **Agents:** Opus 4.7 orchestrator; per-bead delegation pattern — Opus for

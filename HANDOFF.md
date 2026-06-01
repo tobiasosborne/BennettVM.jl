@@ -2,6 +2,82 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## Current state (2026-06-01 — Case B VM-side + opcode coverage + FP ADR)
+
+> Orchestrated session: Opus coders + Sonnet hostile reviewers, serial Julia
+> (Rule 7); the FP ADR (no Julia) ran concurrently with a Julia test agent.
+> Bennett.jl pin `f73a5ed` (unchanged). **Suite 3694 → 3942.** 6 commits
+> pushed this session (`00a5bff..` → HEAD).
+
+### What landed (all pushed, reviewed)
+- **SC9 Case B VM-side is COMPLETE.**
+  - **`jrc`** — `RevMap` reversible-map ADT (`const RevMap = Dict{Int64,Int64}`,
+    a dedicated `IState` field so it rides `==`/`hash`/`deepcopy`/L3-checkpoint,
+    ADR 0008 Finding 3) + `IRMapInsert`/`IRMapGet`/`IRMapDelete` (`src/ir/revmap.jl`).
+    Insert/Delete = L2-predelta non-injective (MemoryStore template, missing-sentinel
+    hardened so absent-key ops round-trip); Get = L3-only (MemoryLoad template),
+    absent-key forward fails loud. 68 unit tests, mutation-proved, hostile APPROVE.
+  - **`l49`** — hand-built round-trip gate (`test/test_revmap_roundtrip.jl`):
+    straight-line `fdict` (oracle `fdict_ref(3,7)==7`, round-trips on BOTH the L2
+    must_cache path and the L3 path) + a **genuine back-edge loop CFG** (insert L2
+    deltas ×n interleaved with L3 control-flow/get checkpoints; n=3 hits the
+    `{0=>0}` missing-sentinel absent-key insert inverse end-to-end). Hostile APPROVE
+    (caught a docstring RED-signal misattribution — the aggregate round-trip is
+    blind to a broken per-op inverse; `per_step_inverse_check` is the real catch,
+    the M8.2 lesson; corrected).
+- **`81y`** — **ADR 0011** (`docs/adr/0011-fp-inheritance.md`): Float64 via inherited
+  Bennett.jl SoftFloat dispatch (UInt64 bit patterns + `IRCall` to `soft_f*`);
+  **resolves PRD §8.1's deferred FP question** (3 v3 schemes rejected, Law 2).
+  Honest scope: decision only — `IRCall` is still a GAP (`ingest.jl` raises); the
+  VM-side `IRCall→soft_f*` wiring is **`8ox` (now unblocked)**.
+- **`d7t`** — executable opcode-coverage matrix (`test/test_opcode_coverage.jl`):
+  16 IRInst rows asserted vs live `lower_vm` (11 DONE + 2 e2e witnesses, 4 GAP
+  fail-loud, IRSwitch N/A; `testset 0` pins the taxonomy via live `subtypes(IRInst)`).
+  No discrepancy vs `docs/coverage-matrix.md`.
+
+### Tracker reconciliation + beads filed
+- Closed **`8i5`/`usf`/`l19`** (M_DICT.3/.4/.5) as **superseded by ADR 0008** —
+  their VM-side op semantics landed in `jrc`; the "intercept the reject in ingest"
+  framing was debunked by ADR 0008 Finding 2; residual ingest recognition is owned
+  by `0do`. (`usf`'s `is_injective(getindex)=true` was WRONG — corrected to false.)
+- Filed **`gqd`** (P3): ConditionalEntry predecessor labels aren't validated vs the
+  LabelTable — sound today (forward-only/L3 never dereference them), latent landmine
+  for a future backward-dispatch/pebble pass. From `l49` review.
+
+### Findings to fold into the existing PRD-patch beads (`278`/`bk9`)
+ADR 0011 surfaced two PRD inaccuracies (verified vs Bennett.jl src): PRD §3.6 l.544
+cites **`soft_uitofp` which does NOT exist** (only `soft_sitofp`); and SoftFloatLib
+exports **60** `soft_*` symbols, not the "~30"/"32 primitives" the stale comment says.
+
+### The cross-repo "both repos together" gate (Rule 14 — needs USER approval)
+The Case A/B *end-to-end* unblocks are Bennett.jl `src/` changes I did NOT touch:
+- **`0do`** — Bennett.jl `Dict→IRMap*` recognition arm (`mem=:vm`). Unblocks
+  `7xa` (e2e `fdict`, SC9 Case B). **Research-grade** (Bennett-800b: `optimize=true`
+  inlines Dict ops to raw hash arithmetic, no callee boundary — no known solution).
+- **Case A `mem=:vm` Vector arm** (Julia `push!`/`Vector`, bead `xkl`/task#11): drop
+  the GC-TLS inline-asm, emit dynamic-N `IRAlloca`/load/store past the GC wall.
+The C/`.ll` `frtN` form of Case A already round-trips (`xld`, done). Surface the
+specific diff for per-diff approval before any Bennett.jl `src/` edit.
+
+### Next ready BennettVM work (no approval needed)
+- **`8ox`** (M_FP.2, **now unblocked** by ADR 0011) — wire `IRCall→soft_f*` dispatch
+  in ingest; the gate to FP-in-VM (SC10).
+- **`m6c`** (OutputRef nominal type, PRD §3.5) — but verify it has a consumer
+  (no `run_oracle!` yet; may be premature).
+- **`6r6`** (M1 bench harness), **`5ii`** (Lean toolchain bootstrap — independent,
+  SC7), **`uom`** (L1 Exchange opt), plus P2/P3 cleanups (`ack`, `c0e`, `kuq`, `b5g`, `3ah`).
+- **`bgc`** (width-masking) — NOT a clean pickup: 3 undecided options + de-prioritized
+  ("frtN round-trips without it"); needs a design decision first, not a straight code bead.
+
+### Gotchas this session
+- `bd create` wants **`--type`**, NOT `--issue-type` (the CLAUDE.md Rules-section
+  example is stale; the Quick-Reference block is right).
+- Three pre-existing **untracked WIP files** from prior sessions were found this
+  session (the broken `test_opcode_coverage.jl`; the references/ dirs). Treat
+  untracked files as untrusted WIP and verify before adopting (Rule 3).
+
+---
+
 ## Current state (2026-05-28 — Session 9 close)
 
 - **Phase 2.** Bennett.jl pin `877341e` (current; unchanged). **Suite 3330/3330.**
