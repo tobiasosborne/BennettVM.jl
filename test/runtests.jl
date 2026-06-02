@@ -52,6 +52,19 @@ using BennettVM
     # deferred-`inverse` raise. Sits right after `test_select.jl` — its
     # sibling create; depends only on already-loaded symbols.
     include("test_cast_instruction.jl")
+    # M_FP.2 (ADR 0011 §D1; bead `bennettvm-8ox`) — `SoftCall`, the
+    # SoftFloat-dispatch SSA-create. Op-level unit tests for forward (the
+    # bit-pattern reinterpret through Bennett.jl's `soft_f*` primitives —
+    # fmul/fadd/fsub arithmetic, the negative-bit-pattern carrier, the
+    # ternary `soft_fma` arity, a literal operand), the args-survive /
+    # overwrite-at-forward properties, the `_SOFT_DISPATCH` registry /
+    # allowlist (built from Bennett.jl's FP callee groups), constructor
+    # validation (unknown callee, dest∈args, length mismatch, width domain),
+    # the load-bearing `is_injective(SoftCall) == false` and
+    # `is_l2_capable(SoftCall) == false` pins, and the deferred-`inverse`
+    # raise. Sits right after `test_cast_instruction.jl` — its sibling
+    # create; depends only on already-loaded symbols.
+    include("test_softcall.jl")
     include("test_basic_block.jl")
     include("test_label_table.jl")
     include("test_vmprogram.jl")
@@ -280,6 +293,22 @@ using BennettVM
     # `IState.==` SEE the revmap). Complements the OP-level `test_revmap.jl`
     # (does NOT duplicate it). Sits right after its op-unit sibling.
     include("test_revmap_roundtrip.jl")
+    # SC10 — Float64 round-trip gate, hand-built (bead `bennettvm-8ox`, ADR
+    # 0011 §D1). THE M_FP.2 executable proof: a hand-built back-edge-loop
+    # `VMProgram` computing `x*x + 3x + 1` for a Float64 input (carried as a
+    # UInt64 bit-pattern) via `SoftCall` nodes (soft_fmul/soft_fadd) driven
+    # through the FULL interpreter loop — `run!` forward asserting the result
+    # bit-pattern EQUALS the native Julia oracle `reinterpret(UInt64,
+    # x*x+3x+1)` bit-for-bit (Rule 4 golden master; SoftFloat is bit-exact
+    # against hardware f64, ADR 0011 D1), then `unrun!` to empty history
+    # (P0.6). The four SoftCall dests are RE-DEFINED every iteration (the
+    # cross-iteration crux), forcing the L3 checkpoint-replay path that
+    # SoftCall reverses through (it is NOT l2-capable); the `per_step_
+    # inverse_check` scaffold catches a broken intermediate reverse the
+    # aggregate round-trip would mask. Sits after `test_revmap_roundtrip.jl`
+    # and consumes the M8.2 `per_step_inverse_check` scaffold (re-include-
+    # guarded), so it follows `test_per_step_inverse.jl`.
+    include("test_fp_roundtrip.jl")
     # M8.3 — mutation-proof harness for per-instruction inverse
     # (`bennettvm-2kl`). Sits AFTER test_per_step_inverse.jl because
     # the harness depends on the `per_step_inverse_check` scaffold

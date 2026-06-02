@@ -322,6 +322,37 @@ include("ir/alloca.jl")
 # `is_l2_capable = true`). v1 is a SINGLE map per IState; multi-map is a
 # follow-up bead. Not yet exported.
 include("ir/revmap.jl")
+# M_FP.2 (ADR 0011 §D1; bead `bennettvm-8ox`) — `SoftCall`, the
+# SoftFloat-dispatch SSA-create + its `_SOFT_DISPATCH` registry/allowlist.
+# LLVM `IRCall` to a `soft_f*` callee (`call @j_soft_fadd`, …) lowers to a
+# `SoftCall(dest, callee_name, args, arg_widths, ret_width)` whose forward
+# resolves the registry (built once at load from Bennett.jl's
+# `_CALLEES_FP_BINARY` / `_UNARY` / `_ROUND` / `_CONV` groups,
+# `../Bennett.jl/src/callees.jl`), reinterprets each Int64 arg to its
+# UInt32/UInt64 bit-pattern, calls the host soft function, and writes the
+# bit-pattern result back to `s.locals[dest]` — the integer-only inheritance
+# of Bennett.jl's bit-exact Float64 dispatch (ADR 0011 D1; BennettVM writes
+# NO FP-reversibility code of its own). A non-destructive create over
+# bit-patterns — the `Define` / `CastInstruction` template, NOT the
+# destructive `ArithmeticAssignment` (deletes its source, caps arity at two)
+# and NOT the RSSA reversible-subroutine `CallInstruction` (a soft_f* is an
+# opaque host primitive, not a VM routine to uncall). Reuses `_resolve`
+# (from `arithmetic_assignment.jl`, Law 2) AND `_low_mask` (from
+# `cast_instruction.jl`), so MUST follow BOTH; placed right after
+# `revmap.jl` and BEFORE `history/Injective.jl` (which PINS
+# `is_injective(::Type{SoftCall}) = false` — the include MUST precede
+# Injective so the specialisation can dispatch on the concrete type).
+# Classified NON-injective: FP ops are generally not locally invertible
+# (rounding/truncation lose bits; the result does not determine the
+# operands) and in a loop the same SSA dest is redefined each iteration, so
+# per Rule 1 it is conservatively `false` and reversed EXCLUSIVELY via L3
+# checkpoint-replay (NO `make_delta`, NO `predelta_payload`, so
+# `is_l2_capable == false`). Its per-instruction `inverse()` is NOT on the
+# L3 replay path and is deferred (raises descriptively, the `Define` /
+# `CastInstruction` pattern). Float32 is rejected upstream (ADR 0011 D2,
+# double-rounding); a pure-Float64 program (the SC10 gate) never emits an
+# f32-result `soft_fptrunc` as its output. Not yet exported.
+include("ir/softcall_instruction.jl")
 # M6.1 — `is_injective` trait (`bennettvm-9hf`). The L1 "no-log"
 # layer-1 predicate of PRD v4 §3.3: tells the rest of the VM whether
 # an instruction needs a history entry. Type-level `true` for the

@@ -491,6 +491,31 @@ is_injective(::Type{IRMapInsert})::Bool = false
 is_injective(::Type{IRMapDelete})::Bool = false
 is_injective(::Type{IRMapGet})::Bool    = false
 
+# -----------------------------------------------------------------------------
+# Type-level `false` pin — `SoftCall` (M_FP.2, ADR 0011 §D1).
+# -----------------------------------------------------------------------------
+#
+# `SoftCall` (`src/ir/softcall_instruction.jl`) is the SoftFloat-dispatch
+# SSA-create `dest := soft_f*(args...)` over integer bit-patterns, the
+# lowering target for LLVM `IRCall` to a registered `soft_f*` callee
+# (ADR 0011 §D1; Float64 arrives as UInt64 bit-patterns). It is
+# conservatively NON-injective for TWO reasons: (1) FP ops are generally not
+# locally invertible — `soft_fadd(a,b)` does not determine `a` and `b`,
+# `soft_fmul` by a non-unit and `soft_fptrunc` lose bits to rounding /
+# truncation, so the forward step is not a bijection on the slice it
+# touches; (2) in a loop the same SSA name `dest` is redefined each
+# iteration, so a `SoftCall` may OVERWRITE a prior value (the
+# cross-iteration crux shared with `Define` / `CastInstruction` /
+# `MemoryLoad`, ADR 0012), and the static type-level trait cannot see
+# runtime freshness. Per Rule 1 ("fail safe — push when in doubt") it is
+# `false`, forcing the M6.2/M7.6 push gate to emit L3 `CheckpointEntry`s
+# around every `SoftCall`; `unstep!` then reverses it via checkpoint-replay
+# (`src/history/Replay.jl`), which never calls the soft call's deferred
+# per-instruction `inverse()`. `SoftCall` has NO L2 path (no `make_delta`,
+# no `predelta_payload` → `is_l2_capable == false`), so it is reversed L3-
+# ONLY — `compute_must_cache` never selects it. Do NOT mark this `true`.
+is_injective(::Type{SoftCall})::Bool = false
+
 """
     is_injective(x::ArithmeticAssignment) -> Bool
 

@@ -115,10 +115,19 @@ IEEE-754 floating-point binary-arithmetic opcode symbols that
 **FP ops do NOT arrive in `Bennett.ParsedIR` as `Bennett.IRBinOp`.**
 They arrive as `Bennett.IRCall` whose `callee` is one of
 `Bennett.soft_fadd` / `soft_fsub` / `soft_fmul` / `soft_fdiv` —
-Bennett.jl's SoftFloat library wrappers (PRD v4 §3.6). The M_FP
-lowering pass translates each such call into an
-`ArithmeticAssignment` whose `modop` is the matching symbol from
-this tuple.
+Bennett.jl's SoftFloat library wrappers (PRD v4 §3.6).
+
+**Landing target (M_FP.2, ADR 0011 §D1):** a SoftFloat call arrives
+as an `IRCall` to a `soft_f*` callee and lowers to a dedicated
+`SoftCall` instruction (`src/ir/softcall_instruction.jl`) — a
+non-destructive bit-pattern SSA-create executed by calling the host
+`soft_f*` function. It does **NOT** lower to an `ArithmeticAssignment`
+(an earlier draft of this docstring said so; that was rejected because
+`ArithmeticAssignment` destroys an operand, caps arity at 2 — breaking
+`soft_fma` — and cannot carry the unary conversions `soft_fpext`/
+`soft_fptrunc`; see the `SoftCall` docstring). This tuple is retained
+only for op *classification* (e.g. `is_binary_operator`), not as a
+lowering modop.
 
 Any M2.x code that assumes `:fadd` etc. flow through the `IRBinOp`
 dispatch arm will **silently fail** on FP programs: the IRBinOp arm

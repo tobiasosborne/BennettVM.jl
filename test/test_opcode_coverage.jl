@@ -9,7 +9,11 @@
 # **16** concrete Bennett.jl `IRInst` subtypes in one of three ways —
 # **DONE** (lowers to a documented VM instruction), **GAP** (raises a
 # Rule-1 fail-loud error naming the unsupported op), or **N/A** (a
-# frontend-pre-expanded shape that never reaches BennettVM). Prose rots.
+# frontend-pre-expanded shape that never reaches BennettVM). As of M_FP.2
+# (bead `bennettvm-8ox`, ADR 0011) `IRCall` (row 13) moved GAP → DONE for a
+# `soft_f*` callee (lowers to `SoftCall`); a NON-soft callee still raises
+# loud (the allowlist boundary). The tally is now 12 DONE / 3 GAP / 1 N/A.
+# Prose rots.
 # This file turns every row into an `@test`, so a future change to
 # `_lower_body_inst` / `_successors` / `_lower_alloca!` that silently
 # starts (or stops) handling a subtype trips a RED test here, cross-
@@ -21,7 +25,7 @@
 #
 # # What each subtype testset asserts (Rule 4 — never bare "didn't throw")
 #
-# DONE (11): a minimal hand-built `ParsedIR` fragment containing the
+# DONE (12): a minimal hand-built `ParsedIR` fragment containing the
 #   subtype is run through the REAL `lower_vm`; the test asserts the
 #   resulting `VMProgram`'s entry block (or exit marker) contains the
 #   *documented* VM instruction TYPE (`IRBinOp → Define`, `IRCast →
@@ -40,12 +44,15 @@
 #   existing collatz / matrix_sum / memory-floor round-trip tests already
 #   prove the dynamics; this file proves the COVERAGE claim, once per row).
 #
-# GAP (4): a `ParsedIR` fragment containing the GAP subtype is run through
+# GAP (3): a `ParsedIR` fragment containing the GAP subtype is run through
 #   `lower_vm`; the test asserts it raises an `ErrorException` whose message
-#   NAMES the unsupported op (Rule 1 fail-loud). All four are non-terminator
-#   `IRInst`s, so they fall through `_lower_body_inst`'s final `else`
-#   (`src/ir/ingest.jl:286`) which interpolates `typeof(inst)` into the
-#   message — verified empirically this session for all four.
+#   NAMES the unsupported op (Rule 1 fail-loud). All three (IRPtrOffset,
+#   IRInsertValue, IRExtractValue) are non-terminator `IRInst`s, so they fall
+#   through `_lower_body_inst`'s final `else` which interpolates
+#   `typeof(inst)` into the message — verified empirically. (`IRCall` left
+#   this group at M_FP.2: a soft_f* callee now lowers to `SoftCall`; only a
+#   NON-soft callee raises, via the SoftCall allowlist rather than the final
+#   `else` — see row 13's testset.)
 #
 # N/A (1) `IRSwitch`: the matrix records it is pre-expanded by
 #   `_expand_switches` (Bennett.jl `extract/module_walk.jl`) into
@@ -289,7 +296,9 @@ end
 
     # =================================================================
     # DONE — END-TO-END round-trip witnesses (Rule 4: known value).
-    # Together these run ALL 11 DONE subtypes through run!/unrun!.
+    # Together these run 11 of the 12 DONE subtypes through run!/unrun!.
+    # The 12th (IRCall → SoftCall, M_FP.2) is round-tripped end-to-end in
+    # test_fp_roundtrip.jl and asserted per-subtype in row 13 below.
     # =================================================================
 
     # Witness #1 — control-flow quintet: IRICmp, IRBinOp, IRBranch, IRPhi,
@@ -406,15 +415,36 @@ end
         @test occursin("unsupported IRInst body subtype", e.msg)
     end
 
-    # Row 13 — IRCall (GAP): SoftFloat wrappers / general callee inline.
-    @testset "(13) GAP IRCall → raises naming IRCall" begin
+    # Row 13 — IRCall → SoftCall (DONE at M_FP.2; ADR 0011 §D1, ingest.jl).
+    # A `soft_f*` callee lowers to a `SoftCall` (the SoftFloat-dispatch
+    # create); a NON-soft callee (a general host inline) still raises loud,
+    # via the SoftCall allowlist (`_SOFT_DISPATCH`), NOT the `_lower_body_inst`
+    # final `else`. Both halves are asserted here (the row's full contract).
+    @testset "(13) DONE IRCall(soft_f*) → SoftCall; non-soft raises" begin
+        # DONE half — a soft_f* callee lowers to a SoftCall (f64 operands).
+        _, t = _coverage_lower(
+            [Bennett.IRCall(:__d, Bennett.soft_fadd,
+                            Bennett.IROperand[Bennett.SSAOperand(:__x),
+                                              Bennett.ConstOperand(0)],
+                            [64, 64], 64)],
+            Bennett.IRRet(Bennett.SSAOperand(:__d), 64);
+            args=[(:__x, 64)], ret=[64])
+        @test BennettVM.SoftCall in t
+
+        # Allowlist half — a non-soft callee (here `identity`) is NOT a
+        # recognised SoftFloat primitive, so the SoftCall constructor fails
+        # loud naming the rejected callee (Rule 1). The message names the
+        # callee and the allowlist, not "unsupported IRInst body subtype"
+        # (that's the `else`-arm GAP message; non-soft IRCall now raises one
+        # step earlier, in SoftCall's constructor).
         e = _coverage_raise(
             [Bennett.IRCall(:__d, identity,
                             Bennett.IROperand[Bennett.SSAOperand(:__x)],
                             [32], 32)], _ret_x())
         @test e isa ErrorException
-        @test occursin("IRCall", e.msg)
-        @test occursin("unsupported IRInst body subtype", e.msg)
+        @test occursin("SoftCall", e.msg)
+        @test occursin("identity", e.msg)
+        @test occursin("SoftFloat", e.msg)
     end
 
     # =================================================================

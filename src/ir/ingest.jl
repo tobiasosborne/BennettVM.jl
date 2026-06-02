@@ -281,17 +281,49 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
                   "(Rule 1 fail-loud).")
         return VarGEP(inst.dest, inst.base.name,
                       _lower_operand(inst.index), Int64(1))
+    elseif inst isa Bennett.IRCall
+        # LLVM `call @j_soft_f*` → the SoftFloat-dispatch SSA-create (ADR
+        # 0011 §D1; M_FP.2, bead `bennettvm-8ox`). A Float64 program arrives
+        # at BennettVM as an INTEGER program over UInt64 bit-patterns, every
+        # FP op being an `IRCall` to a registered `soft_f*` callee — BennettVM
+        # inherits Bennett.jl's bit-exact SoftFloat dispatch wholesale and
+        # writes NO FP-reversibility code of its own (ADR 0011 D1). The callee
+        # is stored language-neutrally as `nameof(inst.callee)` (a Symbol),
+        # NOT the Function (ADR 0013 callee_name direction); the SoftCall
+        # constructor validates it against the `_SOFT_DISPATCH` allowlist
+        # (built from Bennett.jl's FP callee groups). A NON-soft callee (a
+        # general host call) is NOT a recognised reversible-by-replay
+        # primitive — the SoftCall constructor's `haskey(_SOFT_DISPATCH, …)`
+        # check FAILS LOUD on it (Rule 1), so this arm does not silently
+        # accept an arbitrary `IRCall`. The args are READ, never destroyed —
+        # the non-destructive create property (the `Define` template, NOT the
+        # destructive `ArithmeticAssignment`; NOT the RSSA reversible-
+        # subroutine `CallInstruction`, a soft_f* being an opaque host
+        # primitive). Operands may be SSA refs or LLVM constants, handled by
+        # `_lower_operand`. arg_widths / ret_width carry the f32(UInt32) /
+        # f64(UInt64) bit-width metadata `SoftCall.forward` reinterprets with.
+        # Float32-as-OUTPUT (the double-rounding case, ADR 0011 D2) is rejected
+        # upstream in Bennett.jl; a pure-Float64 program (the SC10 gate) never
+        # emits an f32-result `soft_fptrunc` as its output (the conversion
+        # callees are recognised as legal intermediates; full f32-output
+        # rejection at the program boundary is a documented follow-on, not
+        # silently wrong here).
+        return SoftCall(inst.dest, nameof(inst.callee),
+                        Union{Symbol,Int64}[_lower_operand(a)
+                                            for a in inst.args],
+                        inst.arg_widths, inst.ret_width)
     elseif inst isa Bennett.IRPhi
         return nothing   # φ → block parameter; not a body instruction.
     else
         error("lower_vm: unsupported IRInst body subtype ", typeof(inst),
               " — the slice handles IRBinOp / IRICmp / IRSelect / IRPhi ",
               "(ADR 0012), IRCast (ADR 0013 §D-5), IRStore / IRLoad (the ",
-              "scalar memory floor, ADR 0014 §D2), and IRVarGEP (the array ",
-              "element-address create, ADR 0009 Decision 2b) only. IRAlloca ",
-              "is lowered at the call site via the bump allocator (ADR 0014 ",
-              "§D1). IRPtrOffset / IRExtractValue / IRCall are deferred ",
-              "(Rule 1).")
+              "scalar memory floor, ADR 0014 §D2), IRVarGEP (the array ",
+              "element-address create, ADR 0009 Decision 2b), and IRCall to a ",
+              "soft_f* callee (the SoftFloat-dispatch create, ADR 0011 §D1) ",
+              "only. IRAlloca is lowered at the call site via the bump ",
+              "allocator (ADR 0014 §D1). IRPtrOffset / IRExtractValue are ",
+              "deferred (Rule 1).")
     end
 end
 
