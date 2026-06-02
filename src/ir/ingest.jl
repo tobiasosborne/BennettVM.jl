@@ -312,6 +312,34 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
                         Union{Symbol,Int64}[_lower_operand(a)
                                             for a in inst.args],
                         inst.arg_widths, inst.ret_width)
+    elseif inst isa Bennett.IRMapInsert
+        # Bennett.jl `IRMapInsert(key, value)` → the VM-side reversible-map
+        # insert (`src/ir/revmap.jl`; ADR 0008; SC9 Case B). The Dict is an
+        # OPAQUE `RevMap` register — BennettVM does NOT model its hash-table
+        # memory (contrast IRStore/IRVarGEP element traffic); the front-end
+        # `mem=:vm` recogniser already dropped the Dict GC alloc + frame
+        # skeleton and emitted this language-neutral op (ADR 0013 §D-3). The
+        # Bennett-side struct field order is the logical (key, value) — the
+        # value-before-key permutation of the Julia `setindex!(d, v, k)` callee
+        # is un-done by the recogniser, NOT here. v1 RevMap is `Dict{Int64,
+        # Int64}`, so key/value lower to `Union{Symbol,Int64}` via
+        # `_lower_operand`; per-`width` masking is the documented follow-on
+        # (bead `bennettvm-bgc`), and in-range i8 values (fdict's 3,7) store /
+        # round-trip exactly without it. IRMapInsert is void (no SSA dest), so
+        # this returns a real `Instruction`, not `nothing`.
+        return IRMapInsert(_lower_operand(inst.key), _lower_operand(inst.value))
+    elseif inst isa Bennett.IRMapGet
+        # Bennett.jl `IRMapGet(dest, key)` → the VM-side reversible-map read
+        # (`src/ir/revmap.jl`; ADR 0008 Finding 4). `dest` is the SSA name the
+        # map value flows into (the MemoryLoad-style L3-reversed create — its
+        # SSA dest is non-injective on a loop re-definition). The key lowers via
+        # `_lower_operand`.
+        return IRMapGet(inst.dest, _lower_operand(inst.key))
+    elseif inst isa Bennett.IRMapDelete
+        # Bennett.jl `IRMapDelete(key)` → the VM-side reversible-map delete
+        # (`src/ir/revmap.jl`; ADR 0008 Finding 4, with the senior-grade
+        # missing-sentinel hardening for absent-key delete). Void (no SSA dest).
+        return IRMapDelete(_lower_operand(inst.key))
     elseif inst isa Bennett.IRPhi
         return nothing   # φ → block parameter; not a body instruction.
     else
@@ -319,11 +347,12 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
               " — the slice handles IRBinOp / IRICmp / IRSelect / IRPhi ",
               "(ADR 0012), IRCast (ADR 0013 §D-5), IRStore / IRLoad (the ",
               "scalar memory floor, ADR 0014 §D2), IRVarGEP (the array ",
-              "element-address create, ADR 0009 Decision 2b), and IRCall to a ",
-              "soft_f* callee (the SoftFloat-dispatch create, ADR 0011 §D1) ",
-              "only. IRAlloca is lowered at the call site via the bump ",
-              "allocator (ADR 0014 §D1). IRPtrOffset / IRExtractValue are ",
-              "deferred (Rule 1).")
+              "element-address create, ADR 0009 Decision 2b), IRCall to a ",
+              "soft_f* callee (the SoftFloat-dispatch create, ADR 0011 §D1), ",
+              "and IRMapInsert / IRMapGet / IRMapDelete (the reversible-map ",
+              "ops, ADR 0008 / 0013 §D-3, SC9 Case B). IRAlloca is lowered at ",
+              "the call site via the bump allocator (ADR 0014 §D1). ",
+              "IRPtrOffset / IRExtractValue are deferred (Rule 1).")
     end
 end
 

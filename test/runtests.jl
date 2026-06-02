@@ -293,6 +293,17 @@ using BennettVM
     # `IState.==` SEE the revmap). Complements the OP-level `test_revmap.jl`
     # (does NOT duplicate it). Sits right after its op-unit sibling.
     include("test_revmap_roundtrip.jl")
+    # SC9 Case B — THE Dict round-trip gate (bead `bennettvm-7xa`). Part A
+    # drives the EXACT fdict ParsedIR (IRMapInsert+IRMapGet) through the REAL
+    # lower_vm ingest → VMProgram → forward (fdict(3,7)==7 vs oracle) → unrun!
+    # to empty history under L2+L3 + per-step-inverse. Part B asserts the
+    # Bennett.jl mem=:vm recogniser rewrites setindex!(dict,v,k) →
+    # IRMapInsert(key=k,value=v) (value-before-key un-permuted) + drops the GC
+    # skeleton. Part C asserts the bare-fdict inlined-getindex blocker fails
+    # LOUD (Rule 1) — the documented gap, in Bennett.jl front-end inlining, not
+    # the VM/ingest half (Part A proves that complete). Sits right after its
+    # hand-built-VMProgram sibling.
+    include("test_dict_roundtrip.jl")
     # SC10 — Float64 round-trip gate, hand-built (bead `bennettvm-8ox`, ADR
     # 0011 §D1). THE M_FP.2 executable proof: a hand-built back-edge-loop
     # `VMProgram` computing `x*x + 3x + 1` for a Float64 input (carried as a

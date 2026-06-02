@@ -9,13 +9,22 @@
 > that refresh: 11 DONE / 4 GAP / 1 N/A, matching ADR 0003 §D4.
 > **Updated 2026-06-02 (M_FP.2, bead `bennettvm-8ox`):** `IRCall`
 > (soft_f* → `SoftCall`) moved GAP→DONE — new tally **12 DONE / 3 GAP /
-> 1 N/A** (see body tally below). Mirrors PRD v4 §3.6.1
-> (maximum-LLVM-opcode-coverage north-star).
+> 1 N/A** (see body tally below). **Updated 2026-06-02 (M_DICT, beads
+> `bennettvm-0do`/`7xa`):** three language-neutral map ops `IRMapInsert`/
+> `IRMapGet`/`IRMapDelete` were added to Bennett.jl `ir_types.jl` (16→**19**
+> concrete `IRInst` subtypes) and ingest 1:1 into BennettVM's VM-side
+> `IRMap*` — all DONE at the ingest level — new tally **15 DONE / 3 GAP /
+> 1 N/A**. (Front-end recognition of a bare Julia `Dict` is partial: the
+> `setindex!` write recognises, the inlined `getindex` read is blocked —
+> see `test/test_dict_roundtrip.jl` Part C / bead `bennettvm-0do`.) Mirrors
+> PRD v4 §3.6.1 (maximum-LLVM-opcode-coverage north-star).
 
 ## The taxonomy
 
-Bennett.jl defines **16** concrete `IRInst` subtypes (the bead's "17 at
-pin 5731cec" was off by one). Source: `Bennett.jl/src/ir_types.jl`
+Bennett.jl defines **19** concrete `IRInst` subtypes: the 16 pre-M_DICT
+(the bead's "17 at pin 5731cec" was off by one) plus the three `IRMap*`
+ops (`IRMapInsert`/`IRMapGet`/`IRMapDelete`) added by M_DICT (SC9 Case B).
+Source: `Bennett.jl/src/ir_types.jl`
 (grep `<: IRInst`). BennettVM's ingest (`src/ir/ingest.jl`) dispatches on
 these in `_lower_body_inst` (line 202), `_successors` (line 416), and the
 per-block `_lower_alloca!` (line 337, for `IRAlloca`).
@@ -38,11 +47,15 @@ per-block `_lower_alloca!` (line 337, for `IRAlloca`).
 | 14 | `IRBranch` (:239) | `Conditional`/`UnconditionalExit` + trampoline | **DONE** | critical-edge split; `_successors` ingest.jl:416 (ADR 0012 §D4) |
 | 15 | `IRSwitch` (:245) | *(pre-expanded by frontend)* | **N/A** | `_expand_switches` (module_walk.jl:262) rewrites every switch to IRICmp/IRBranch **before** ParsedIR is returned — never reaches BennettVM. No work needed. |
 | 16 | `IRPhi` (:259) | block param + critical-edge trampoline | **DONE** | φ-resolution; ingest.jl:284/394 (Mogensen RSSA §3) |
+| 17 | `IRMapInsert` (M_DICT) | `BennettVM.IRMapInsert` | **DONE** | Dict `setindex!` → reversible-map insert; L2 `(key,prior)` delta; ingest.jl IRMap* arm (ADR 0008; SC9 Case B). Front-end recog: `setindex!` write done; bare-`fdict` read blocked (Part C / `0do`). |
+| 18 | `IRMapGet` (M_DICT) | `BennettVM.IRMapGet` | **DONE** | Dict `getindex` → reversible-map read; L3 baseline (MemoryLoad pattern); ingest.jl IRMap* arm (ADR 0008). Reachable from a surviving `getindex` callee; inlined-getindex front-end recog is the open blocker. |
+| 19 | `IRMapDelete` (M_DICT) | `BennettVM.IRMapDelete` | **DONE** | Dict `delete!` → reversible-map delete; L2 `(key,old)` delta; ingest.jl IRMap* arm (ADR 0008). |
 
-**Tally (M_FP.2, bead `bennettvm-8ox`):** **12 DONE** (`IRBinOp`, `IRICmp`,
-`IRSelect`, `IRRet`, `IRCast`, `IRBranch`, `IRPhi`, `IRAlloca`
+**Tally (M_DICT, beads `bennettvm-0do`/`7xa`):** **15 DONE** (`IRBinOp`,
+`IRICmp`, `IRSelect`, `IRRet`, `IRCast`, `IRBranch`, `IRPhi`, `IRAlloca`
 [static+dynamic], `IRStore`, `IRLoad`, `IRVarGEP`, `IRCall` [soft_f* →
-`SoftCall`]), **3 GAP** (`IRInsertValue`, `IRExtractValue`, `IRPtrOffset`),
+`SoftCall`], `IRMapInsert`, `IRMapGet`, `IRMapDelete`), **3 GAP**
+(`IRInsertValue`, `IRExtractValue`, `IRPtrOffset`),
 **1 N/A** (`IRSwitch`, frontend-pre-expanded). The 2026-05-28 audit recorded
 6 DONE / 9 GAP; the deltas since are `IRCast` (ADR 0013), four of the five
 memory-quintet opcodes (`IRAlloca`/`IRStore`/`IRLoad`/`IRVarGEP`; ADR

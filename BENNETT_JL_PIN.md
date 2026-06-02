@@ -3,10 +3,26 @@
 Per PRD v3 §7.5 and CLAUDE.md Rule 14, BennettVM.jl pins Bennett.jl
 during initial development to insulate against frontend churn.
 
-**Pinned SHA:** `f73a5ed` (Bennett-33zr: target=:reversible_vm dispatch arm)
-**Pinned date:** 2026-05-31 (repinned from `877341ec388004a69636ac4530d4d9abf2439486` of 2026-05-26)
+**Pinned SHA:** `b234496` (Bennett-800b: mem=:vm Dict→IRMap* recognition arm)
+**Pinned date:** 2026-06-02 (repinned from `f73a5ed` of 2026-05-31)
 **Bennett.jl HEAD commit at pin time:**
-`Bennett-33zr: target=:reversible_vm dispatch arm — registration hook to BennettVM`
+`Bennett-800b: mem=:vm Dict→IRMap* recognition arm (setindex! write side; SC9 Case B)`
+
+## Repin rationale (2026-06-02)
+
+SC9 Case B (Dict) landed its front-end recognition arm in Bennett.jl
+`src/extract/dict_vm.jl` + three new `IRInst` types (`IRMapInsert`/
+`IRMapGet`/`IRMapDelete`) in `ir_types.jl`, fed by the new `mem=:vm`
+extraction mode (`module_walk.jl` / `entry.jl`). BennettVM's ingest now
+consumes those `IRMap*` ParsedIR nodes, so BennettVM MUST test against a
+Bennett.jl that defines them — repinned to `b234496`. Additive change
+(`mem=:auto`/`:heap`/`:persistent` byte-identical). Validation at pin:
+Bennett.jl full `Pkg.test` 688504 Pass / 1 pre-existing Broken; BennettVM
+full suite 4558/4558. The `setindex!` write side + VM-side reversible map
+are proven (`test/test_dict_roundtrip.jl` Parts A+B); the bare-`fdict`
+read is blocked on an inlined-`getindex` recogniser (bead `bennettvm-9i1`
+/ Bennett-800b read-side). Rule-14 Bennett.jl `src/` change made under
+explicit user approval (2026-06-02).
 
 ## Repin rationale (2026-05-31)
 

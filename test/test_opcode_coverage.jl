@@ -6,13 +6,16 @@
 #
 # `docs/coverage-matrix.md` is a *prose* audit: it claims, row by row, that
 # BennettVM's `lower_vm` ingest (`src/ir/ingest.jl`) handles each of the
-# **16** concrete Bennett.jl `IRInst` subtypes in one of three ways —
+# **19** concrete Bennett.jl `IRInst` subtypes in one of three ways —
 # **DONE** (lowers to a documented VM instruction), **GAP** (raises a
 # Rule-1 fail-loud error naming the unsupported op), or **N/A** (a
 # frontend-pre-expanded shape that never reaches BennettVM). As of M_FP.2
 # (bead `bennettvm-8ox`, ADR 0011) `IRCall` (row 13) moved GAP → DONE for a
 # `soft_f*` callee (lowers to `SoftCall`); a NON-soft callee still raises
-# loud (the allowlist boundary). The tally is now 12 DONE / 3 GAP / 1 N/A.
+# loud (the allowlist boundary). As of M_DICT (beads `bennettvm-0do`/`7xa`)
+# the three language-neutral map ops (`IRMapInsert`/`IRMapGet`/`IRMapDelete`,
+# rows 17-19) ingest 1:1 to the VM-side IRMap* ops — all DONE. The tally is
+# now 15 DONE / 3 GAP / 1 N/A.
 # Prose rots.
 # This file turns every row into an `@test`, so a future change to
 # `_lower_body_inst` / `_successors` / `_lower_alloca!` that silently
@@ -21,11 +24,11 @@
 #
 # The bead text and the matrix once disagreed on the count ("17 at pin
 # 5731cec" vs the corrected **16**); the matrix is the authority and this
-# file asserts the 16-way taxonomy explicitly (testset 0).
+# file asserts the 19-way taxonomy explicitly (testset 0).
 #
 # # What each subtype testset asserts (Rule 4 — never bare "didn't throw")
 #
-# DONE (12): a minimal hand-built `ParsedIR` fragment containing the
+# DONE (15): a minimal hand-built `ParsedIR` fragment containing the
 #   subtype is run through the REAL `lower_vm`; the test asserts the
 #   resulting `VMProgram`'s entry block (or exit marker) contains the
 #   *documented* VM instruction TYPE (`IRBinOp → Define`, `IRCast →
@@ -83,12 +86,12 @@
 #
 # # Ref
 #
-#   * `docs/coverage-matrix.md` — THE authority (16 subtypes, 11/4/1 tally,
+#   * `docs/coverage-matrix.md` — THE authority (19 subtypes, 15/3/1 tally,
 #     each row citing an `ingest.jl` line).
 #   * `src/ir/ingest.jl` — `_lower_body_inst` (:202), `_successors` (:417),
 #     `_lower_alloca!` (:337); the dispatch this file pins.
 #   * `src/lower_vm.jl` — the `lower_vm(parsed)` entry.
-#   * `Bennett.jl/src/ir_types.jl` — the 16 `IRInst` subtype constructors
+#   * `Bennett.jl/src/ir_types.jl` — the 19 `IRInst` subtype constructors
 #     (read-only; Rule 14).
 #   * `test/test_memory_floor.jl` / `test/test_alloca_delta.jl` — the
 #     hand-built ParsedIR idiom reused here.
@@ -101,7 +104,7 @@ using BennettVM
 import Bennett
 # `subtypes` lives in the `InteractiveUtils` stdlib, NOT in `Base` (it
 # is one of the REPL-only reflection utilities). Testset (0) walks the
-# live `Bennett.IRInst` type tree to pin the 16-way taxonomy against
+# live `Bennett.IRInst` type tree to pin the 19-way taxonomy against
 # the matrix, so the reflection import is load-bearing here, not a
 # convenience — without it testset (0) errors `UndefVarError: subtypes`.
 using InteractiveUtils: subtypes
@@ -139,16 +142,21 @@ end
 @testset "IRInst opcode coverage (bennettvm-d7t; mirrors docs/coverage-matrix.md)" begin
 
     # =================================================================
-    # (0) The taxonomy itself: 16 concrete IRInst subtypes, 11/4/1.
+    # (0) The taxonomy itself: 19 concrete IRInst subtypes, 15/3/1.
     #     coverage-matrix.md "The taxonomy" + Tally. The bead said "17";
     #     the matrix corrects it to 16. We assert the count against the
     #     LIVE Bennett.jl type tree so a Bennett.jl pin bump that adds /
     #     removes a subtype trips here (and forces a matrix re-audit).
     # =================================================================
-    @testset "(0) 16 concrete IRInst subtypes (matrix taxonomy)" begin
+    @testset "(0) 19 concrete IRInst subtypes (matrix taxonomy)" begin
         concrete = filter(isconcretetype,
                           subtypes(Bennett.IRInst))
-        @test length(concrete) == 16
+        # 16 base IR opcodes + the 3 language-neutral reversible-map ops
+        # (IRMapInsert/IRMapGet/IRMapDelete, SC9 Case B; ADR 0008 / 0013 §D-3).
+        # These ingest 1:1 to the VM-side IRMap* ops (src/ir/revmap.jl); see
+        # the DONE rows below. The pin moves 16→19 in lockstep with Bennett.jl's
+        # test_q04a subtype pin.
+        @test length(concrete) == 19
         # Every subtype this file references must be one of them (no typo'd
         # phantom type slips through as `Bennett.IRWhatever <: Any`).
         for T in (Bennett.IRBinOp, Bennett.IRICmp, Bennett.IRSelect,
@@ -156,7 +164,8 @@ end
                   Bennett.IRPtrOffset, Bennett.IRVarGEP, Bennett.IRLoad,
                   Bennett.IRStore, Bennett.IRAlloca, Bennett.IRExtractValue,
                   Bennett.IRCall, Bennett.IRBranch, Bennett.IRSwitch,
-                  Bennett.IRPhi)
+                  Bennett.IRPhi,
+                  Bennett.IRMapInsert, Bennett.IRMapGet, Bennett.IRMapDelete)
             @test T <: Bennett.IRInst && isconcretetype(T)
         end
     end
@@ -294,9 +303,37 @@ end
         @test :__m in jb.entry.params
     end
 
+    # Rows 17-19 — IRMapInsert / IRMapGet / IRMapDelete → BennettVM IRMap* ops
+    # (SC9 Case B; ADR 0008 / 0013 §D-3; ingest.jl IRMap* arms). The
+    # language-neutral reversible-map ops the mem=:vm Dict recogniser emits;
+    # the end-to-end dynamics are proven in test_dict_roundtrip.jl Part A.
+    @testset "(17) DONE IRMapInsert → BennettVM.IRMapInsert" begin
+        _, t = _coverage_lower(
+            [Bennett.IRMapInsert(Bennett.SSAOperand(:__x),
+                                 Bennett.ConstOperand(7), 32, 32)], _ret_x())
+        @test BennettVM.IRMapInsert in t
+    end
+
+    @testset "(18) DONE IRMapGet → BennettVM.IRMapGet" begin
+        _, t = _coverage_lower(
+            [Bennett.IRMapInsert(Bennett.SSAOperand(:__x),
+                                 Bennett.ConstOperand(7), 32, 32),
+             Bennett.IRMapGet(:__r, Bennett.SSAOperand(:__x), 32, 32)],
+            Bennett.IRRet(Bennett.SSAOperand(:__r), 32))
+        @test BennettVM.IRMapGet in t
+    end
+
+    @testset "(19) DONE IRMapDelete → BennettVM.IRMapDelete" begin
+        _, t = _coverage_lower(
+            [Bennett.IRMapInsert(Bennett.SSAOperand(:__x),
+                                 Bennett.ConstOperand(7), 32, 32),
+             Bennett.IRMapDelete(Bennett.SSAOperand(:__x), 32)], _ret_x())
+        @test BennettVM.IRMapDelete in t
+    end
+
     # =================================================================
     # DONE — END-TO-END round-trip witnesses (Rule 4: known value).
-    # Together these run 11 of the 12 DONE subtypes through run!/unrun!.
+    # Together these run 11 of the 15 DONE subtypes through run!/unrun!.
     # The 12th (IRCall → SoftCall, M_FP.2) is round-tripped end-to-end in
     # test_fp_roundtrip.jl and asserted per-subtype in row 13 below.
     # =================================================================
