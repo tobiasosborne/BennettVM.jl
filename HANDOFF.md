@@ -2,6 +2,44 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## Current state (2026-06-02 — FP/SC10 landed; Case B write-side end-to-end; Case A plumbing)
+
+> Orchestrated session (user directive: Opus coders, Sonnet hostile reviewers,
+> serial Julia, commit/push regularly, escalate at forks). **User granted
+> Bennett.jl `src/` write access** for the Case A/B end-to-end unblocks (Rule 14
+> satisfied). Bennett.jl repinned `f73a5ed` → **`b234496`**. Three commits pushed:
+> BennettVM `b0ee45a` (FP) + `985f104` (Case B ingest); Bennett.jl `b234496`
+> (mem=:vm Dict arm). Suites at close: **Bennett.jl 688504 Pass / 1 pre-existing
+> Broken; BennettVM 4497 → 4558.**
+
+### ✅ FP / SC10 — DONE (`b0ee45a`; beads `8ox`, `yc6` closed)
+New `SoftCall` instruction (`src/ir/softcall_instruction.jl`) lowers Bennett.jl
+`IRCall`-to-`soft_f*` nodes: a non-destructive bit-pattern SSA-create executed by
+calling the host `soft_f*` fn via a `_SOFT_DISPATCH` allowlist (non-soft callees
+fail loud, Rule 1); `is_injective=false` → L3 reversal. **`reversible_compile(x->x*x+3x+1,
+Float64; target=:reversible_vm)` round-trips bit-exact to empty history (SC10).**
+No Bennett.jl change needed. Hostile-reviewed APPROVE. `frem`/M_FP.3 (`01w`) stays
+blocked — `soft_frem` genuinely doesn't exist. Filed `h0t` (Float32-rejection
+follow-on), `9i1`... see below.
+
+### 🟡 SC9 Case B / Dict — machinery + WRITE side DONE; read side BLOCKED (`985f104` + `b234496`; `0do` closed, `7xa` open)
+The big empirical finding (probe, Julia 1.12.5; memory `sc9-case-b-dict-is-tractable-on-julia` + its correction): **`setindex!` WRITE survives as a clean callee `@j_setindex!_NNN` at both opt levels (recognisable); the `getindex` READ `d[k]` is fully INLINED to raw Int8 hash arithmetic + a `Memory` probe loop + KeyError diamond — NO `@j_getindex` callee.** So:
+- **DONE:** Bennett.jl `mem=:vm` arm (`src/extract/dict_vm.jl`) recognises `setindex!`, drops the GC/Dict skeleton (reusing `heap.jl` dead-skeleton-taint helpers), emits language-neutral `IRMapInsert/IRMapGet/IRMapDelete` (new `IRInst` types in `ir_types.jl`, 16→19 subtypes). BennettVM `ingest.jl` consumes them → VM-side RevMap (already proven). `test/test_dict_roundtrip.jl`: Part A drives REAL `lower_vm` to `fdict(3,7)=7` round-trip (L2+L3+per-step-inverse); Part B proves `setindex!` extraction; **Part C asserts the bare-`fdict` reject is LOUD** (no miscompile). Hostile-reviewed APPROVE — **no silent-miscompile path** in the recogniser's purely-subtractive taint closure.
+- **BLOCKED (`9i1`, research-grade):** the bare-`fdict(Int8,Int8)` end-to-end (`7xa`) needs an **inlined-getindex recogniser** — pattern-match the hash-probe subgraph as `M[k]` + prove the KeyError branch dead (statically undecidable in general; version-fragile). This is Bennett-800b's read-side. `getindex` DOES survive as a callee for **String** keys (not RevMap-compatible). The recogniser FAILS LOUD on it today.
+
+### 🟡 SC9 Case A / dynamic Vector — `mem=:vm` plumbing landed; Memory recogniser is Core (`b234496`; `xkl` open, `M_DYN.7` filed)
+Probe killed the blueprint's premise: on Julia 1.12 `Vector{undef,n}` drags the full `Memory`/GC skeleton (`jl_alloc_genericmemory_unchecked`, `julia.gc_loaded` data-pointer launder, MemoryRef chains, throw diamonds, SIMD-vectorised at `-O2`). The `:heap` recogniser is hardwired for the OPPOSITE (constant-N, loop-free, single-block). **What landed:** the `mem=:vm` mode + TLS-wall handling (additive plumbing in `entry.jl`/`module_walk.jl`). **What's left (`M_DYN.7`, Core):** a recogniser that strips that skeleton → `IRAlloca(dyn)+IRVarGEP+IRStore/IRLoad` (BennettVM already ingests this shape — `frtN.ll` proves it). The C/`.ll` `frtN` remains the near-term Case A proof.
+
+### 🔭 The fork for next session (escalation-worthy — lead's call)
+Both remaining pieces are hard Julia-frontend recognisers:
+- **Case A Memory recogniser (`M_DYN.7`):** hard *engineering*, not undecidable; the sanctioned LLVM-opcode approach. Buildable incrementally with heavy verification (silent-miscompile risk → reuse `heap.jl` liveness-proof discipline + hostile review).
+- **Case B inlined-getindex (`9i1`):** genuinely *research-grade* AND touches the PRD-deferred boundary question (§VIII.2) + ADR 0013's "LLVM-opcode core, no `code_typed`-only path" directive. Options: (a) pattern-match the inlined probe (fragile — advise against); (b) a **Julia-frontend typed-IR adapter** recognising Dict ops *before* LLVM inlining (sound, sidesteps inlining; the output is still language-neutral `IRMap*` so emitter-agnosticism is preserved — but it's the lead's architecture call); (c) accept the partial + an `@noinline`-barrier demonstrator. **Recommend (b) for Case B, pending lead approval; build (a-for-CaseA) the Memory recogniser.**
+
+### Open beads (ready / blocked)
+`9i1` (Case B inlined-getindex, research), `M_DYN.7` (Case A Memory recogniser, Core), `7xa` (e2e fdict — blocked on `9i1`), `xkl` (Case A push!/Vector — blocked on `M_DYN.7`), `01w` (frem — blocked, no `soft_frem`), `h0t` (Float32 rejection), `bgc` (width-masking, still open). Bennett.jl `Bennett-800b` updated with the write-recognisable/read-inlined finding.
+
+---
+
 ## Current state (2026-06-01 — Case B VM-side + opcode coverage + FP ADR)
 
 > Orchestrated session: Opus coders + Sonnet hostile reviewers, serial Julia

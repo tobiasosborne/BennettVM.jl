@@ -7,6 +7,71 @@
 
 ---
 
+## Session — 2026-06-02 — FP/SC10 landed; Case B write-side e2e; Case A plumbing; Bennett.jl repinned
+
+**Agents:** Opus 4.8 (1M) orchestrator, foreground. User directive: Opus coders,
+Sonnet hostile reviewers, serial Julia, commit/push regularly, **escalate at
+forks / "what would a senior expert say"**. User granted **Bennett.jl `src/`
+write access** (Rule 14 satisfied at orchestration level). Bennett.jl repinned
+`f73a5ed` → `b234496`. Commits: `b0ee45a` (FP, BennettVM), `b234496` (Bennett.jl
+mem=:vm Dict arm), `985f104` (Case B ingest, BennettVM). Suites at close:
+Bennett.jl 688504/1-Broken; BennettVM 4497→4558.
+
+### The load-bearing lessons (not derivable from git)
+
+1. **Ground-truth probes beat blueprints — twice.** I sent two read-only
+   investigators + Opus coders armed with a file/line "blueprint." Both coders
+   came back with the blueprint's *premise falsified by a live `code_llvm`/IR
+   probe*. Always probe the actual IR on the live Julia (1.12.5) before trusting
+   a recognition plan. The two surprises:
+   - **Case A:** `Vector{undef,n}` does NOT lower to a clean `frtN`-shaped
+     ParsedIR. Julia 1.12 drags the full `Memory` ABI: `jl_alloc_genericmemory_unchecked`,
+     `julia.gc_loaded` data-pointer launder, MemoryRef `{ptr,ptr,size}` chains,
+     inexact/bounds throw diamonds, **SIMD-vectorised at -O2**. The `mem=:heap`
+     recogniser is hardwired for the opposite (constant-N, loop-free,
+     single-block-collapse). The `:vm` Memory recogniser is a *distinct Core
+     build* (`M_DYN.7`), not a small interception.
+   - **Case B:** the prior "research-grade because `optimize=true` inlines
+     `setindex!`" framing (ADR 0008 Finding 1 / Bennett-800b) is **half-wrong on
+     1.12.5**. The WRITE `setindex!` survives as a clean callee `@j_setindex!_NNN`
+     at *both* opt levels (recognisable). It's the READ `getindex` (`d[k]`) that
+     is fully inlined to raw Int8 hash arithmetic + a `Memory` probe loop + a
+     KeyError diamond — *no* `@j_getindex` callee for an isbits key (verified the
+     IR dump directly; `-O0` doesn't help — inlined at both levels). String keys
+     keep `getindex` as a callee, but aren't RevMap-compatible. → answered
+     Bennett-800b's own "first research step." The bare-`fdict` is blocked on the
+     read, not the write (`9i1`).
+
+2. **A purely-subtractive recogniser is how you avoid silent miscompiles.**
+   `dict_vm.jl` drops *only* proven-dead skeleton (forward-taint closure from
+   GC/alloc/asm/memset/global-load seeds, reusing `heap.jl` helpers), rewrites
+   recognised callees, and **fails loud on everything else** (surviving call,
+   non-skeleton branch, computed instr, a `ret` whose operand isn't a recognised
+   callee result = the inlined-getindex blocker). Hostile review found no
+   silent-miscompile path. This posture is the template for `M_DYN.7`.
+
+3. **Orchestration recovery: a coder hit an API rate-limit on its FINAL report**
+   (after ~30 min / 62 tool-uses of real work). The edits were in the working
+   tree (coders don't commit). I recovered by verifying the tree directly —
+   running the gate (`test_dict_roundtrip.jl` 34/34), reading the recogniser,
+   hostile review, full suites — rather than re-running the coder. Lesson: a
+   killed subagent ≠ lost work; verify the tree.
+
+4. **Pre-push hooks flake under N-way Julia contention.** Bennett.jl's pre-push
+   `Pkg.test()` hook FAILED-FAST during a push while the user's NJOY + PadeTaylor
+   suites were also running Julia — yet the same tree had just passed the full
+   suite (688504/1) and a clean diagnostic re-run showed no error. Rule 7
+   (no-parallel-Julia) is **per-project**; cross-project Julia doesn't violate it
+   but DOES cause precompile-cache contention that can flake a hook. Re-push once
+   contention clears rather than `SKIP_PUSH_TESTS=1`.
+
+5. **Two milestones now bottleneck on hard frontend recognisers** — escalated to
+   the lead (see HANDOFF "The fork"). Case A = hard engineering; Case B read =
+   research-grade + an architecture-directive call (LLVM-opcode core vs a
+   Julia-frontend typed-IR adapter for Dict ops).
+
+---
+
 ## Session — 2026-06-01 — Case B VM-side (RevMap) + opcode coverage + FP ADR
 
 **Agents:** Opus 4.8 (1M) orchestrator, foreground. Per-bead delegation: Opus
