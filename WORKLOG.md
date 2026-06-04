@@ -7,6 +7,100 @@
 
 ---
 
+## Session — 2026-06-04 (PM) — opcode-coverage epic: BVM-only front cleared + dynamic-memory keystone (5 beads; 4722→6308)
+
+**Agents:** Opus 4.8 (1M) orchestrator, foreground. Directive: Opus coders, Sonnet
+hostile reviewers/scouts, serial Julia (Rule 7), commit/push per bead, raise beads,
+"what would a senior expert say", verify-don't-rubber-stamp. Pin unchanged (`231bde6`).
+Epic `bennettvm-x49`. Every change: ground-truth read → (design pass where Core) →
+Opus coder → Sonnet hostile review w/ per-item signoff → orchestrator verifies the
+diff + the soundness-critical parts → full `Pkg.test()` gate → commit + push.
+
+### What landed (5 beads, all committed + pushed; suite 4722 → 6308)
+1. **`ftz` — coverage matrix** (`docs/coverage-matrix.md`): 19 IRInst, 15 COVERED /
+   3 GAP (IRPtrOffset, IRExtractValue, IRInsertValue — all the shared `else` at
+   ingest.jl:370) / 1 N/A (IRSwitch). Corrected stale bead line-numbers (244/346).
+2. **`0kl` — clean-fail-loud completeness** (`9a8d2b8`→`16ec63d`): the north-star's
+   "fail loud cleanly" half. `_NONDETERMINISTIC_CALLEES` guard in the IRCall arm
+   (rand/objectid/time/getpid… → a SPECIFIC "nondeterministic — no replay, doubly
+   fatal" error before the generic SoftCall allowlist) + `test_fail_loud_completeness.jl`
+   pinning every representable impossible construct to a cause-naming error, and
+   honestly documenting atomic/volatile/indirectbr/opaque as upstream-rejected
+   (unrepresentable in ParsedIR). Reviewer caught a phantom `:rdrand` (not a Julia
+   Function name) → removed.
+3. **`h0t` — Float32 ingest-boundary rejection** (`8e2fd67`; ADR 0011 D2). A research
+   pass settled reachability: f32 soft ops are UNREACHABLE from accepted Float64
+   programs (SoftFloat wrapper → integer-only IR; Bennett bars f32 upstream). Sound
+   LOCAL guard: reject a soft op that touches f32 (`ret_width==32 || any(==(32),
+   arg_widths)`) — catches soft_fptrunc/fpext, over-rejects nothing (f64→int yields
+   ret_width=64 + a separate IRCast :trunc). Witness: SC10 gate lowers to 4 SoftCalls,
+   zero f32. Placed at INGEST (test_softcall.jl's direct-construction unit tests
+   untouched).
+4. **`bgc` — width-aware integer ops** (`526173d`; ADR 0012 R1). The ingest dropped
+   IRBinOp/IRICmp `width`, so narrow programs diverged from a native-width oracle on
+   overflow. `_apply_binop` gains `width::Int=64`: each op extracts low-`w` bits and
+   RE-EXTENDS per the op's OWN signedness (sext for sdiv/srem/ashr/signed-cmp; mask
+   for udiv/urem/lshr/unsigned-cmp; low-bits for add/sub/mul/…), masks arithmetic
+   results, returns 0/1 for compares. **Key insight: because every op re-extracts,
+   the stored representation's high bits never matter** → NO IState/Cast/Select/input-
+   binding change. `Define` gains a `width` field (default 64 ⇒ byte-identical no-op;
+   ArithmeticAssignment stays width-64 ⇒ injective ops unchanged). Golden-master vs
+   native Int8: `f(50)=(3·50)÷2` → 203 (was 75). 3 existing i32 tests' oracles moved
+   to the low-32-bit carrier (`& 0xFFFFFFFF`) — branch outcomes verified unchanged
+   (the `:sgt` diamond still takes the same arm).
+5. **`uil` — runtime bump pointer (Case B KEYSTONE)** (`55bb84e`; ADR 0009). Lifts the
+   dynamic-array floor from ONE dynamic alloca to ≥2 (Dict = keys+vals = 2 backings).
+   **Offset design** (chosen for zero churn): `IState.heap_top::Int64` (default 0) is a
+   running OFFSET; `DynAlloca` base = `instr.base + s.heap_top`; forward `heap_top+=n`,
+   inverse `heap_top-=n` (round-trips 0→…→0). Single alloca: `base = instr.base + 0`
+   = byte-identical to pre-uil ⇒ NO VMProgram/initial_state change, no churn to ~111
+   IState call sites. Ingest now admits dynamic-after-dynamic, still fails loud on
+   static-after-dynamic. Two allocas get disjoint offset windows. Reviewer's latent
+   n<0 cursor-corruption defect fixed pre-commit (predelta fail-loud).
+
+### Beads filed this session (follow-ups)
+- **Bennett.jl** (P3, bug): `extract` f32 `fptosi/fptoui/sitofp` fall through to a
+  SILENT `IRCast` (instructions.jl:2344/2367) instead of fail-loud — latent .ll-path
+  miscompile. Found in h0t research.
+- `bennettvm-kmpg` (P3): document/expose the narrow-width `result()` carrier contract
+  (i32 -2 surfaces as 4294967294 post-bgc) + a Select wide-literal note.
+- `bennettvm-9v84` (P3): in-loop / back-edge dynamic alloca (offset model makes it
+  tractable — remove the forward haskey guard + LIFO retract). Blocked-by uil.
+- `bennettvm-s3xr` (P3): static alloca after a dynamic one (mixed layout). Blocked-by uil.
+
+### Load-bearing lessons (not in git)
+- **Resolve design forks at the orchestrator, not in a coder prompt.** bgc looked like
+  "mask Define results" but a native-Int8 golden-master needs sign-AWARE narrow ops
+  (sdiv on a wrapped-negative value) — derived the full LLVM-faithful width/sign model
+  + the "re-extract ⇒ stored form doesn't matter" simplification BEFORE delegating, so
+  the coder got an unambiguous spec. Same for uil: derived the OFFSET design (`base =
+  instr.base + heap_top`) which the scoping agent had left as the absolute-cursor
+  design — the offset form eliminated ALL the test churn the scope feared.
+- **Ground the spec + establish RED empirically first.** A Sonnet probe compiled
+  `f(x::Int8)=(3x)÷2`, dumped the real lowered ops (`:mul`/`:sdiv` width=8), and showed
+  the concrete divergence (VM 75 vs native -53) — the failing test bgc had to turn green.
+- **The collatz-Int8 overflow test is a trap** — a wrapped Int8 collatz trajectory may
+  CYCLE (never reach 1) and hang the oracle; bgc used a straight-line `(3x)÷2` instead.
+- **uil offset insight:** an absolute runtime cursor breaks the heap_top round-trip
+  (advance ≠ n under a `max`); an OFFSET from the frozen base makes advance == n exactly
+  and keeps single-array byte-identical. The disjointness + LIFO-retract was the
+  soundness crux the hostile reviewer proved with worked windows.
+
+### What's next — the cross-repo phase (epic x49 continues)
+The BVM-only correctness/completeness front is DONE. Remaining epic work is cross-repo
+(Bennett.jl recognizers, Rule 14) + each warrants its own design pass:
+- **Case A part-2 (`xkl`):** `6db` push!/pop! lowering (build on uil's heap_top; needs a
+  push! model design pass — length/capacity/topmost-region) + a Bennett.jl push!/growend!
+  recognizer + the e2e gate.
+- **Case B (`tu9`/`90l`/`7xa`):** NOW UNBLOCKED by uil. Generalize the mem=:vm Memory
+  recognizer to the Dict keys/vals backing (Bennett.jl) + the objectid/identity
+  determinism guard (`90l`) + the e2e `fdict` round-trip.
+- **`acq`** (aggregate IRExtractValue/IRInsertValue → multi-slot IState) — BVM-only but a
+  new state model. **`b5x`** blocked on Bennett `xv0u` (IRPtrOffset elem_width).
+  **`4dn`/`01w`** blocked on Bennett soft_fdim/soft_frem/soft_uitofp.
+
+---
+
 ## Session — 2026-06-04 — SC9 CASE A LANDED (dynamic Julia Vector e2e) + route-(b) Dict decision + opcode-coverage plan
 
 **Agents:** Opus 4.8 (1M) orchestrator, foreground. User directive: Opus coders,

@@ -2,6 +2,43 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## ✅ SESSION 2026-06-04 (PM) — opcode-coverage BVM-only front cleared + dynamic-memory keystone
+
+**5 beads landed (all pushed), suite 4722 → 6308.** Orchestrated (Opus coders, Sonnet
+hostile reviewers, serial Julia, per-bead commit/push). Epic `bennettvm-x49`. Pin
+unchanged (`231bde6`). See WORKLOG.md session entry for full detail.
+
+- **`ftz`** — `docs/coverage-matrix.md` (19 IRInst; 15 COVERED / 3 GAP / 1 N/A).
+- **`0kl`** — clean-fail-loud completeness: `_NONDETERMINISTIC_CALLEES` ingest guard +
+  `test_fail_loud_completeness.jl` (the north-star's "fail loud cleanly" half).
+- **`h0t`** — Float32 ingest-boundary rejection (ADR 0011 D2); guard on f32-touching
+  soft ops; SC10 witness proves 0 f32 SoftCalls.
+- **`bgc`** — width-aware integer ops (ADR 0012 R1): `_apply_binop(…, width)` extracts
+  low-`w` bits + re-extends per op signedness; `Define.width` (default 64 = no-op).
+  Full i8 fidelity (golden-master vs native Int8 on overflow). **Carrier-contract
+  change:** narrow negative results now surface as the low-`w` zero-extended form
+  (i32 -2 → 4294967294) — see bead `kmpg`.
+- **`uil`** — runtime bump pointer `IState.heap_top` (OFFSET design): ≥2 dynamic
+  allocas → disjoint windows; round-trips 0→…→0; single-array byte-identical.
+  **This is the Case B keystone (Dict = keys+vals = 2 backings) — Case B is now
+  unblocked.**
+
+**Follow-up beads filed:** Bennett.jl f32-`fptosi/sitofp` silent-`IRCast` bug (P3);
+`kmpg` (result() carrier contract); `9v84` (in-loop alloca); `s3xr` (static-after-
+dynamic). All P3, blocked-by uil where relevant.
+
+**NEXT — the cross-repo phase (each needs a design pass + Bennett.jl Rule-14 work):**
+1. **Case B (`tu9`/`90l`/`7xa`) — now unblocked by uil.** Generalize the mem=:vm Memory
+   recognizer (Bennett.jl) to the Dict keys/vals backing; add the objectid/identity
+   determinism guard (`90l`); e2e `fdict` round-trip (`7xa`).
+2. **Case A part-2 (`6db`→`xkl`):** push!/pop! lowering on top of uil's heap_top (needs
+   a push! model design pass — length/capacity/topmost-region) + a Bennett.jl
+   push!/growend! recognizer + e2e.
+3. BVM-only: `acq` (aggregate → multi-slot IState model). Bennett-blocked: `b5x`
+   (needs Bennett `xv0u` IRPtrOffset elem_width), `4dn`/`01w` (soft_fdim/frem/uitofp).
+
+---
+
 ## DECISION (2026-06-04 — Dict via route (b); DO NOT RELITIGATE) — ADR 0015
 
 > Lead decision, recorded in `docs/adr/0015-dict-route-b-correctness-floor.md`
