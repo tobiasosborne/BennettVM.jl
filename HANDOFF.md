@@ -38,6 +38,26 @@ The `heap.jl` "Dict irreversible by construction" reject is correct for
 `mem=:heap` but is **not** a statement about reversibility in principle — the
 `mem=:vm` route-(b) path makes an isbits `Dict` reversible.
 
+## PLAN (2026-06-04 — full LLVM-opcode coverage) — epic `bennettvm-x49`
+
+> All future Bennett.jl + BennettVM work is focused on this until the pipeline
+> covers every reversibly-possible LLVM opcode. Granular plan + cross-repo bead
+> map: **`docs/opcode-coverage-plan.md`**. Tracking epic **`bennettvm-x49`**.
+
+Phases P1–P7. **Critical path: `m9i` / `Bennett-jfw6`** (the mem=:vm Memory
+recognizer) — the single linchpin unlocking Case A (`xkl`) *and* Case B
+(`tu9`→`7xa`). Beads created/reconciled this session:
+- BVM: epic `x49`; `b5x` (IRPtrOffset), `acq` (aggregate ingest), `0kl`
+  (fail-loud completeness), `4dn` (fdim/uitofp); `9i1` superseded by `o1y`;
+  `7xa` reframed; **`zg5` decoupled from the Lean chain (`↛7zl`)**.
+- Bennett.jl: `Bennett-jfw6` (BG1 Case A recognizer), `Bennett-klgz` (BG2
+  determinism guard), `Bennett-8e1f` (BG3 GEP fill), `Bennett-6bu3` (BG4 struct
+  fill); `Bennett-tfx` un-deferred → BG5 `soft_frem`; `Bennett-800b` retitled to
+  route-(b). Each Bennett.jl src bead carries **Rule 14 (per-diff approval)**.
+
+Out of this goal's scope (separate tracks): min-cut quality (M1), pebble (M9),
+Lean (M11/M12), route-(a) RevMap (`o1y`).
+
 ## Current state (2026-06-02 — FP/SC10 landed; Case B write-side end-to-end; Case A plumbing)
 
 > Orchestrated session (user directive: Opus coders, Sonnet hostile reviewers,
