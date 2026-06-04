@@ -58,6 +58,43 @@ recognizer) — the single linchpin unlocking Case A (`xkl`) *and* Case B
 Out of this goal's scope (separate tracks): min-cut quality (M1), pebble (M9),
 Lean (M11/M12), route-(a) RevMap (`o1y`).
 
+## ✅ SC9 CASE A LANDED (2026-06-04) — dynamic Julia `Vector` round-trips e2e from source
+
+**`Vector{T}(undef,n)` + indexed write/read loop now compiles and reverses under
+`target=:reversible_vm` directly from Julia source** (the linchpin `m9i`/`jfw6`).
+Orchestrated: 2+1 design pass → ADR 0016 → Opus coder → Sonnet hostile review →
+orchestrator caught + fixed a regression → full `Pkg.test()` **4722/4722**.
+
+- **Recognizer** (`Bennett.jl/src/extract/vector_vm*.jl`, 5 files; routed from
+  `module_walk.jl` `mem=:vm` Case A branch, gated so `:auto`/`:heap`/Case-B
+  untouched). Reuses heap.jl's M2/M3 partition + soundness proofs (Law 2). Design:
+  `docs/adr/0016-case-a-mem-vm-recognizer.md`. Extract at `optimize=false`.
+- **Two BennettVM ingest root-cause fixes** surfaced by the real multi-block O0
+  CFG: i1 boolean masking (the `xor i1 %c,true` NOT-idiom; `_lower_bool_operand`)
+  and within-edge SSA-duplicate φ.
+- **Commits:** BennettVM `9933d27` (Case A) + `233d193` (ADR-0016 test plan:
+  Int32/n=0/committed-mutation-proof + adversarial guards); Bennett.jl `1d574f2`
+  (recognizer) + `231bde6` (cond_skel + P-callee fail-loud hardening). Beads
+  `m9i` impl done; `Bennett-jfw6/bal6/msob`, `bennettvm-1z0/y3f2/p1vv` closed.
+- **Process lesson (recorded):** a subagent's standalone `julia test/file.jl`
+  gave a FALSE 143/143 (stale precompile cache) while the hardening was actually
+  broken; the fresh-subprocess `Pkg.test()` caught it (P-callee over-rejected the
+  dead `ijl_bounds_error_int` throw). **Always gate on `Pkg.test()`, never a
+  standalone file run.**
+
+### What's left on Case A / next milestones (epic `x49`)
+- **`xkl` (Case A part 2): `push!`-grown Vector** — the recognizer handles
+  `undef`+index; `push!`/`growend!` + `6db`/`ehp` push!/pop! lowering remain.
+- **Case B (`tu9`/`7xa`):** route-(b) Dict — **blocked on `uil`** (multi-dynamic
+  array: keys+vals = 2 backings; ADR 0016 D8).
+- **FP:** `Bennett-tfx` (BG5 `soft_frem`) → `01w` (frem dispatch); `4dn`
+  (fdim/uitofp).
+- **`b5x` (IRPtrOffset):** blocked on `Bennett-xv0u` (additive `elem_width` — the
+  byte-offset is width-lossy for the cell-addressed VM; `÷8` silently miscompiles
+  non-i64). `acq` (aggregate ingest), `dzd`/`Bennett-8e1f` (multi-index GEP),
+  `Bennett-6bu3` (struct aggregates).
+- Low: `bennettvm-2lgo` (φ-dup multi-edge latent), `bennettvm-5js9` (bool-mask doc).
+
 ## Current state (2026-06-02 — FP/SC10 landed; Case B write-side end-to-end; Case A plumbing)
 
 > Orchestrated session (user directive: Opus coders, Sonnet hostile reviewers,
