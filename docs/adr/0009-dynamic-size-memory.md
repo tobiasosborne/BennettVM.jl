@@ -323,6 +323,74 @@ delta), satisfying the Decision-4 rung-7 "mixed-history loop" gate
 (l.232-241). Both mutation-proofs (delete range off-by-one; pointer-undo
 elided) confirmed RED then restored (Rule 5).
 
+## Decision 2a multi-array refinement (2026-06-04, bead `bennettvm-uil` impl)
+
+The "single dynamic array per routine at a frozen compile-time base" strategy
+of the 2026-05-31 refinement (point (i)) is **lifted to ≥2 dynamic-N allocas**
+by threading a runtime bump pointer through `IState`. This is the GATE for SC9
+Case B (a `Dict` has TWO `GenericMemory` backings — keys + vals — exceeding the
+single-dynamic-array floor; ADR 0016 D8).
+
+**The design: `base = instr.base + s.heap_top` (a runtime OFFSET, default 0).**
+`IState` gains a field `heap_top::Int64` (`src/ir/IState.jl`), the running total
+of dynamic cells allocated so far, expressed as an OFFSET from each
+`DynAlloca`'s frozen compile-time base, STARTING AT 0:
+
+  * `DynAlloca.forward` (`src/ir/alloca.jl`) reads `n = s.locals[n_operand]`,
+    materialises `s.locals[dest] = instr.base + s.heap_top`, advances
+    `s.heap_top += n`, and bumps `pc`.
+  * `predelta_payload` captures `base = instr.base + s.heap_top` (the RUNTIME
+    offset base, BEFORE forward advances the cursor) and `n`.
+  * the L2 `(base, n)` `inverse` deletes the runtime region `p.base ..
+    p.base+p.n-1`, removes the pointer, retracts `s.heap_top -= p.n`, and
+    decrements `pc`. So `heap_top` round-trips `0 → … → 0`.
+
+The k-th dynamic alloca owns the disjoint window `[instr.base + offset_k,
+instr.base + offset_k + n_k)` where `offset_k = heap_top` at its alloc time; the
+disjointness lemma generalises (each `heap_top` advance steps past the previous
+region; each address absent pre-alloca). The unconditional-delete soundness
+lemma (point (iii)) carries over unchanged — it now deletes the runtime offset
+window rather than the frozen window.
+
+**Why the offset model (not an absolute cursor): zero churn.** A SINGLE dynamic
+alloca has `heap_top == 0`, so `base = instr.base + 0 == instr.base` —
+BYTE-IDENTICAL to the pre-`uil` frozen-base behaviour. So NO `VMProgram` /
+`initial_state` change is needed and NO existing test churns: the 3-/4-/5-arg
+`IState` constructors default `heap_top` to 0; every single-DynAlloca program
+(`frtN`, `test_dyn_roundtrip`, `test_alloca_delta`, `test_vec_vm_roundtrip`,
+`test_array_floor`) is unchanged. `heap_top` participates in `IState`'s
+`==`/`hash` (the `revmap` precedent; ADR 0008 Finding 3 — a round-trip test
+that failed to restore it would FAIL, Rule 4) and rides L3 `deepcopy(IState)`
+checkpoints automatically (an `Int64` needs no custom method). The L2 NamedTuple
+inverse path (`src/history/Replay.jl`) and the L3 checkpoint path BOTH carry
+`heap_top` with NO change — verified before impl (`unstep!` passes `s.current`
+to `inverse`; the L3 restore deepcopies the snapshot IState).
+
+**Ingest (`src/ir/ingest.jl` `_lower_alloca!`):** a dynamic alloca AFTER a
+dynamic one is now ADMITTED (all dynamic allocas share the SAME frozen
+compile-time base; the runtime offset distinguishes them, so the cursor is NOT
+advanced and the `saw_dynamic` guard no longer gates the dynamic arm). But a
+STATIC alloca after a dynamic one STILL fails loud — the compile-time cursor is
+frozen at the first dynamic region's base and cannot step past a runtime-sized
+region (it would alias). The guard is split: static-after-dynamic → error;
+dynamic-after-dynamic → allowed.
+
+**Still deferred (follow-up beads):** (a) **in-loop / back-edge dynamic alloca**
+(same dest re-executed) — `DynAlloca.forward`'s `haskey` guard still rejects it;
+the offset model makes it tractable (remove the guard + test LIFO heap_top
+retract under a back-edge), but that is not done here. (b) **static alloca after
+a dynamic alloca** (mixed layout) — kept fail-loud (would need the compile-time
+cursor to advance past a runtime region).
+
+Gated by `test/test_multi_dynalloca.jl`: two DISTINCT dynamic allocas own
+DISJOINT offset windows (no cross-array clobber), round-trip to empty history
+with `heap_top == 0`, the `heap_top` accounting (`n1+n2` forward; `n1` after
+reversing one), per-step inverse under the L2 deltas, the single-array no-churn
+guarantee (`base == instr.base`), and a mutation-proof (removing the `heap_top
++= n` advance ALIASES the regions — confirmed RED, including the per-step
+inverse catching `heap_top` diverging to a NEGATIVE value mid-stream, then
+restored GREEN; Rule 5). Full suite 6308/6308.
+
 ## Consequences
 
 - **`bennettvm-s4r`** (this ADR) closes on commit of this file.

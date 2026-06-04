@@ -522,7 +522,8 @@ end
 Lower one `IRAlloca(dest, elem_width, n_elems)` via the bump allocator
 (ADR 0014 §D1 / ADR 0009 Decision 2a). Returns the lowered instruction, the
 (possibly advanced) allocator cursor, and a flag recording whether THIS alloca
-was dynamic-N (so the caller can enforce the single-dynamic-array invariant).
+was dynamic-N (so the caller can enforce the static-after-dynamic invariant —
+a STATIC alloca after a dynamic one still fails loud; bead `bennettvm-uil`).
 
 **Static-size path (ADR 0014 §D1 + ADR 0009 Decision 4 rung 2):** when `n_elems`
 is `ConstOperand(N)` with `N >= 1`, assign `dest` the current `next_addr` as its
@@ -537,45 +538,65 @@ matching this `+N` step — `src/ir/array_index.jl` "stride is in cells").
 zero-init convention; the allocator does not pre-populate `s.memory`. Returns
 the `Define`, `next_addr + N`, and `false` (not dynamic).
 
-**Dynamic-N path (ADR 0009 Decision 2a; bead `bennettvm-0zn`):** when `n_elems`
-is an `SSAOperand` (a C VLA / Julia `Vector{T}(undef, n)`), the region size is
-unknown at lowering time, so the cursor CANNOT advance over it. Emit a
-`DynAlloca(dest, n_operand, base = next_addr)` (`src/ir/alloca.jl`): `forward`
-materialises the pointer at this FROZEN compile-time base at runtime, and an L2
-`(base, n)` delta retracts the region on reverse. The cursor is RETURNED
-UNCHANGED (the runtime-sized region owns the open-ended tail `[base, ∞)`); the
-returned flag is `true`. There is no runtime bump-allocator state in `IState`,
-so only ONE dynamic array per routine is sound: a SECOND allocation after a
-dynamic one would alias the frozen base — `saw_dynamic == true` therefore FAILS
-LOUD (Rule 1) before any further alloca is lowered (the caller passes the
-running flag in).
+**Dynamic-N path (ADR 0009 Decision 2a; beads `bennettvm-0zn` + `bennettvm-uil`):**
+when `n_elems` is an `SSAOperand` (a C VLA / Julia `Vector{T}(undef, n)`), the
+region size is unknown at lowering time, so the COMPILE-TIME cursor CANNOT
+advance over it. Emit a `DynAlloca(dest, n_operand, base = next_addr)`
+(`src/ir/alloca.jl`): `forward` materialises the pointer at `base +
+s.heap_top` at runtime (the frozen compile-time base PLUS the runtime bump
+offset), and an L2 `(base, n)` delta retracts the region on reverse. The cursor
+is RETURNED UNCHANGED (all dynamic allocas anchor at the SAME frozen base and
+offset apart at runtime via `s.heap_top`); the returned flag is `true`.
+
+**≥2 dynamic arrays are admitted (bead `bennettvm-uil`).** The runtime
+`IState.heap_top` offset (advanced by each alloca's runtime `n` in
+`DynAlloca.forward`, retracted on reverse) distinguishes the disjoint regions of
+multiple dynamic allocas, so a dynamic alloca AFTER a dynamic one is NOT
+rejected. This is the gate for Case B's Dict (two `GenericMemory` backings). But
+a STATIC alloca after a dynamic one STILL fails loud (`saw_dynamic == true` on
+the static arm): a static alloca uses the compile-time cursor, which is frozen
+at the first dynamic region's base and cannot step past a runtime-sized region —
+mixed static/dynamic layout is the deferred bead (ADR 0009 §Consequences).
 
 A non-positive `ConstOperand(N<=0)` is malformed IR and fails loud (an alloca
-reserves at least one cell). A dynamic-N alloca AFTER a previous dynamic-N
-alloca (`saw_dynamic == true`) fails loud regardless of `n_elems` kind.
+reserves at least one cell).
 """
 function _lower_alloca!(inst::Bennett.IRAlloca,
                         next_addr::Int64,
                         saw_dynamic::Bool)::Tuple{Instruction,Int64,Bool}
-    # Single-dynamic-array invariant (Rule 1): no alloca may follow a dynamic-N
-    # alloca — the frozen-base strategy cannot admit a second region without a
-    # runtime bump pointer (deferred; see ADR 0009 §Consequences / the impl
-    # bead). Checked FIRST so both a static and a dynamic alloca after a dynamic
-    # one fail loud (not just a second dynamic one).
-    saw_dynamic &&
-        error("lower_vm: IRAlloca(", inst.dest, ", elem_width=",
-              inst.elem_width, ", n_elems=", inst.n_elems, ") follows a ",
-              "dynamic-N alloca. The single-dynamic-array fixed-base strategy ",
-              "(ADR 0009 Decision 2a) freezes the bump cursor at the dynamic ",
-              "region's base, which owns the open-ended address tail; a second ",
-              "allocation would ALIAS that frozen base. Multi-dynamic-array ",
-              "support needs a runtime bump pointer threaded through IState ",
-              "(deferred bead). Rule 1 fail-loud — do not miscompile.")
     n = inst.n_elems
     if n isa Bennett.SSAOperand
-        # Dynamic-N: emit a DynAlloca; do NOT advance the cursor.
+        # Dynamic-N: emit a DynAlloca; do NOT advance the COMPILE-TIME cursor.
+        # A dynamic-after-dynamic alloca IS now admitted (bead `bennettvm-uil`):
+        # all dynamic allocas share the SAME frozen compile-time `base`
+        # (next_addr); the RUNTIME `s.heap_top` offset (advanced by each
+        # alloca's runtime `n` in `DynAlloca.forward`) distinguishes their
+        # disjoint regions. So `saw_dynamic` does NOT gate a dynamic alloca, and
+        # the cursor is NOT advanced — every dynamic alloca anchors at the same
+        # frozen base and offsets apart at runtime (ADR 0009 Decision 2a multi-
+        # array refinement). The returned flag stays `true` so a later STATIC
+        # alloca still fails loud (below).
         return (DynAlloca(inst.dest, n.name, next_addr), next_addr, true)
     end
+    # Static-after-dynamic invariant (Rule 1): a STATIC alloca may NOT follow a
+    # dynamic-N one. A static alloca uses the COMPILE-TIME cursor (`next_addr`),
+    # which is frozen at the first dynamic region's base and CANNOT step past a
+    # runtime-sized region — so a static region placed there would ALIAS the
+    # dynamic windows. (A dynamic alloca after a dynamic one IS admitted — it
+    # rides the runtime `heap_top` offset; bead `bennettvm-uil`.) Mixed
+    # static/dynamic layout needs the static cursor to advance past a
+    # runtime-sized region, which is the deferred bead (ADR 0009 §Consequences).
+    # Checked AFTER the dynamic arm so only the static-after-dynamic case fails.
+    saw_dynamic &&
+        error("lower_vm: STATIC IRAlloca(", inst.dest, ", elem_width=",
+              inst.elem_width, ", n_elems=", inst.n_elems, ") follows a ",
+              "dynamic-N alloca. A static alloca uses the COMPILE-TIME bump ",
+              "cursor, frozen at the first dynamic region's base; it cannot ",
+              "step past a runtime-sized region, so its region would ALIAS the ",
+              "dynamic windows. Multi-DYNAMIC-array support landed (bead ",
+              "`bennettvm-uil`, the runtime heap_top offset), but a STATIC ",
+              "alloca after a dynamic one (mixed layout) is still deferred. ",
+              "Rule 1 fail-loud — do not miscompile.")
     n isa Bennett.ConstOperand ||
         error("lower_vm: IRAlloca(", inst.dest, ", elem_width=",
               inst.elem_width, ", n_elems=", n, ") — n_elems must be a ",
@@ -858,12 +879,14 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
     # `_lower_alloca!` returns. Threaded through the body loop below by
     # closure over these bindings.
     #
-    # `saw_dynamic_alloca` (ADR 0009 Decision 2a; bead `bennettvm-0zn`):
-    # tracks whether a dynamic-N `IRAlloca` (a VLA / `Vector(undef, n)`) has
-    # been lowered to a `DynAlloca`. A dynamic alloca does NOT advance the
-    # cursor (its runtime-sized region owns the open-ended address tail), so
-    # the single-dynamic-array fixed-base strategy admits exactly one — any
-    # alloca AFTER a dynamic one fails loud in `_lower_alloca!` (Rule 1).
+    # `saw_dynamic_alloca` (ADR 0009 Decision 2a; beads `bennettvm-0zn` +
+    # `bennettvm-uil`): tracks whether a dynamic-N `IRAlloca` (a VLA /
+    # `Vector(undef, n)`) has been lowered to a `DynAlloca`. A dynamic alloca
+    # does NOT advance the COMPILE-TIME cursor — all dynamic allocas anchor at
+    # the same frozen base and offset apart at RUNTIME via `IState.heap_top`
+    # (bead `bennettvm-uil`), so ≥2 dynamic allocas ARE admitted. A STATIC
+    # alloca after a dynamic one STILL fails loud in `_lower_alloca!` (the
+    # compile-time cursor cannot step past a runtime-sized region; Rule 1).
     alloca_cursor = Int64(1)
     saw_dynamic_alloca = false
 
@@ -926,8 +949,10 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
                 # per-instruction dispatch. A static `ConstOperand(N)` alloca
                 # emits a `Define(dest, base, :add, 0)` and advances the cursor
                 # by N; a dynamic `SSAOperand` alloca emits a `DynAlloca` (with
-                # an L2 (base, n) delta), leaves the cursor frozen, and sets the
-                # single-dynamic-array flag so any further alloca fails loud.
+                # an L2 (base, n) delta), leaves the COMPILE-TIME cursor frozen
+                # (dynamic regions offset apart at runtime via heap_top), and
+                # sets the flag so a later STATIC alloca fails loud (bead
+                # `bennettvm-uil`; a later DYNAMIC alloca is admitted).
                 ainstr, alloca_cursor, was_dyn =
                     _lower_alloca!(inst, alloca_cursor, saw_dynamic_alloca)
                 saw_dynamic_alloca = saw_dynamic_alloca || was_dyn

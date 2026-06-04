@@ -152,6 +152,38 @@ the caller's variable, defeating the in-place mutation convention the
   and `IState(pc, locals, status, memory)` call site (111 of them across
   `src/` + `test/`) keeps compiling and behaving identically; the 5-arg
   constructor sets it explicitly (used by the `IRMap*` unit tests).
+
+- `heap_top::Int64` (the runtime bump-pointer OFFSET; ADR 0009 Decision 2a
+  multi-array refinement, bead `bennettvm-uil`). The running total of
+  dynamic-array cells allocated so far, expressed as an OFFSET from each
+  `DynAlloca`'s frozen compile-time base — STARTING AT 0. This is the one
+  piece of runtime allocator state `IState` lacked (the "no runtime bump
+  pointer exists" finding of the 2026-05-31 Decision-2a refinement,
+  `src/ir/alloca.jl` §"Frozen base + runtime heap_top offset"). Its presence
+  lifts the single-dynamic-array floor to >=2 dynamic-N allocas:
+  `DynAlloca.forward` now computes its region base as
+  `base = instr.base + s.heap_top` and advances `s.heap_top += n`, so the
+  k-th dynamic alloca owns the disjoint window
+  `[instr.base + offset_k, instr.base + offset_k + n_k)` where `offset_k`
+  is `heap_top` at its alloc time; the L2 `(base, n)` inverse retracts
+  `s.heap_top -= n`, so `heap_top` round-trips `0 -> ... -> 0`.
+
+  Why an OFFSET (default 0), not an absolute cursor. A single dynamic
+  alloca gets `base = instr.base + 0 == instr.base` — BYTE-IDENTICAL to the
+  pre-`uil` frozen-base behaviour. So this field needs NO `VMProgram` /
+  `initial_state` change and NO churn to the 111 existing call sites: the
+  3-/4-/5-arg constructors default it to 0, every single-DynAlloca program
+  (`frtN`, `test_dyn_roundtrip`, …) is unchanged, and only a program with
+  >=2 dynamic allocas observes a non-zero offset. An `Int64` rides L3
+  checkpoints automatically (`deepcopy(IState)` copies it — no custom
+  method needed) and participates in `==`/`hash` via the same
+  content-comparison pattern as `memory` / `revmap` (so a round-trip test
+  that failed to restore `heap_top` would FAIL — Rule 4), which is the
+  load-bearing reason it lives INSIDE `IState` rather than as an external
+  cursor (the ADR 0008 Finding-3 argument for `revmap`, applied here). v1
+  admits >=2 dynamic allocas reached AT MOST ONCE each; in-loop / back-edge
+  re-execution (same dest) and a static alloca after a dynamic one stay
+  fail-loud (deferred follow-up beads — ADR 0009 §Consequences).
 """
 mutable struct IState
     pc::Int
@@ -159,29 +191,44 @@ mutable struct IState
     status::Symbol
     memory::Dict{Int64,Int64}
     revmap::Dict{Int64,Int64}   # RevMap, the reversible-map ADT (ADR 0008).
+    heap_top::Int64             # runtime bump-pointer offset (ADR 0009; uil).
 
     # 3-arg constructor: preserves every existing call site (M2.1
     # through M2.10) — empty memory AND empty revmap are the right
     # defaults for any instruction that touches neither heap nor map.
+    # `heap_top = 0` (no dynamic allocation yet) keeps a single DynAlloca
+    # byte-identical (base = instr.base + 0 == instr.base; bead `bennettvm-uil`).
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol) =
-        new(pc, locals, status, Dict{Int64,Int64}(), Dict{Int64,Int64}())
+        new(pc, locals, status, Dict{Int64,Int64}(), Dict{Int64,Int64}(), Int64(0))
 
     # 4-arg constructor: explicit memory, empty revmap. Used by M2.11+
     # tests and by any lowering pass that materializes a heap snapshot up
     # front. Preserved verbatim so the memory-floor / array-floor call
-    # sites keep their meaning (memory explicit, revmap defaulted empty).
+    # sites keep their meaning (memory explicit, revmap defaulted empty);
+    # `heap_top` defaults to 0 (uil) — a pre-populated heap snapshot is taken
+    # at the start, before any dynamic alloc has advanced the cursor.
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}) =
-        new(pc, locals, status, memory, Dict{Int64,Int64}())
+        new(pc, locals, status, memory, Dict{Int64,Int64}(), Int64(0))
 
     # 5-arg constructor: explicit memory AND revmap (ADR 0008 Decision 1).
     # Used by the `IRMap*` unit tests to build an IState with a populated
     # map. The trailing `revmap` is unambiguous — distinct in arity from
     # the 4-arg form — so adding it does not change which constructor any
-    # existing 3-/4-arg call site resolves to.
+    # existing 3-/4-arg call site resolves to. `heap_top` defaults to 0 (uil).
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64}) =
-        new(pc, locals, status, memory, revmap)
+        new(pc, locals, status, memory, revmap, Int64(0))
+
+    # 6-arg constructor: explicit `heap_top` (bead `bennettvm-uil`). Used
+    # ONLY by the multi-DynAlloca unit tests to build an IState mid-stream (a
+    # non-zero cursor). The trailing `heap_top` is unambiguous — distinct in
+    # arity from the 5-arg form — so adding it changes no existing call site's
+    # resolution. `Integer` is coerced to `Int64` for caller convenience.
+    IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
+           memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64},
+           heap_top::Integer) =
+        new(pc, locals, status, memory, revmap, Int64(heap_top))
 end
 
 """
@@ -252,7 +299,8 @@ function Base.:(==)(a::IState, b::IState)
     a.status === b.status &&
     a.locals == b.locals &&  # Dict's overloaded ==, content-comparing.
     a.memory == b.memory &&  # M2.11: same content-comparing pattern.
-    a.revmap == b.revmap     # ADR 0008 Finding 3: RevMap content participates.
+    a.revmap == b.revmap &&  # ADR 0008 Finding 3: RevMap content participates.
+    a.heap_top == b.heap_top # uil: the runtime bump offset MUST round-trip.
 end
 
 function Base.hash(s::IState, h::UInt)
@@ -261,5 +309,6 @@ function Base.hash(s::IState, h::UInt)
     h = hash(s.locals, h)   # Dict's hash respects content.
     h = hash(s.memory, h)   # M2.11: heap content participates in hash.
     h = hash(s.revmap, h)   # ADR 0008 Finding 3: RevMap content participates.
+    h = hash(s.heap_top, h) # uil: hash the bump offset in lock-step with ==.
     return h
 end

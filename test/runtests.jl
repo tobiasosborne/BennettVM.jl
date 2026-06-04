@@ -262,6 +262,18 @@ using BennettVM
     # delta it composes with (the region's element stores) and reuses the same
     # hand-built array `ParsedIR` shape + the M8.2 `per_step_inverse_check`.
     include("test_alloca_delta.jl")
+    # ≥2 dynamic-N allocas via the runtime bump pointer `IState.heap_top` (bead
+    # `bennettvm-uil`; ADR 0009 Decision 2a multi-array refinement). THE gate
+    # for Case B (a Dict = keys + vals = two dynamic GenericMemory backings,
+    # exceeding the pre-`uil` single-dynamic-array frozen-base floor). Pins:
+    # two DISTINCT dynamic allocas own DISJOINT offset windows (`base =
+    # instr.base + s.heap_top`), writes do not clobber across arrays, the
+    # `heap_top` accounting (n1+n2 forward; round-trips to 0 on reverse), the
+    # per-step inverse under the L2 `(base,n)` deltas, the mutation-proof
+    # (removing the `heap_top += n` advance ALIASES the regions — RED), and the
+    # single-array no-churn guarantee (heap_top = 0 → base == instr.base).
+    # Generalises the single-DynAlloca `test_alloca_delta.jl` it sits beside.
+    include("test_multi_dynalloca.jl")
     # SC9 Case A — `frtN` END-TO-END round-trip (bead `bennettvm-xld`; ADR
     # 0009 Decision 3). THE Case A executable proof: a REAL clang-18 C VLA
     # program (`test/reference/frtN.c` -> committed, hand-trimmed/named `.ll`)
