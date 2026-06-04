@@ -380,4 +380,20 @@ using BennettVM
     # it builds only hand-built ParsedIR fragments via the same idiom as
     # test_memory_floor.jl, so it depends only on already-loaded symbols.
     include("test_opcode_coverage.jl")
+    # OPCODE F1/F2 — the clean-fail-loud completeness gate (bead
+    # `bennettvm-0kl`, epic `bennettvm-x49`). The "fail loud cleanly" half of
+    # the maximum-opcode-coverage north-star: the genuinely-impossible /
+    # nondeterministic set must reach a CLEAR Rule-1 error whose message names
+    # the cause, never a silent gap or a misleadingly-generic one. F1 adds the
+    # `_NONDETERMINISTIC_CALLEES` guard in `ingest.jl`'s IRCall arm (rand /
+    # objectid / time / getpid … → a SPECIFIC "nondeterministic — no
+    # deterministic forward, no replay" error, distinct from the generic
+    # SoftCall allowlist message); F2 pins the impossible-CFG/memory defensive
+    # mirror (the 3 GAP IRInst subtypes' shared `else`, the IRSwitch
+    # `_successors` reject, the non-SSA-ptr memory-floor reject) and documents
+    # that atomic/volatile/indirectbr/inline-asm/opaque-call are rejected
+    # UPSTREAM in Bennett.jl (U14/U15/U4eu) and so are unrepresentable at the
+    # ParsedIR interface. Sits right after the coverage capstone (same
+    # hand-built ParsedIR idiom; depends only on already-loaded symbols).
+    include("test_fail_loud_completeness.jl")
 end

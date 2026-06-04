@@ -174,6 +174,47 @@ function _lower_bool_operand(op::Bennett.IROperand, width::Int)::Union{Symbol,In
 end
 
 # ---------------------------------------------------------------------
+# Nondeterminism guard: callees that have NO deterministic forward and so
+# can never be reversed by replay (the doubly-fatal class).
+# ---------------------------------------------------------------------
+
+# Callee `nameof`s whose result is NOT a deterministic function of the VM
+# state — a fresh random draw, a process-/time-/identity-derived value, or
+# a pointer-identity hash. The whole L3 reversal mechanism is *periodic
+# checkpoint + deterministic forward REPLAY* (ADR 0012; rr's lesson —
+# O'Callahan–Huey 2017, "record nondeterminism, replay determinism"). A
+# nondeterministic callee breaks the replay leg outright: re-running the
+# forward step from a checkpoint would draw a DIFFERENT value, so the
+# pre-image is unrecoverable. It is *doubly* fatal here — there is also no
+# deterministic forward to begin with, so even plain re-execution diverges
+# (docs/opcode-coverage-plan.md "Genuinely impossible", Nondeterminism row:
+# "objectid/identity hashing …, rand/RDRAND, pointer-identity. (Doubly
+# fatal for reversibility — no replay.)").
+#
+# Identity-based hashing (`objectid`, `pointer_from_objref`) is the
+# specific CLAUDE.md hallucination-callout case: `objectid` is a hash of
+# the *runtime allocation address*, not of the value, so it is
+# nondeterministic across runs and aliases distinct values that happen to
+# share an address slot — the Dict-key-determinism guard (`bennettvm-90l` /
+# Bennett-`klgz`) handles the in-program Dict-key surface; THIS guard is the
+# ingest-boundary catch for any such callee arriving as a raw `IRCall`.
+#
+# Bennett.jl's `extract` already refuses these upstream (U14 atomic/volatile,
+# U15 inline-asm/opaque-call, U4eu indirectbr) so they never reach a
+# `ParsedIR`; this is the belt-and-suspenders defensive MIRROR on the
+# BennettVM ingest side, with a SPECIFIC diagnostic (Rule 1) so a future
+# regression that lets one through fails loud and *legibly*, not as the
+# generic "unknown SoftFloat callee" message.
+const _NONDETERMINISTIC_CALLEES = Set{Symbol}((
+    :rand, :rand!, :randn, :randexp,                # PRNG draws (hardware
+                                                    # RDRAND surfaces as one of
+                                                    # these Julia callees, not
+                                                    # a bare `rdrand` Function)
+    :objectid, :pointer_from_objref,                # identity / pointer hash
+    :time, :time_ns, :getpid,                       # wall-clock / process id
+))
+
+# ---------------------------------------------------------------------
 # Body-instruction translation: the six IRInst types, generically.
 # ---------------------------------------------------------------------
 
@@ -333,6 +374,30 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
         # callees are recognised as legal intermediates; full f32-output
         # rejection at the program boundary is a documented follow-on, not
         # silently wrong here).
+        #
+        # Nondeterminism guard (bead `bennettvm-0kl`, F1): a genuinely
+        # nondeterministic callee (rand / RDRAND / objectid / time / getpid …)
+        # has NO deterministic forward, so the L3 checkpoint-REPLAY reversal
+        # cannot recover its pre-image — it is doubly fatal for reversibility
+        # (docs/opcode-coverage-plan.md "Genuinely impossible", Nondeterminism
+        # row). Reject it HERE with a SPECIFIC Rule-1 diagnostic, BEFORE the
+        # `SoftCall` constructor, so it does not fall through to the generic
+        # "unknown SoftFloat callee" message (which would misdescribe the
+        # cause). A soft_f* callee is not in `_NONDETERMINISTIC_CALLEES`, so
+        # the soft path is unaffected; a non-soft, non-nondeterministic callee
+        # still reaches the SoftCall allowlist reject below.
+        if nameof(inst.callee) in _NONDETERMINISTIC_CALLEES
+            error("lower_vm: IRCall to nondeterministic callee :",
+                  nameof(inst.callee), " (dest=", inst.dest, ") cannot be ",
+                  "ingested — it has no deterministic forward, so the L3 ",
+                  "checkpoint-replay reversal (ADR 0012; rr's record-",
+                  "nondeterminism/replay-determinism lesson) cannot recover ",
+                  "its pre-image. This is DOUBLY FATAL for reversibility: no ",
+                  "deterministic forward AND no replay (docs/opcode-coverage-",
+                  "plan.md \"Genuinely impossible\", Nondeterminism row). ",
+                  "Rejected callees: ", sort!(collect(_NONDETERMINISTIC_CALLEES)),
+                  " (Rule 1 fail-loud).")
+        end
         return SoftCall(inst.dest, nameof(inst.callee),
                         Union{Symbol,Int64}[_lower_operand(a)
                                             for a in inst.args],
