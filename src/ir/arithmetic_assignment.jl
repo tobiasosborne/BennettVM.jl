@@ -153,60 +153,124 @@ end
 _resolve(x::Symbol, s::IState) = s.locals[x]
 _resolve(x::Int64,  ::IState)  = x
 
-# Apply a binary operator to two `Int64` values, returning an `Int64`.
-# Julia's native Int64 arithmetic gives wraparound on overflow, which is
-# what RSSA semantics want (wrap is reversible; trapping is not). The
-# dispatcher is a flat `if`-chain rather than a Dict lookup both for
-# speed and so Rule 1 catches an unknown op at the final `error` clause
-# — even though the relevant constructor has already validated.
+# Apply a binary operator to two `Int64` values at a given bit `width`,
+# returning an `Int64`. Julia's native Int64 arithmetic gives wraparound
+# on overflow, which is what RSSA semantics want (wrap is reversible;
+# trapping is not). The dispatcher is a flat `if`-chain rather than a Dict
+# lookup both for speed and so Rule 1 catches an unknown op at the final
+# `error` clause — even though the relevant constructor has already
+# validated.
 #
-# Two operator families flow through here:
+# # Width-aware operation (ADR 0012 R1, bead `bennettvm-bgc`)
 #
-#   * `BINARY_OPERATORS` (arithmetic / bitwise / shift / divrem) — the
-#     `ArithmeticAssignment` modop operands. Unsigned ops (`:lshr`,
-#     `:udiv`, `:urem`) reinterpret both operands to `UInt64` and the
-#     result back to `Int64`.
+# `IState.locals` are `Int64`, but a source value of LLVM type i`w` lives
+# in the low `w` bits. To make the VM agree with a native i`w` oracle even
+# when an operation OVERFLOWS its width (e.g. `Int8(3) * Int8(50)` = 150,
+# which wraps to `Int8(-106)`), each op must compute in i`w` semantics, not
+# full Int64. The model (this is the load-bearing correctness invariant):
 #
-#   * `COMPARISON_OPERATORS` (LLVM `icmp` predicates) — the `Define`
-#     comparison operands (ADR 0012 §D2). Each returns `Int64(1)` for
-#     true / `Int64(0)` for false (the interpreter's i1→Int64 "nonzero
-#     = true" convention). The unsigned predicates (`:ult` / `:ule` /
-#     `:ugt` / `:uge`) reinterpret both operands to `UInt64` *before*
-#     comparing — matching the `:lshr` / `:udiv` reinterpret discipline
-#     above — so a negative `Int64` (a large `UInt64`) sorts above a
-#     non-negative one; the signed predicates (`:slt` / `:sle` / `:sgt`
-#     / `:sge`) compare the raw `Int64`s directly; `:eq` / `:ne` are
-#     signedness-agnostic.
+#   **each op EXTRACTS the low-`w` bits of each operand and RE-EXTENDS per
+#   the operation's OWN signedness, then MASKS the result to low `w` bits.**
 #
-# Ref: docs/adr/0012-collatz-lowering.md §D2 (comparison operators);
-#      src/ir/operators.jl (COMPARISON_OPERATORS — signed/unsigned split).
-function _apply_binop(op::Symbol, a::Int64, b::Int64)::Int64
-    op === :add  ? a + b :
-    op === :sub  ? a - b :
-    op === :mul  ? a * b :
-    op === :and  ? a & b :
-    op === :or   ? a | b :
-    op === :xor  ? a ⊻ b :
-    op === :shl  ? a << b :
-    op === :lshr ? reinterpret(Int64, reinterpret(UInt64, a) >> b) :
-    op === :ashr ? a >> b :
-    op === :udiv ? reinterpret(Int64, div(reinterpret(UInt64, a),
-                                          reinterpret(UInt64, b))) :
-    op === :sdiv ? div(a, b) :
-    op === :urem ? reinterpret(Int64, rem(reinterpret(UInt64, a),
-                                          reinterpret(UInt64, b))) :
-    op === :srem ? rem(a, b) :
-    # Comparison predicates (ADR 0012 §D2) — Int64(1)/Int64(0).
-    op === :eq   ? Int64(a == b) :
-    op === :ne   ? Int64(a != b) :
-    op === :ult  ? Int64(reinterpret(UInt64, a) <  reinterpret(UInt64, b)) :
-    op === :ule  ? Int64(reinterpret(UInt64, a) <= reinterpret(UInt64, b)) :
-    op === :ugt  ? Int64(reinterpret(UInt64, a) >  reinterpret(UInt64, b)) :
-    op === :uge  ? Int64(reinterpret(UInt64, a) >= reinterpret(UInt64, b)) :
-    op === :slt  ? Int64(a <  b) :
-    op === :sle  ? Int64(a <= b) :
-    op === :sgt  ? Int64(a >  b) :
-    op === :sge  ? Int64(a >= b) :
+# Because every op re-extracts its operands, the stored representation's
+# high bits never matter — so NO change is needed to `IState`, the casts,
+# the select, or input-binding; the width discipline is self-contained
+# here. `w == 64` is a NO-OP: `mask = -1` (all ones), `sext` at 64 is the
+# identity, so every existing full-width call (`ArithmeticAssignment`'s
+# default-64 calls, hand-built width-64 `Define`s) is byte-identical.
+#
+# Per-op classification (let `mask = _low_mask(w)`; reuse `_low_mask` /
+# `_apply_cast(:sext, ·, w, 64)` from `cast_instruction.jl` — Law 2):
+#
+#   * **Sign-agnostic** (`:add :sub :mul :and :or :xor :shl`): two's-
+#     complement low bits are signedness-independent for these — mask both
+#     operands, do the op, mask the result.
+#   * **Unsigned-interpreting** (`:udiv :urem :lshr`): zero-extend each
+#     operand = mask it (nonnegative), do the UNSIGNED op (via
+#     `reinterpret(UInt64, ·)`; the masked operands are nonnegative so the
+#     UInt64 value equals the i`w` unsigned value), mask the result. This
+#     replaces the old FULL-64-bit reinterpret, which used the high bits
+#     and was WRONG at `w < 64`.
+#   * **Signed-interpreting** (`:sdiv :srem :ashr`): SIGN-extend each
+#     operand from `w` bits to a full Int64 (`_apply_cast(:sext, ·, w, 64)`)
+#     so a negative i`w` value carries its true sign into the signed op, do
+#     the signed op, mask the result.
+#
+# # Comparison predicates (ADR 0012 §D2) — `COMPARISON_OPERATORS`
+#
+# Each returns `Int64(1)` for true / `Int64(0)` for false (the interpreter's
+# i1→Int64 "nonzero = true" convention). The result is an i1, so it is NOT
+# masked to `width` — it is always 0/1. The OPERANDS are extended per the
+# predicate's signedness BEFORE comparing (`width` is the operand width;
+# IRICmp's result is always i1):
+#
+#   * **Equality** (`:eq` / `:ne`) — signedness-agnostic; compare the
+#     `& mask` low bits.
+#   * **Unsigned** (`:ult` / `:ule` / `:ugt` / `:uge`) — zero-extend
+#     (`& mask`) each operand, then compare as `UInt64`. A masked operand is
+#     nonnegative, so the UInt64 value IS the i`w` unsigned value; e.g.
+#     `ult(-1, 0)` at w=8 compares `255 < 0` → false.
+#   * **Signed** (`:slt` / `:sle` / `:sgt` / `:sge`) — SIGN-extend each
+#     operand (`_apply_cast(:sext, ·, w, 64)`), then compare as signed
+#     Int64; e.g. `slt(-1, 0)` at w=8 compares `-1 < 0` → true.
+#
+# Ref: docs/adr/0012-collatz-lowering.md §D2 (comparison operators), R1
+#        (the per-`width` masking this implements; bead `bennettvm-bgc`);
+#      src/ir/operators.jl (COMPARISON_OPERATORS — signed/unsigned split);
+#      src/ir/cast_instruction.jl (`_low_mask`, `_apply_cast(:sext, …)`,
+#        reused here — Law 2).
+function _apply_binop(op::Symbol, a::Int64, b::Int64, width::Int=64)::Int64
+    mask = _low_mask(width)
+    # Low-`w`-bit operands for the sign-agnostic, unsigned, and equality
+    # arms. The signed arms (`:sdiv`/`:srem`/`:ashr`/`:s{lt,le,gt,ge}`) do NOT
+    # read `am`/`bm` — they call `_apply_cast(:sext, a, width, 64)` on the RAW
+    # operand, which masks to the low `w` bits internally before sign-
+    # extending, so raw `a`/`b` and `am`/`bm` carry identical low bits there.
+    # LLVM-UB note (well-formed programs never reach these; behavior is
+    # deterministic, not trapping): `:sdiv`/`:srem` of i`w`-typemin by -1 and a
+    # shift amount >= `w` are LLVM poison; this kernel returns a masked
+    # in-range value / Julia's shift-clamp result rather than trapping.
+    am = a & mask
+    bm = b & mask
+    op === :add  ? (am + bm) & mask :
+    op === :sub  ? (am - bm) & mask :
+    op === :mul  ? (am * bm) & mask :
+    op === :and  ? (am & bm) & mask :
+    op === :or   ? (am | bm) & mask :
+    op === :xor  ? (am ⊻ bm) & mask :
+    op === :shl  ? (am << bm) & mask :
+    # Unsigned-interpreting: zero-extended (`& mask`) operands, unsigned op,
+    # mask the result. The masked operands are nonnegative, so the UInt64
+    # bit-pattern equals the i`w` unsigned value.
+    op === :lshr ? reinterpret(Int64, reinterpret(UInt64, am) >> bm) & mask :
+    op === :udiv ? reinterpret(Int64, div(reinterpret(UInt64, am),
+                                          reinterpret(UInt64, bm))) & mask :
+    op === :urem ? reinterpret(Int64, rem(reinterpret(UInt64, am),
+                                          reinterpret(UInt64, bm))) & mask :
+    # Signed-interpreting: sign-extend operands from `w` bits, signed op,
+    # mask the result.
+    op === :sdiv ? div(_apply_cast(:sext, a, width, 64),
+                       _apply_cast(:sext, b, width, 64)) & mask :
+    op === :srem ? rem(_apply_cast(:sext, a, width, 64),
+                       _apply_cast(:sext, b, width, 64)) & mask :
+    op === :ashr ? (_apply_cast(:sext, a, width, 64) >> bm) & mask :
+    # Comparison predicates (ADR 0012 §D2) — Int64(1)/Int64(0), NOT masked
+    # to `width` (an i1 result is always 0/1). Operands extended per the
+    # predicate's signedness before comparing (`width` is the operand width).
+    op === :eq   ? Int64(am == bm) :
+    op === :ne   ? Int64(am != bm) :
+    op === :ult  ? Int64(reinterpret(UInt64, am) <  reinterpret(UInt64, bm)) :
+    op === :ule  ? Int64(reinterpret(UInt64, am) <= reinterpret(UInt64, bm)) :
+    op === :ugt  ? Int64(reinterpret(UInt64, am) >  reinterpret(UInt64, bm)) :
+    op === :uge  ? Int64(reinterpret(UInt64, am) >= reinterpret(UInt64, bm)) :
+    op === :slt  ? Int64(_apply_cast(:sext, a, width, 64) <
+                         _apply_cast(:sext, b, width, 64)) :
+    op === :sle  ? Int64(_apply_cast(:sext, a, width, 64) <=
+                         _apply_cast(:sext, b, width, 64)) :
+    op === :sgt  ? Int64(_apply_cast(:sext, a, width, 64) >
+                         _apply_cast(:sext, b, width, 64)) :
+    op === :sge  ? Int64(_apply_cast(:sext, a, width, 64) >=
+                         _apply_cast(:sext, b, width, 64)) :
     error("_apply_binop: unsupported op $op (constructor should have caught this)")
 end
 

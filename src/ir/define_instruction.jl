@@ -79,6 +79,25 @@ by the reused `_apply_binop` (Law 2): arithmetic ops wrap on overflow,
 comparison predicates return `Int64(1)` / `Int64(0)` under the
 interpreter's "nonzero = true" i1→Int64 convention.
 
+# The `width` field (ADR 0012 R1 RESOLVED, bead `bennettvm-bgc`)
+
+`width::Int` is the LLVM operand bit-width of the source `IRBinOp` /
+`IRICmp` (for a comparison it is the OPERAND width — the i1 result is
+never masked). `forward` passes it to `_apply_binop`, which computes the
+op in i`width` semantics: it extracts the low-`width` bits of each operand,
+re-extends per the op's own signedness, does the op, and masks the result
+to low `width` bits (see `_apply_binop`'s docstring for the per-op
+classification). This makes a narrow-width create agree with a native
+i`width` oracle even when the op OVERFLOWS its width (e.g.
+`Int8(3) * Int8(50)` = 150 wraps to `Int8(-106)`), closing ADR 0012 R1.
+
+The field **defaults to 64**, so every existing `Define(t, l, op, r)` call
+— hand-built unit tests, the synthetic φ-incoming-constant `Define`s the
+ingest emits — is unchanged: `_apply_binop` at width 64 is a verified
+NO-OP (`mask = -1`, `sext` at 64 = identity), so all pre-existing
+behavior is byte-identical. Only the ingest's `IRBinOp` / `IRICmp` arm
+threads the real source `width` in.
+
 # Constructor validation (Rule 1)
 
 The constructor rejects `target ∈ {lhs, rhs}` at construction time: an
@@ -119,9 +138,10 @@ struct Define <: Instruction
     lhs::Union{Symbol,Int64}
     op::Symbol                  # ∈ BINARY_OPERATORS ∪ COMPARISON_OPERATORS
     rhs::Union{Symbol,Int64}
+    width::Int                  # LLVM operand bit-width (default 64; ADR 0012 R1)
 
     function Define(target::Symbol, lhs::Union{Symbol,Int64}, op::Symbol,
-                    rhs::Union{Symbol,Int64})
+                    rhs::Union{Symbol,Int64}, width::Int=64)
         (is_binary_operator(op) || is_comparison_operator(op)) ||
             error("Define: invalid op $(op); must be in BINARY_OPERATORS ",
                   "∪ COMPARISON_OPERATORS (an arithmetic/bitwise/shift/",
@@ -134,7 +154,12 @@ struct Define <: Instruction
                   "an SSA name cannot be both defined and read by the same ",
                   "instruction (RSSA: every name has exactly one defining ",
                   "instruction).")
-        return new(target, lhs, op, rhs)
+        1 <= width <= 64 ||
+            error("Define: width=$(width) out of range 1..64 (IState.locals ",
+                  "are Int64; op=$(op), target=$(target)). The width is the ",
+                  "LLVM operand bit-width threaded from IRBinOp/IRICmp (ADR ",
+                  "0012 R1, bead bennettvm-bgc).")
+        return new(target, lhs, op, rhs, width)
     end
 end
 
@@ -143,10 +168,11 @@ end
 
 Execute `target := lhs op rhs` in-place on `s`. Resolves `lhs` / `rhs`
 against `s.locals` (or uses the literal `Int64`), applies `op` via the
-reused `_apply_binop`, and writes the result into `s.locals[target]`,
-bumping `pc`. The operands are **read, never deleted** — the
-non-destructive create property (contrast `ArithmeticAssignment.forward`,
-which `delete!`s its `source`).
+reused `_apply_binop` **at `instr.width`** (i`width` semantics — ADR 0012
+R1; `width == 64` is a no-op), and writes the result into
+`s.locals[target]`, bumping `pc`. The operands are **read, never deleted**
+— the non-destructive create property (contrast
+`ArithmeticAssignment.forward`, which `delete!`s its `source`).
 
 If `target` already exists in `s.locals` (the loop / cross-iteration
 case), it is **overwritten** without error — that is the intended
@@ -157,7 +183,10 @@ docstring "The cross-iteration crux").
 function forward(instr::Define, s::IState)::IState
     lv = _resolve(instr.lhs, s)
     rv = _resolve(instr.rhs, s)
-    s.locals[instr.target] = _apply_binop(instr.op, lv, rv)
+    # Width-aware: `_apply_binop` computes in i`width` semantics (ADR 0012
+    # R1, bead bennettvm-bgc). `width == 64` (the default) is a no-op, so a
+    # synthetic / hand-built Int64 Define is byte-identical to before.
+    s.locals[instr.target] = _apply_binop(instr.op, lv, rv, instr.width)
     s.pc += 1
     return s
 end

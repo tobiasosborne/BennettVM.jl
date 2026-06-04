@@ -242,12 +242,20 @@ _istate(locals::Dict{Symbol,Int64}, mem::Dict{Int64,Int64}) =
         @test r0[:__a] != r0[:__b]     # the load-bearing distinctness claim
 
         # (7a) Forward result matches the hand-computed oracle n+1 across a
-        #      range of inputs (Rule 4 — known-correct values).
+        #      range of inputs (Rule 4 — known-correct values). The i32 add
+        #      now computes in i32 semantics (ADR 0012 R1, bead bennettvm-bgc):
+        #      `result` carries the LOW-32-BIT representation of the i32 value,
+        #      so a NEGATIVE oracle (n=-3 → -2) is the zero-extended low-32-bit
+        #      pattern `(n+1) & 0xFFFFFFFF`, not the sign-extended Int64. For
+        #      non-negative results the mask is a no-op. (Pre-bgc the lowering
+        #      did not mask, so -2 carried as sign-extended Int64; the masked
+        #      form is the correct i32 carrier — every op re-extracts it.)
+        _m32 = (Int64(1) << 32) - 1
         for n in (Int64(0), Int64(1), Int64(5), Int64(40), Int64(-3))
             rs = initial_state(vm, Dict(:__n => n))
             run!(rs, vm; checkpoint_interval=4)
             @test is_halted(rs)
-            @test result(rs)[:__r] == n + 1        # ORACLE: through-mem = n+1
+            @test result(rs)[:__r] == ((n + 1) & _m32)   # ORACLE: i32 (n+1)
 
             # (7b) Aggregate run!/unrun! to empty history (P0.6).
             unrun!(rs, vm)

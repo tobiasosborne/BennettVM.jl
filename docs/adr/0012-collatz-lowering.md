@@ -171,13 +171,25 @@ surface small; filed as a follow-up.)
 
 ## Risks / deferred (follow-up beads)
 
-- **R1 — i8 vs Int64 width (correctness).** `locals` are `Int64` but
-  collatz is i8; `mul(val,3)` overflows i8 and `slt/ugt` differ by
-  width. The **round-trip** (reversibility, P0.6) is width-independent
-  and holds for any input. The **golden-master agreement** (steps ==
-  oracle) holds only for inputs whose trajectory stays in i8 range. The
-  slice's test uses a **non-overflowing input** (e.g. `x=5`/`x=7`) for
-  oracle agreement; full per-`width` masking is a follow-up bead.
+- **R1 — i8 vs Int64 width (correctness). RESOLVED 2026-06-04 (bead
+  `bennettvm-bgc`).** `locals` are `Int64` but collatz is i8; `mul(val,3)`
+  overflows i8 and `slt/ugt` differ by width. **Resolution:** option (a) —
+  carry a `width` on `Define` (default 64) and mask in `forward`. The
+  ingest threads the source `IRBinOp.width` / `IRICmp.width` into the
+  `Define`; `Define.forward` calls the now-width-aware `_apply_binop`,
+  which extracts the low-`w` bits of each operand, RE-EXTENDS per the op's
+  OWN signedness (`_apply_cast(:sext, …)` for the signed arm; `& mask`
+  zero-extend for the unsigned arm), does the op, and masks the result to
+  low `w` bits (comparisons return an unmasked i1 0/1). Because every op
+  re-extracts, the stored high bits never matter — no change to `IState` /
+  cast / select / input-binding. `width == 64` is a verified no-op, so all
+  pre-existing full-width behavior is byte-identical. The **golden-master
+  agreement** now holds for ANY input, including ones whose trajectory
+  OVERFLOWS the source width; masking is part of the deterministic forward,
+  so the **round-trip** (P0.6) is unaffected. Gate:
+  `test/test_width_masking.jl` (`(Int8(3)*x)÷Int8(2)` at x=50 → 203,
+  pre-fix 75). Pebble-game / non-i64 general widths still exercised only as
+  the test surface grows.
 - **R2 — `ConditionalExit` sends one arg-list to two targets** with
   potentially different params. For collatz, use reconcilable
   param-lists / in-successor renames; per-target arg-lists filed as a

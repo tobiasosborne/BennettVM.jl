@@ -133,10 +133,15 @@ through_mem_ref(n::Integer) = n + 1
     @test vm isa VMProgram
 
     # The trajectory-pinned inputs: each REPL-confirmed `vm_result == oracle`
-    # and round-trip-clean. Includes 0, 1, a mid value, and a negative
-    # (the lowering does not mask the i32 width; -3 + 1 == -2 fits Int64).
+    # and round-trip-clean. Includes 0, 1, a mid value, and a negative.
+    # The i32 add now computes in i32 semantics (ADR 0012 R1, bead
+    # bennettvm-bgc): `result` carries the LOW-32-BIT representation, so the
+    # negative case (n=-3 → -2) is the zero-extended `(n+1) & 0xFFFFFFFF`, not
+    # the sign-extended Int64 (the oracle anchor below masks accordingly).
     cll_inputs = (Int64(0), Int64(1), Int64(5), Int64(41), Int64(100),
                   Int64(-3))
+    # Low-32-bit mask: the i32 carrier the VM stores/returns (ADR 0012 R1).
+    _cll_m32 = (Int64(1) << 32) - 1
 
     # ------------------------------------------------------------------
     # (3) Forward result matches the C oracle, then round-trips (P0.6).
@@ -148,8 +153,9 @@ through_mem_ref(n::Integer) = n + 1
 
             run!(rs, vm; checkpoint_interval=4)
             @test is_halted(rs)
-            # ANCHOR: the VM's forward result is bit-for-bit the C oracle.
-            @test result(rs)[_CLL_RESULT_KEY] == through_mem_ref(n)
+            # ANCHOR: the VM's forward result is bit-for-bit the C oracle in
+            # the i32 low-32-bit carrier (ADR 0012 R1 — masking is now active).
+            @test result(rs)[_CLL_RESULT_KEY] == (through_mem_ref(n) & _cll_m32)
 
             unrun!(rs, vm)
             @test rs.current == rs.initial      # P0.6 — reversed to start

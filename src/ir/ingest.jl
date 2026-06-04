@@ -105,13 +105,20 @@ get **forward** semantics right; the round-trip is the interpreter's
 job. The forward gate: `run!` on the lowered collatz reproduces the
 irreversible oracle bit-for-bit on non-overflowing inputs (ADR 0012 R1).
 
-# Width note (ADR 0012 R1, deferred)
+# Width note (ADR 0012 R1, RESOLVED — bead `bennettvm-bgc`)
 
-`IState.locals` are `Int64`; collatz is i8. The lowering does NOT mask
-to the IRInst `width` field — full per-`width` masking is a follow-up
-bead. Oracle agreement therefore holds only for inputs whose trajectory
-stays in i8 range (the forward test picks such inputs); the round-trip
-invariant is width-independent.
+`IState.locals` are `Int64`, but the lowering now THREADS the IRInst
+`width` field into the `Define` it builds for `IRBinOp` / `IRICmp`, and
+`Define.forward` computes the op in i`width` semantics (extract low-`width`
+bits, re-extend per the op's signedness, mask the result —
+`_apply_binop`'s docstring). Oracle agreement therefore holds for ANY
+input, including ones whose trajectory OVERFLOWS the source width (the
+golden-master test `test/test_width_masking.jl` pins an overflowing i8
+input). The round-trip invariant was already width-independent; masking is
+part of the deterministic forward function, so it does not perturb the L3
+checkpoint-replay reversal. `width` defaults to 64 in the `Define`
+constructor, so the synthetic φ-incoming-constant `Define`s (always 64)
+and every hand-built test `Define` are byte-identical (the width-64 no-op).
 
 # Ref
 
@@ -166,7 +173,9 @@ bit. LLVM renders the i1 literal `true` as the sign-extended `-1`; the unmasked
 Int64 VM needs the 1-bit value (`-1 → 1`) so the boolean-NOT idiom `%c ⊻ true`
 computes the logical NOT for `%c ∈ {0,1}`. For `width > 1`, or for an SSA
 operand, this is identical to `_lower_operand`. See `_lower_body_inst`'s i1 note
-(the deferred full-width bead `bennettvm-bgc`).
+(full-width masking — bead `bennettvm-bgc` — now threads `inst.width` into the
+`Define`; for `width == 1` the in-op `& mask` collapses to `& 1`, agreeing with
+this const-operand mask).
 """
 function _lower_bool_operand(op::Bennett.IROperand, width::Int)::Union{Symbol,Int64}
     lowered = _lower_operand(op)
@@ -264,14 +273,22 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
         # the nonzero=true branch convention) instead of the logical NOT. Mask
         # an i1 const operand to its low bit (`& 1`): `-1→1`, `0`/`1` unchanged,
         # so `%c ⊻ 1` is the correct NOT for `%c ∈ {0,1}`. This is the targeted
-        # i1-boolean fix the multi-block Julia-O0 CFG needs (full per-`width`
-        # masking is the deferred bead `bennettvm-bgc`); it is sound because an
-        # i1 value is always 0/1 and i1 algebra over {0,1} is exact in Int64.
+        # i1-boolean fix the multi-block Julia-O0 CFG needs. (Full per-`width`
+        # masking — bead `bennettvm-bgc` — is now done via the `inst.width`
+        # threaded into the `Define` below; for a true i1 op `width == 1`, the
+        # `_apply_binop` `& mask` collapses to `& 1`, so this const-operand mask
+        # and the in-op mask agree.) It is sound because an i1 value is always
+        # 0/1 and i1 algebra over {0,1} is exact in Int64.
         return Define(inst.dest, _lower_bool_operand(inst.op1, inst.width),
-                      inst.op, _lower_bool_operand(inst.op2, inst.width))
+                      inst.op, _lower_bool_operand(inst.op2, inst.width),
+                      inst.width)
     elseif inst isa Bennett.IRICmp
+        # IRICmp.width is the OPERAND width (the i1 result is never masked);
+        # `_apply_binop` extends the operands per the predicate's signedness
+        # at this width, then returns the unmasked 0/1 i1 result (ADR 0012
+        # R1 / §D2, bead `bennettvm-bgc`).
         return Define(inst.dest, _lower_operand(inst.op1), inst.predicate,
-                      _lower_operand(inst.op2))
+                      _lower_operand(inst.op2), inst.width)
     elseif inst isa Bennett.IRSelect
         inst.cond isa Bennett.SSAOperand ||
             error("lower_vm: IRSelect cond is ", typeof(inst.cond),

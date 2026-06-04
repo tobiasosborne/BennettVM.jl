@@ -152,6 +152,19 @@ using BennettVM
     # pulls in the oracle + `collatz_vm` factory via
     # `test/reference/collatz.jl` (re-include-guarded).
     include("test_collatz_roundtrip.jl")
+    # ADR 0012 R1 RESOLVED — width-aware `_apply_binop` (`bennettvm-bgc`).
+    # The collatz slice (and the general ingest) now threads the source
+    # `IRBinOp.width` / `IRICmp.width` into the `Define` it builds, and
+    # `Define.forward` computes the op in i`width` semantics (extract low-`w`
+    # bits, re-extend per the op's signedness, mask the result). This gate
+    # pins the golden-master against a NATIVE i`w` oracle on inputs that
+    # OVERFLOW their width (`(Int8(3)*x)÷Int8(2)` at x=50 → 203, pre-fix 75),
+    # the signed-remainder and unsigned-udiv corroborations, the round-trip
+    # on the overflow input (P0.6), and the verified width-64 no-op (existing
+    # full-width behavior byte-identical). Sits right after the collatz
+    # round-trip gate — its sibling R1 concern; depends only on
+    # already-loaded symbols (Bennett.jl extraction + `lower_vm`).
+    include("test_width_masking.jl")
     # SC9 Case C — matrix_sum (nested loops) round-trip acceptance gate
     # (`bennettvm-k7b`, ADR 0010). The nested-loop analogue of
     # test_collatz_roundtrip.jl: the definitive round-trip proof for the

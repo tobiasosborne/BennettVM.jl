@@ -364,12 +364,20 @@ end
         vm = lower_vm(Bennett.ParsedIR(32, [(:__x, 32)],
                                        [b_entry, b_t, b_f, b_join], [32]);
                       opts=:diamond)
+        # The i32 add/sub now compute in i32 semantics (ADR 0012 R1, bead
+        # bennettvm-bgc): `result` carries the LOW-32-BIT representation, so a
+        # NEGATIVE oracle (x=-5 → -6, x=0 → -1) is the zero-extended
+        # `oracle & 0xFFFFFFFF`, not the sign-extended Int64. The `:sgt`
+        # branch predicate is itself width-32 signed (operands sign-extended),
+        # so x=-5 / x=0 still correctly take the `x-1` arm — the control flow
+        # is unchanged; only the arithmetic carrier is the i32 low-bit form.
+        _m32 = (Int64(1) << 32) - 1
         for x in (Int64(5), Int64(-5), Int64(0))
-            oracle = x > 0 ? x + 1 : x - 1
+            oracle = (x > 0 ? x + 1 : x - 1) & _m32
             rs = initial_state(vm, Dict(:__x => x))
             run!(rs, vm; checkpoint_interval=4)
             @test is_halted(rs)
-            @test result(rs)[:__m] == oracle      # ORACLE (known value)
+            @test result(rs)[:__m] == oracle      # ORACLE (i32 known value)
             unrun!(rs, vm)
             @test rs.current == rs.initial         # round-trip (P0.6)
             @test isempty(rs.history)
