@@ -2,6 +2,42 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## DECISION (2026-06-04 — Dict via route (b); DO NOT RELITIGATE) — ADR 0015
+
+> Lead decision, recorded in `docs/adr/0015-dict-route-b-correctness-floor.md`
+> (amends ADR 0013 §D-3, which now carries an amendment banner). Grounded in a
+> 3-agent codebase sweep + a live `code_llvm` probe (2026-06-04).
+
+**Principle: correctness first, optimize on top.** SC9 Case B (`Dict`) goes via
+**route (b)** — reversibly *execute* the inlined isbits-`Dict` LLVM opcodes (hash
+= `IRBinOp`, open-addressing probe = ordinary control flow, `keys`/`vals`
+`Memory` backing = the store-level memory floor, `KeyError` = dead branch) over
+the floor + L3 checkpoint-replay, **exactly like Case A (Vector)**. There is **no
+in-principle blocker** for value-semantic keys (the probe confirmed deterministic
+hash arithmetic — no `objectid`/`pointer`/`rdrand`; L3 reverses any deterministic
+instruction). **Route (a)** (recognize `Dict` ops → `IRMap*`/`RevMap`) is RETAINED
+but **DEMOTED to a quantum-circuit-lowering optimization** — it was treating
+route (a) as *the* path that made Case B read "research-grade."
+
+What this changed (beads reconciled):
+- `bennettvm-9i1` (route-a inlined-`getindex` recognizer, "research-grade") —
+  **CLOSED / superseded** by `bennettvm-o1y` (route-a as a deferred P3 quantum
+  optimization; `RevMap`/`IRMap*` stay built & proven, do not delete).
+- `bennettvm-tu9` (NEW, P1) — **the SC9 Case B correctness gate**: generalize the
+  `m9i` Memory recognizer to the Dict's `keys`/`vals` backing. Depends on `m9i`.
+- `bennettvm-90l` (NEW, P1) — **determinism guard** (part of the correctness
+  floor): fail loud (Rule 1) on non-deterministic-hash (`objectid`/identity) keys
+  — the ONE genuine in-principle blocker. The 2026-06-04 sweep found no such
+  guard in `dict_vm.jl` today; verify and add.
+- `bennettvm-7xa` (e2e `fdict` gate) re-pointed off `9i1` → onto `tu9` + `90l`.
+- `bennettvm-m9i` is the **shared prerequisite for both Case A and Case B**
+  route (b) (annotated). It is the single highest-leverage next build.
+- Bennett.jl side recorded: `Bennett-800b` note + `Bennett-ReversibleVM-PRD.md`.
+
+The `heap.jl` "Dict irreversible by construction" reject is correct for
+`mem=:heap` but is **not** a statement about reversibility in principle — the
+`mem=:vm` route-(b) path makes an isbits `Dict` reversible.
+
 ## Current state (2026-06-02 — FP/SC10 landed; Case B write-side end-to-end; Case A plumbing)
 
 > Orchestrated session (user directive: Opus coders, Sonnet hostile reviewers,

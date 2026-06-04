@@ -86,6 +86,18 @@ operations reverse in correct order.
 
 ### D-3. `Dict` = a BennettVM reversible-map ADT (lead's choice: option D3).
 
+> **⚠ AMENDED by ADR 0015 (2026-06-04, lead).** This D-3 design (recognize
+> `Dict` ops → `IRMap*` → `RevMap`, i.e. "route (a)") is **DEMOTED to a
+> quantum-circuit-lowering optimization**. The **correctness path for `Dict`**
+> is **route (b)** — reversibly executing the raw lowered opcodes over the §D-2
+> store-level floor, identical to Case A (Vector); the Dict's `keys`/`vals`
+> `Memory` is just heap the floor already reverses. The `RevMap`/`IRMap*` work
+> below is **retained as-is** for the optimization tier (it is already built and
+> proven VM-side) — do not delete it, and do not re-promote it to *the* path.
+> SC9 Case B is engineering (generalize the `m9i` Memory recognizer + a
+> deterministic-hash-key fail-loud guard), **not** research-grade. Do not
+> relitigate; see `docs/adr/0015-dict-route-b-correctness-floor.md`.
+
 Julia's `Dict` cannot be cheaply inlined to raw stores (GC-allocated
 backing + data-dependent rehash), and `(k, old_v)`-capture alone is
 **not** reversible under a rehash (the probe-sequence/layout changes).
