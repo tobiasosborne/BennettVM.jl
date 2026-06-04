@@ -264,6 +264,22 @@ using BennettVM
     # output rather than a hand-built ParsedIR. Sits right after the
     # `test_alloca_delta.jl` DynAlloca unit it builds on.
     include("test_dyn_roundtrip.jl")
+    # SC9 Case A — THE Julia-`Vector` round-trip gate (bead `Bennett-jfw6`, ADR
+    # 0016). Drives a REAL Julia `Vector{T}(undef,n)` write/read/reduce loop
+    # (`fvec` Int64 + `vsum` Int8) from SOURCE through Bennett.jl's `mem=:vm`
+    # Case-A Memory recogniser (`src/extract/vector_vm*.jl`) — which strips the
+    # GC/GenericMemory skeleton (the GC frame, the
+    # `jl_alloc_genericmemory_unchecked` Memory backing, the Array wrapper, the
+    # `julia.gc_loaded` data-ptr launder, the size/inexact/bounds throw
+    # diamonds) and emits the loop-PRESERVING `IRAlloca(dyn)+IRVarGEP+IRStore/
+    # IRLoad` multi-block ParsedIR — into `lower_vm` → forward (== oracle
+    # bit-exact, golden master) → `unrun!` to empty history. Complements the C
+    # `frtN.ll` gate above (`test_dyn_roundtrip.jl`): same VM shape, now from
+    # Julia source. Also asserts the ADR-0016 fail-loud matrix (optimize=true /
+    # O2-SIMD reject (D1); two dynamic Vectors → multi-array reject) and exer-
+    # cises the mixed L2/L3 history (DynAlloca (base,n) delta) + per-step
+    # inverse. The vsum Int8 case is the D6 stride witness (`mul %off,1`).
+    include("test_vec_vm_roundtrip.jl")
     # SC9 Case B — RevMap reversible-map ADT + IRMap* ops unit gate (bead
     # `bennettvm-jrc`, ADR 0008). The Dict analogue of the memory-floor op
     # units: pins the `RevMap` (`IState.revmap`, a `Dict{Int64,Int64}`

@@ -158,6 +158,21 @@ function _lower_operand(op::Bennett.IROperand)::Union{Symbol,Int64}
     end
 end
 
+"""
+    _lower_bool_operand(op, width) -> Union{Symbol,Int64}
+
+Lower a binop operand, masking an i1 (`width == 1`) `ConstOperand` to its low
+bit. LLVM renders the i1 literal `true` as the sign-extended `-1`; the unmasked
+Int64 VM needs the 1-bit value (`-1 → 1`) so the boolean-NOT idiom `%c ⊻ true`
+computes the logical NOT for `%c ∈ {0,1}`. For `width > 1`, or for an SSA
+operand, this is identical to `_lower_operand`. See `_lower_body_inst`'s i1 note
+(the deferred full-width bead `bennettvm-bgc`).
+"""
+function _lower_bool_operand(op::Bennett.IROperand, width::Int)::Union{Symbol,Int64}
+    lowered = _lower_operand(op)
+    (width == 1 && lowered isa Int64) ? (lowered & Int64(1)) : lowered
+end
+
 # ---------------------------------------------------------------------
 # Body-instruction translation: the six IRInst types, generically.
 # ---------------------------------------------------------------------
@@ -201,8 +216,18 @@ Any other `IRInst` subtype is rejected loudly (Rule 1).
 """
 function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
     if inst isa Bennett.IRBinOp
-        return Define(inst.dest, _lower_operand(inst.op1), inst.op,
-                      _lower_operand(inst.op2))
+        # i1 (width==1) boolean algebra: a `ConstOperand` operand of an i1 op
+        # is a 1-bit literal, but LLVM renders `true` as the SIGN-EXTENDED `-1`
+        # (`xor i1 %c, true` — the boolean-NOT idiom). The cell-addressed VM is
+        # unmasked Int64, so `%c ⊻ -1` would yield `-2` (a spurious "true" under
+        # the nonzero=true branch convention) instead of the logical NOT. Mask
+        # an i1 const operand to its low bit (`& 1`): `-1→1`, `0`/`1` unchanged,
+        # so `%c ⊻ 1` is the correct NOT for `%c ∈ {0,1}`. This is the targeted
+        # i1-boolean fix the multi-block Julia-O0 CFG needs (full per-`width`
+        # masking is the deferred bead `bennettvm-bgc`); it is sound because an
+        # i1 value is always 0/1 and i1 algebra over {0,1} is exact in Int64.
+        return Define(inst.dest, _lower_bool_operand(inst.op1, inst.width),
+                      inst.op, _lower_bool_operand(inst.op2, inst.width))
     elseif inst isa Bennett.IRICmp
         return Define(inst.dest, _lower_operand(inst.op1), inst.predicate,
                       _lower_operand(inst.op2))
@@ -555,6 +580,20 @@ never collide because their `k` differs.
 _phi_const_dup_name(src::Symbol, value::Int64, k::Int) =
     Symbol("_phi_const_", src, "_", value, "_dup", k)
 
+"""
+    _phi_ssa_dup_name(src::Symbol, name::Symbol, k::Int) -> Symbol
+
+A FRESH, collision-proof synthetic name for the `k`-th *within-one-edge* repeat
+of SSA value `name` flowing out of `src` (bead `bennettvm-e4l`, generalised
+from `ConstOperand` to `SSAOperand`). Surfaced by the Case-A Julia `Vector` O0
+IR (ADR 0016): Julia duplicates a loop-induction φ, so one edge sends the same
+SSA name into two φ-param slots. args→params binds positionally + destructively,
+so each repeat slot needs its own non-destructive copy (`Define(dup, name, :add,
+0)`); the monotone counter `k` guarantees uniqueness regardless of name shape.
+"""
+_phi_ssa_dup_name(src::Symbol, name::Symbol, k::Int) =
+    Symbol("_phi_ssadup_", src, "_", name, "_", k)
+
 # ---------------------------------------------------------------------
 # Main assembly: ParsedIR → VMProgram.
 # ---------------------------------------------------------------------
@@ -612,6 +651,13 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
                                              for b in blocks)
     const_defs = Dict{Symbol,Vector{Tuple{Symbol,Int64}}}(
         b.label => Tuple{Symbol,Int64}[] for b in blocks)
+    # ssa_copy_defs[src] :: Vector{(dup_name, source_name)} — the within-edge
+    # SSA-duplicate copies (bead e4l, generalised to SSAOperand): each is a
+    # non-destructive `Define(dup, source, :add, 0)` materialised in `src`'s
+    # body so a single edge sending the same SSA name into two φ-param slots
+    # gets a distinct name per slot.
+    ssa_copy_defs = Dict{Symbol,Vector{Tuple{Symbol,Symbol}}}(
+        b.label => Tuple{Symbol,Symbol}[] for b in blocks)
     preds = Dict{Symbol,Vector{Symbol}}(b.label => Symbol[] for b in blocks)
     dup_counter = 0  # monotone, collision-proof across all within-edge dups.
     for src_block in blocks
@@ -622,8 +668,25 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
             used = Set{Symbol}()  # names already bound IN THIS edge's args.
             for op in incoming
                 if op isa Bennett.SSAOperand
-                    push!(args, op.name)
-                    push!(used, op.name)
+                    if op.name in used
+                        # Within-THIS-edge SSA duplicate (bead e4l, generalised
+                        # from ConstOperand to SSAOperand — surfaced by the
+                        # Case-A Julia `Vector` O0 IR, where Julia duplicates a
+                        # loop induction φ so one edge sends the SAME SSA name
+                        # into two param slots). args→params binds positionally
+                        # and DESTRUCTIVELY, so this slot needs its OWN copy:
+                        # mint a fresh name + an extra non-destructive copy
+                        # `Define(dup, op.name, :add, 0)` in `src`'s body. The
+                        # original `op.name` is READ, never consumed.
+                        dup_counter += 1
+                        dup = _phi_ssa_dup_name(src, op.name, dup_counter)
+                        push!(ssa_copy_defs[src], (dup, op.name))
+                        push!(args, dup)
+                        push!(used, dup)
+                    else
+                        push!(args, op.name)
+                        push!(used, op.name)
+                    end
                 else  # ConstOperand — materialise in `src`.
                     v = Int64(op.value)
                     # Cross-edge-shared name (one Define per (src,value)).
@@ -746,6 +809,13 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
         # every param slot the edge feeds gets its own destructive create.
         for (name, v) in const_defs[b.label]
             push!(body, Define(name, Int64(v), :add, Int64(0)))
+        end
+        # One non-destructive copy per within-edge SSA duplicate (bead e4l,
+        # SSAOperand case): `Define(dup, source, :add, 0)` reads `source` and
+        # writes the fresh `dup` so two φ-param slots fed the same SSA name from
+        # one edge each get their own create. `source` is READ, never consumed.
+        for (dup, source) in ssa_copy_defs[b.label]
+            push!(body, Define(dup, source, :add, Int64(0)))
         end
         # Exit marker from the terminator.
         term = b.terminator
