@@ -7,6 +7,60 @@
 
 ---
 
+## Session — 2026-06-04 — SC9 CASE A LANDED (dynamic Julia Vector e2e) + route-(b) Dict decision + opcode-coverage plan
+
+**Agents:** Opus 4.8 (1M) orchestrator, foreground. User directive: Opus coders,
+Sonnet hostile reviewers/scouts, serial Julia, commit/push regularly, raise beads,
+"what would a senior expert say". Bennett.jl `src/` write access standing (Rule 14).
+Pin bumped `b234496` → `231bde6` (Case A recognizer; see BENNETT_JL_PIN.md).
+
+### What landed (all committed + pushed, both repos)
+1. **Route-(b) Dict decision — ADR 0015** (+ ADR 0013 §D-3 amendment banner).
+   Lead call: correctness floor first, optimize on top. A `Dict` compiles by
+   reversibly EXECUTING its inlined isbits opcodes over the store-level memory
+   floor + L3 (route b) — NO in-principle blocker for value-semantic keys (live
+   `code_llvm` probe: deterministic hash; no objectid/pointer/rdrand). Route (a)
+   recognize→`IRMap*`/`RevMap` DEMOTED to a quantum-circuit-lowering optimization
+   (`o1y`, supersedes `9i1`). Recorded in both repos (Bennett-800b + reversible-VM PRD).
+2. **Opcode-coverage stocktake + granular plan** — epic `bennettvm-x49`,
+   `docs/opcode-coverage-plan.md` (P1–P7 + cross-repo bead map + the
+   genuinely-impossible fail-loud set). Full bead reconciliation across both repos:
+   created the missing gap beads; fixed a contradictory dep (`zg5` was gated on the
+   whole Lean chain `7zl` — decoupled); un-deferred `Bennett-tfx` (soft_frem);
+   retitled the stale `Bennett-800b`.
+3. **SC9 CASE A LANDED** — a dynamic Julia `Vector{T}(undef,n)`+indexed loop
+   round-trips e2e from source under `target=:reversible_vm`. ADR 0016 (2+1 design
+   pass vs the real `/tmp/fvec_O0.ll`) → recognizer `Bennett.jl/src/extract/vector_vm*.jl`
+   (reuses heap.jl M2/M3 partition) → hostile review → regression caught+fixed →
+   `Pkg.test` **4722/4722**. Two BennettVM ingest root-cause fixes (i1 boolean mask
+   for the `xor i1 %c,true` NOT-idiom; within-edge SSA-dup φ). Commits `9933d27`,
+   `233d193` (+ Bennett.jl `1d574f2`, `231bde6`).
+
+### Load-bearing lessons (not in git)
+- **Caught a silent-miscompile blueprint (b5x).** The IRPtrOffset scout proposed
+  `offset_bytes ÷ 8` → cell offset. WRONG: the VM is cell-addressed (1 cell/element),
+  so for an i32 array `p[2]` (offset_bytes=8) ÷8 gives cell 1 but the element is at
+  cell 2, and `8%8==0` so no guard fires. b5x is therefore cross-repo: Bennett.jl
+  IRPtrOffset must carry `elem_width` (additive; `Bennett-xv0u`). Same stride trap
+  is handled in the Case A recognizer (ADR 0016 D6: recover the index by the
+  RECOGNIZED stride, never a constant).
+- **A false-green from a stale precompile cache.** A coder's standalone
+  `julia test/file.jl` reported 143/143 while the hardening was actually broken; the
+  fresh-subprocess `Pkg.test()` exposed it (the new P-callee guard over-rejected the
+  dead `ijl_bounds_error_int` throw — the allowlist missed the unmangled runtime
+  throw entries). **GATE ON `Pkg.test()`, NEVER a standalone file run.** Also: a
+  background `julia … | tail` masks the real exit code — capture to a file with
+  `; echo $?`.
+- **Case A ships on a SINGLE dynamic array; Case B needs `uil` first** (a `Dict` has
+  TWO GenericMemory backings keys+vals; ADR 0016 D8). `tu9` re-wired onto `uil`.
+
+### Open / next (epic x49)
+push!-grown Vector (`xkl` + `6db`/`ehp`); FP `soft_frem`→`frem` (`Bennett-tfx`→`01w`);
+`b5x` (needs `Bennett-xv0u`); aggregates (`acq`, `dzd`/`Bennett-8e1f`, `Bennett-6bu3`);
+Case B (`tu9`/`7xa`) behind `uil`. Low: `bennettvm-2lgo`, `bennettvm-5js9`.
+
+---
+
 ## Session — 2026-06-02 — FP/SC10 landed; Case B write-side e2e; Case A plumbing; Bennett.jl repinned
 
 **Agents:** Opus 4.8 (1M) orchestrator, foreground. User directive: Opus coders,

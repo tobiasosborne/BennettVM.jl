@@ -3,10 +3,28 @@
 Per PRD v3 §7.5 and CLAUDE.md Rule 14, BennettVM.jl pins Bennett.jl
 during initial development to insulate against frontend churn.
 
-**Pinned SHA:** `b234496` (Bennett-800b: mem=:vm Dict→IRMap* recognition arm)
-**Pinned date:** 2026-06-02 (repinned from `f73a5ed` of 2026-05-31)
+**Pinned SHA:** `231bde6` (jfw6: Case A hardening — fail-loud cond_skel + P-callee)
+**Pinned date:** 2026-06-04 (repinned from `b234496` of 2026-06-02)
 **Bennett.jl HEAD commit at pin time:**
-`Bennett-800b: mem=:vm Dict→IRMap* recognition arm (setindex! write side; SC9 Case B)`
+`fix(jfw6): Case A hardening — fail-loud cond_skel + P-callee (Bennett-bal6/msob)`
+
+## Repin rationale (2026-06-04)
+
+SC9 Case A (dynamic `Vector`) landed its front-end recognition arm in Bennett.jl
+`src/extract/vector_vm*.jl` (5 new files) + routing in `module_walk.jl` (the
+`mem=:vm` Case A branch) + `ir_extract.jl` includes (ADR 0016; bead `Bennett-jfw6`
++ hardening `Bennett-bal6`/`msob`). The recognizer strips the Julia
+GC/GenericMemory skeleton at `optimize=false` and emits the language-neutral
+`IRAlloca(dyn)+IRVarGEP+IRLoad/IRStore` ParsedIR that BennettVM ingest consumes, so
+BennettVM's `test/test_vec_vm_roundtrip.jl` MUST run against a Bennett.jl that
+defines it — repinned to `231bde6`. Additive (`mem=:auto`/`:heap`/`:persistent` and
+Case-B-Dict byte-identical — the routing is gated behind `mem===:vm` + a Vector
+recognition check). Validation at pin: BennettVM full `Pkg.test` **4722/4722**
+(orchestrator-verified, fresh subprocess). The dynamic Julia `Vector{T}(undef,n)` +
+indexed loop now round-trips e2e under `target=:reversible_vm`. Rule-14 Bennett.jl
+`src/` change under standing user approval (2026-06-04). Also at this SHA: the
+route-(b) Dict decision record (`Bennett-800b` note + reversible-VM PRD callout;
+BennettVM ADR 0015) and the cross-repo opcode-coverage beads (BG1–BG5, `xv0u`).
 
 ## Repin rationale (2026-06-02)
 
