@@ -396,4 +396,13 @@ using BennettVM
     # ParsedIR interface. Sits right after the coverage capstone (same
     # hand-built ParsedIR idiom; depends only on already-loaded symbols).
     include("test_fail_loud_completeness.jl")
+    # M_FP.5 — Float32-rejection enforcement at the ingest boundary
+    # (`bennettvm-h0t`; ADR 0011 §D2, Bennett-3rph). The witness half proves
+    # the SC10 pure-Float64 lowering contains ZERO f32-touching SoftCalls; the
+    # defensive half drives a hand-built f32 `IRCall` (soft_fptrunc ret-32 /
+    # soft_fpext arg-32) through `lower_vm` and asserts the ingest guard
+    # rejects each with a cause-naming ErrorException. Same hand-built ParsedIR
+    # idiom as test_fail_loud_completeness.jl; depends on already-loaded
+    # symbols + the SC10 fixture from test_fp_roundtrip.jl (re-built locally).
+    include("test_fp_f32_reject.jl")
 end

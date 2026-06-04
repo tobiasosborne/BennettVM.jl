@@ -473,11 +473,17 @@ end
         # loud naming the rejected callee (Rule 1). The message names the
         # callee and the allowlist, not "unsupported IRInst body subtype"
         # (that's the `else`-arm GAP message; non-soft IRCall now raises one
-        # step earlier, in SoftCall's constructor).
+        # step earlier, in SoftCall's constructor). Widths are 64 (f64) so the
+        # NON-SOFT-callee path is what is under test here — an f32 width would
+        # instead trip the ingest-boundary f32-rejection guard (bead
+        # `bennettvm-h0t`, ADR 0011 §D2), which is exercised separately in
+        # `test_fp_f32_reject.jl`.
         e = _coverage_raise(
             [Bennett.IRCall(:__d, identity,
                             Bennett.IROperand[Bennett.SSAOperand(:__x)],
-                            [32], 32)], _ret_x())
+                            [64], 64)],
+            Bennett.IRRet(Bennett.SSAOperand(:__x), 64);
+            args=[(:__x, 64)], ret=[64])
         @test e isa ErrorException
         @test occursin("SoftCall", e.msg)
         @test occursin("identity", e.msg)

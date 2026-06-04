@@ -112,20 +112,33 @@ per-instruction `inverse()` raises descriptively (the `Define` /
 (which would falsely report a successful reverse while the lost FP
 information went unrestored — silent reversibility corruption, Rule 1).
 
-# Float32 (ADR 0011 §D2) — inherited rejection, documented here
+# Float32 (ADR 0011 §D2) — inherited rejection, ENFORCED at ingest
 
 Float32 is rejected upstream in Bennett.jl (double-rounding through
 `soft_fpext → f64-op → soft_fptrunc` is NOT bit-exact, Bennett-3rph).
-BennettVM inherits the rejection: a Float64-only program never produces
-an f32-result `soft_fptrunc` as its *output*. We do NOT reject
-`soft_fptrunc` outright (a pure-f64 program never emits one, but a
-mixed-precision `.ll` might use it as an intermediate), because the
-f32-double-rounding-OUTPUT case requires whole-
-program type analysis at the boundary that is out of M_FP.2's scope
-(bead `bennettvm-yc6`/follow-on). The conversion callees are
-*recognised* (they are in `_SOFT_DISPATCH`); the f32-output rejection
-is a documented follow-on, not silently wrong here — a Float64 program
-(the SC10 gate) never hits it.
+BennettVM inherits the rejection through a TWO-LAYER upstream barrier —
+`_SUPPORTED_SCALAR_ARGS` (no Float32 entry type) and the per-intrinsic
+`w == 64` guards in the FP-intrinsic lowering (the fcmp/conversion arms
+lack one, but the SoftFloat wrapper keeps accepted f64 IR f32-free) — so a
+pure-Float64 program (the SC10 gate) never emits an f32-touching soft op at all.
+
+As of bead `bennettvm-h0t` (M_FP.5) the rejection is ALSO **ENFORCED at
+the BennettVM ingest boundary** as the belt-and-suspenders mirror: the
+`IRCall` arm of `_lower_body_inst` (`src/ir/ingest.jl`) rejects any soft
+op that *touches f32* — `ret_width == 32 || any(==(32), arg_widths)` —
+which catches `soft_fptrunc` (f64→f32, ret 32), `soft_fpext` (f32→f64,
+arg 32), and any f32-operand soft op. This is unreachable-by-construction
+on accepted f64 IR (per the upstream barrier above), so it fires only if a
+mixed-precision `.ll` reaches ingest. It does NOT over-reject any legal
+f64→intN conversion: that is emitted upstream with `ret_width == 64` plus
+a separate `IRCast(:trunc, 64→32)`, so the SoftCall keeps width 64
+(`../Bennett.jl/src/extract/instructions.jl:2322-2345`).
+
+The `SoftCall` DATA TYPE deliberately still supports the f32 widths (the
+constructor accepts `ret_width`/`arg_widths` ∈ {32, 64}): `test_softcall.jl`
+constructs `soft_fpext` / `soft_fptrunc` SoftCalls directly to unit-test
+the dispatch mechanism. Only the accepted-program *ingest boundary*
+rejects f32, never the constructor.
 
 # Constructor validation (Rule 1)
 

@@ -168,6 +168,21 @@ The rejection is automatic today (no `IRCall` dispatch at all), but when `IRCall
 lands (bead `bennettvm-8ox`), the callee registry MUST explicitly exclude
 `soft_fptrunc`-chained f32 paths or raise on `Float32`-typed entry.
 
+**Update (bead `bennettvm-h0t`, M_FP.5):** the boundary guard now EXISTS. The
+`IRCall` arm of `_lower_body_inst` (`src/ir/ingest.jl`) rejects any soft op that
+*touches f32* (`ret_width == 32 || any(==(32), arg_widths)` — catching
+`soft_fptrunc` ret-32, `soft_fpext` arg-32, and any f32-operand soft op), with a
+Rule-1 message citing this decision. It is the belt-and-suspenders mirror of the
+two-layer upstream Bennett.jl barrier (`_SUPPORTED_SCALAR_ARGS` + the
+per-intrinsic `w == 64` FP-intrinsic guards; the fcmp arm lacks one but the
+SoftFloat wrapper keeps accepted f64 IR f32-free): an accepted pure-Float64 program
+emits no f32-touching soft op, so the guard is unreachable-by-construction on
+accepted f64 IR and fires only if a mixed-precision `.ll` reaches ingest. It does
+NOT over-reject any legal f64→intN conversion (emitted upstream with
+`ret_width == 64` plus a separate `IRCast(:trunc, 64→32)`,
+`../Bennett.jl/src/extract/instructions.jl:2322-2345`). Witness + defensive tests
+in `test/test_fp_f32_reject.jl`.
+
 **D3 — fpext/fptrunc and frem are deferred gaps, not design questions.**
 
 These are wiring tasks (beads `bennettvm-8ox` / `bennettvm-01w`), not open

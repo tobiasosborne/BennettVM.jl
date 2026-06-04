@@ -368,12 +368,14 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
         # primitive). Operands may be SSA refs or LLVM constants, handled by
         # `_lower_operand`. arg_widths / ret_width carry the f32(UInt32) /
         # f64(UInt64) bit-width metadata `SoftCall.forward` reinterprets with.
-        # Float32-as-OUTPUT (the double-rounding case, ADR 0011 D2) is rejected
-        # upstream in Bennett.jl; a pure-Float64 program (the SC10 gate) never
-        # emits an f32-result `soft_fptrunc` as its output (the conversion
-        # callees are recognised as legal intermediates; full f32-output
-        # rejection at the program boundary is a documented follow-on, not
-        # silently wrong here).
+        # Float32 (the double-rounding case, ADR 0011 D2) is rejected upstream
+        # in Bennett.jl (two-layer barrier: `_SUPPORTED_SCALAR_ARGS` + the
+        # per-intrinsic `w==64` FP-intrinsic guards) AND, as the belt-and-
+        # suspenders BennettVM mirror, ENFORCED at this ingest boundary by the
+        # f32-touching guard below (bead `bennettvm-h0t`): any soft op with a
+        # 32-bit result or operand is rejected. A pure-Float64 program (the SC10
+        # gate) emits none, so the guard is unreachable-by-construction on
+        # accepted f64 IR; it fires only if a mixed-precision `.ll` arrives.
         #
         # Nondeterminism guard (bead `bennettvm-0kl`, F1): a genuinely
         # nondeterministic callee (rand / RDRAND / objectid / time / getpid …)
@@ -397,6 +399,56 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
                   "plan.md \"Genuinely impossible\", Nondeterminism row). ",
                   "Rejected callees: ", sort!(collect(_NONDETERMINISTIC_CALLEES)),
                   " (Rule 1 fail-loud).")
+        end
+        # Float32-touching soft op guard (bead `bennettvm-h0t`; ADR 0011 §D2,
+        # Bennett-3rph). A soft op "touches f32" iff its result OR any operand
+        # is 32-bit (`ret_width == 32 || any(==(32), arg_widths)`). This catches
+        # exactly the double-rounding surface: `soft_fptrunc` (f64→f32, ret 32),
+        # `soft_fpext` (f32→f64, arg 32), and any f32-OPERAND soft op. f32
+        # arithmetic in mixed-precision IR is routed `soft_fpext → f64-op →
+        # soft_fptrunc`, which DOUBLE-ROUNDS (rounds once at the f64 op, again at
+        # the f32 mantissa boundary) and is therefore NOT bit-exact against
+        # hardware f32 — a correctness defect, not a performance tradeoff (ADR
+        # 0011 §D2; `../Bennett.jl/src/softfloat/fpconv.jl:1-37`; CLAUDE.md
+        # rule 13). The bit-exact contract extends only to Float64.
+        #
+        # An ACCEPTED pure-Float64 program (the SC10 gate) emits NONE of these:
+        # the SoftFloat wrapper carries f64 as UInt64 and yields integer-only IR
+        # over 64-bit bit-patterns, and Bennett.jl rejects f32 at TWO upstream
+        # barriers — `_SUPPORTED_SCALAR_ARGS` (no Float32 entry type) and the
+        # per-intrinsic `w == 64` guards in the FP-intrinsic lowering. So this
+        # guard is UNREACHABLE-BY-CONSTRUCTION on any accepted f64 program; it
+        # is the fail-loud belt-and-suspenders if a MIXED-PRECISION `.ll` (the
+        # `.bc` route) ever delivers an f32-touching soft op to ingest.
+        #
+        # No legitimate f64→intN conversion is over-rejected: a `fptosi`/`fptoui`
+        # to a narrow width (e.g. f64→i32) is emitted upstream as an `IRCall`
+        # with `ret_width = 64` PLUS a SEPARATE `IRCast(:trunc, 64→32)` — the
+        # SoftCall keeps `ret_width = 64` and `arg_widths = [64]`, never a
+        # 32-width soft op (`../Bennett.jl/src/extract/instructions.jl:2322-2345`,
+        # verified). The guard fires ONLY on a genuine f32 width, never on a
+        # legal f64 op nor on the f64-side of a conversion.
+        #
+        # Placed at INGEST (not the SoftCall constructor): `test/test_softcall.jl`
+        # constructs `soft_fpext` / `soft_fptrunc` SoftCalls DIRECTLY to unit-test
+        # the dispatch mechanism, and the SoftCall data type must keep supporting
+        # the f32 widths for those tests (only the accepted-program ingest
+        # BOUNDARY rejects them). See `src/ir/softcall_instruction.jl` §"Float32".
+        if inst.ret_width == 32 || any(==(32), inst.arg_widths)
+            error("lower_vm: IRCall to soft op :", nameof(inst.callee),
+                  " (dest=", inst.dest, ") touches Float32 (ret_width=",
+                  inst.ret_width, ", arg_widths=", inst.arg_widths, ") — ",
+                  "REJECTED at the BennettVM ingest boundary (ADR 0011 §D2, ",
+                  "Bennett-3rph). f32 arithmetic routes soft_fpext → f64-op → ",
+                  "soft_fptrunc, which DOUBLE-ROUNDS and is NOT bit-exact ",
+                  "against hardware f32; BennettVM's bit-exact contract extends ",
+                  "only to Float64. An accepted pure-Float64 program (the SC10 ",
+                  "gate) emits no f32-touching soft op (the SoftFloat wrapper ",
+                  "yields integer-only f64 IR; Bennett.jl rejects f32 at ",
+                  "_SUPPORTED_SCALAR_ARGS + the per-intrinsic w==64 guards), so ",
+                  "this is unreachable-by-construction on accepted f64 IR — it ",
+                  "fails loud only if a mixed-precision `.ll` reaches ingest ",
+                  "(Rule 1 fail-loud).")
         end
         return SoftCall(inst.dest, nameof(inst.callee),
                         Union{Symbol,Int64}[_lower_operand(a)
