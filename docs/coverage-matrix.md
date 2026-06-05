@@ -36,7 +36,7 @@ GAP fail-loud site for all unhandled non-terminator subtypes. It interpolates
 | 4 | `IRRet` (:105) | `EndInstruction(routine, [retval])` | exit-marker in `_lower_parsed_ir` ingest.jl:822 | **COVERED** | test_opcode_coverage.jl + 12 other test files |
 | 5 | `IRInsertValue` (:115) | N × `Define` per-slot family (`_agg_<dest>_slot<k>`) | body-loop special case in `_lower_parsed_ir` (ArrayType `[N x iW]` only) | **COVERED** | test_opcode_coverage.jl, test_aggregate_extract_insert.jl |
 | 6 | `IRCast` (:126) | `CastInstruction` (sext/zext/trunc) | `_lower_body_inst` ingest.jl:248 | **COVERED** | test_opcode_coverage.jl, test_cast_instruction.jl, test_matrix_tri_roundtrip.jl |
-| 7 | `IRPtrOffset` (:144) | — | falls through to `else` at ingest.jl:370 | **GAP** | test_opcode_coverage.jl (GAP assertion only) |
+| 7 | `IRPtrOffset` (:144) | `Define(dest, base, :add, element_index)` where `element_index = offset_bytes ÷ (elem_width÷8)` (cell-addressed static GEP; constant-offset analogue of IRVarGEP) | `_lower_body_inst` IRPtrOffset arm | **COVERED** | test_opcode_coverage.jl, test_ptroffset.jl |
 | 8 | `IRVarGEP` (:150) | `VarGEP(dest, base, index, stride=1)` | `_lower_body_inst` ingest.jl:283 | **COVERED** | test_opcode_coverage.jl, test_array_floor.jl, test_alloca_delta.jl, test_vec_vm_roundtrip.jl + 4 more |
 | 9 | `IRLoad` (:157) | `MemoryLoad(dest, ptr_name)` | `_lower_body_inst` ingest.jl:271 | **COVERED** | test_opcode_coverage.jl, test_array_floor.jl, test_memory_floor.jl, test_memory_floor_cll.jl + 5 more |
 | 10 | `IRStore` (:172) | `MemoryStore(ptr_name, val)` | `_lower_body_inst` ingest.jl:257 | **COVERED** | test_opcode_coverage.jl, test_array_floor.jl, test_memory_floor.jl, test_memory_floor_cll.jl + 5 more |
@@ -52,16 +52,20 @@ GAP fail-loud site for all unhandled non-terminator subtypes. It interpolates
 
 ## Tally
 
-**17 COVERED / 1 GAP / 1 N/A** (total 19).
+**18 COVERED / 0 GAP / 1 N/A** (total 19).
 
-COVERED: `IRBinOp`, `IRICmp`, `IRSelect`, `IRRet`, `IRCast`, `IRVarGEP`,
+COVERED: `IRBinOp`, `IRICmp`, `IRSelect`, `IRRet`, `IRCast`, `IRPtrOffset`
+(cell-addressed static GEP → `Define(dest, base, :add, element_index)`;
+bead `bennettvm-b5x`, Bennett.jl field `Bennett-xv0u`), `IRVarGEP`,
 `IRLoad`, `IRStore`, `IRAlloca` (static + dynamic-N VLA), `IRCall` (soft_f*
 → `SoftCall`; non-soft callee raises via the `_SOFT_DISPATCH` allowlist),
 `IRBranch`, `IRPhi`, `IRMapInsert`, `IRMapGet`, `IRMapDelete`,
 `IRInsertValue` (ArrayType `[N x iW]` → per-slot `Define` family),
 `IRExtractValue` (ArrayType `[N x iW]` → slot copy).
 
-GAP: `IRPtrOffset`.
+GAP: *(none)* — every non-terminator IRInst subtype lowers. The shared
+`_lower_body_inst` `else` remains as a pure belt-and-suspenders firewall
+against an unhandled subtype.
 
 N/A: `IRSwitch` (pre-expanded by `_expand_switches` in Bennett.jl
 `extract/module_walk.jl` before `ParsedIR` is returned; never reaches
@@ -82,12 +86,18 @@ keyed off `ret_elem_widths` is the follow-on bead).
 
 ## Fail-loud sites (GAP / deferred rows)
 
-`IRPtrOffset` is the sole remaining GAP subtype — a non-terminator body
-instruction reaching the shared fail-loud `else` branch at the bottom of
-`_lower_body_inst`:
+There is no remaining GAP subtype: every non-terminator IRInst lowers. The
+shared `_lower_body_inst` `else` branch is now a pure belt-and-suspenders
+firewall — it would name any future unhandled subtype via `typeof(inst)`, but
+no real subtype reaches it. `IRPtrOffset` itself carries its own Rule-1
+rejects inside its lowering arm:
 
-- **`IRPtrOffset`** — the shared `_lower_body_inst` `else` arm.
-  Error message: `"lower_vm: unsupported IRInst body subtype Bennett.IRPtrOffset — …"` (interpolates `typeof(inst)`); IRPtrOffset is named in the `else`-arm deferred note.
+- **`IRPtrOffset` sub-element offset** — a byte offset that is not a whole
+  multiple of the element byte width (`offset_bytes % (elem_width÷8) != 0`) is
+  a sub-element / struct offset, out of scope (BG3 / U16). Error message names
+  `"sub-element / struct out of scope"`. Also rejects a non-`SSAOperand` base
+  (a malformed GEP shape) and a non-whole-byte `elem_width`. Pinned by
+  test_ptroffset.jl and test_fail_loud_completeness.jl (F2).
 
 A RETURNED aggregate (`IRInsertValue` / `IRExtractValue` build-up dangling
 into `IRRet`) hits the ingest IRRet aggregate-return guard, which fails loud

@@ -18,7 +18,10 @@
 # `bennettvm-acq` (OPCODE G2) `IRInsertValue` (row 5) and `IRExtractValue`
 # (row 12) moved GAP → DONE for homogeneous ArrayType `[N x iW]` aggregates
 # (the per-slot `Define` family model; StructType still fails loud upstream).
-# The tally is now 17 DONE / 1 GAP / 1 N/A.
+# As of bead `bennettvm-b5x` (Bennett.jl field `Bennett-xv0u`) `IRPtrOffset`
+# (row 7) moved GAP → DONE: the cell-addressed STATIC GEP lowers to
+# `Define(dest, base, :add, element_index)` (ADR 0009 Decision 2b).
+# The tally is now 18 DONE / 0 GAP / 1 N/A.
 # Prose rots.
 # This file turns every row into an `@test`, so a future change to
 # `_lower_body_inst` / `_successors` / `_lower_alloca!` that silently
@@ -31,7 +34,7 @@
 #
 # # What each subtype testset asserts (Rule 4 — never bare "didn't throw")
 #
-# DONE (17): a minimal hand-built `ParsedIR` fragment containing the
+# DONE (18): a minimal hand-built `ParsedIR` fragment containing the
 #   subtype is run through the REAL `lower_vm`; the test asserts the
 #   resulting `VMProgram`'s entry block (or exit marker) contains the
 #   *documented* VM instruction TYPE (`IRBinOp → Define`, `IRCast →
@@ -52,16 +55,17 @@
 #   existing collatz / matrix_sum / memory-floor round-trip tests already
 #   prove the dynamics; this file proves the COVERAGE claim, once per row).
 #
-# GAP (1): a `ParsedIR` fragment containing the GAP subtype is run through
-#   `lower_vm`; the test asserts it raises an `ErrorException` whose message
-#   NAMES the unsupported op (Rule 1 fail-loud). Only `IRPtrOffset` remains:
-#   it is a non-terminator `IRInst`, so it falls through `_lower_body_inst`'s
-#   final `else` which interpolates `typeof(inst)` into the message — verified
-#   empirically. (`IRCall` left this group at M_FP.2: a soft_f* callee now
-#   lowers to `SoftCall`; only a NON-soft callee raises, via the SoftCall
-#   allowlist rather than the final `else` — see row 13's testset.
+# GAP (0): this group is now EMPTY. `IRPtrOffset` left it at bead
+#   `bennettvm-b5x` — it now LOWERS to `Define(dest, base, :add, element_index)`
+#   (the cell-addressed STATIC GEP, ADR 0009 Decision 2b; see row 7's testset).
+#   (`IRCall` left at M_FP.2: a soft_f* callee lowers to `SoftCall`; only a
+#   NON-soft callee raises, via the SoftCall allowlist — see row 13.
 #   `IRInsertValue` / `IRExtractValue` left at bead `bennettvm-acq` — they now
-#   lower to per-slot `Define` families; see rows 5 / 12.)
+#   lower to per-slot `Define` families; see rows 5 / 12.) The shared
+#   `_lower_body_inst` `else` remains as a pure belt-and-suspenders firewall:
+#   no real IRInst subtype reaches it any more, and Julia cannot inject a
+#   synthetic IRInst subtype from a test file, so it is a structural guard
+#   (defence in depth), not a directly-exercisable tested path.
 #
 # N/A (1) `IRSwitch`: the matrix records it is pre-expanded by
 #   `_expand_switches` (Bennett.jl `extract/module_walk.jl`) into
@@ -436,21 +440,39 @@ end
     end
 
     # =================================================================
-    # GAP — each raises a Rule-1 fail-loud error NAMING the op. Only
-    # IRPtrOffset remains in this group; it is a non-terminator IRInst →
-    # _lower_body_inst else which interpolates `typeof(inst)` into the
-    # message. (IRInsertValue / IRExtractValue left this group at bead
-    # `bennettvm-acq` — see the DONE rows 5 / 12 below.)
+    # GAP — each raises a Rule-1 fail-loud error NAMING the op. This group
+    # is now EMPTY: IRPtrOffset left it at bead `bennettvm-b5x` (see DONE
+    # row 7 below); IRInsertValue / IRExtractValue left at bead
+    # `bennettvm-acq` (DONE rows 5 / 12). No non-terminator IRInst subtype
+    # falls through `_lower_body_inst`'s shared `else` any more — the
+    # fail-loud `else` is now a pure belt-and-suspenders firewall: a structural
+    # guard not reachable by any concrete IRInst subtype, hence not directly
+    # exercisable by a test.
     # =================================================================
 
-    # Row 7 — IRPtrOffset (GAP, mem): static byte offset; last of the
-    # original memory quintet still open.
-    @testset "(7) GAP IRPtrOffset → raises naming IRPtrOffset" begin
-        e = _coverage_raise(
-            [Bennett.IRPtrOffset(:__d, Bennett.SSAOperand(:__x), 8)], _ret_x())
-        @test e isa ErrorException
-        @test occursin("IRPtrOffset", e.msg)
-        @test occursin("unsupported IRInst body subtype", e.msg)
+    # Row 7 — IRPtrOffset → Define (DONE at bead `bennettvm-b5x`; the
+    # cell-addressed STATIC GEP, ADR 0009 Decision 2b). `IRPtrOffset(dest,
+    # base, offset_bytes, elem_width)` lowers to `Define(dest, base, :add,
+    # element_index)` where `element_index = offset_bytes ÷ (elem_width÷8)`
+    # — the constant-offset analogue of IRVarGEP (VarGEP stride-1 cell
+    # address). The `elem_width` field (Bennett.jl `Bennett-xv0u`) is what
+    # makes the byte→index recovery correct for non-i64 elements; the circuit
+    # backend ignores it. off=8, ew=32 (i32) → element index 2.
+    @testset "(7) DONE IRPtrOffset → Define(dest, base, :add, element_index)" begin
+        vm, t = _coverage_lower(
+            [Bennett.IRAlloca(:__a, 32, Bennett.ConstOperand(4)),
+             Bennett.IRPtrOffset(:__d, Bennett.SSAOperand(:__a), 8, 32)],
+            Bennett.IRRet(Bennett.SSAOperand(:__a), 32))
+        @test BennettVM.Define in t
+        # The lowered IRPtrOffset is Define(:__d, :__a, :add, 2) — element
+        # index 2, NOT 8 (byte-addressed) and NOT 1 (a hardcoded ÷8). This is
+        # the COVERAGE claim (Rule 4 — a known value, not "no throw").
+        defs = [i for i in first(vm.blocks).instructions
+                if i isa BennettVM.Define && i.target == :__d]
+        @test length(defs) == 1
+        @test defs[1].lhs == :__a
+        @test defs[1].op == :add
+        @test defs[1].rhs == Int64(2)
     end
 
     # Row 5 — IRInsertValue → N slot Defines (DONE at bead `bennettvm-acq`;

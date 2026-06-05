@@ -235,6 +235,22 @@ using BennettVM
     # Sits right after the scalar memory-floor gates (consumes the same M8.2
     # scaffold and the same MemoryStore/MemoryLoad floor).
     include("test_array_floor.jl")
+    # OPCODE — IRPtrOffset cell-addressed STATIC GEP ingest (bead
+    # `bennettvm-b5x`; Bennett.jl additive field `Bennett-xv0u`; ADR 0009
+    # Decision 2b). The constant-offset analogue of IRVarGEP: a pointer is an
+    # Int64 cell address, the bump allocator reserves one cell per ELEMENT, so
+    # the cell offset is the element INDEX = `offset_bytes ÷ (elem_width ÷ 8)`
+    # — recovered from Bennett.jl's byte-valued `offset_bytes` plus the new
+    # `elem_width` field (the circuit backend ignores `elem_width`; without it
+    # a non-i64 array's byte offset would be mis-divided — a latent silent
+    # miscompile). Lowers to `Define(dest, base, :add, element_index)`. A
+    # hand-built `alloca i32[4]; arr[2]=99 (off=8,ew=32); load; ret` (oracle
+    # f(x)=99) lowers, runs bit-exact, round-trips to empty history (P0.6), and
+    # per-step-inverts at K ∈ {1,4}; sub-element offsets (non-even division),
+    # non-SSA bases, and sub-byte elem_widths fail loud (Rule 1). Moves
+    # IRPtrOffset OUT of the GAP group → COVERED. Same hand-built ParsedIR +
+    # `per_step_inverse_check` idiom as test_array_floor.jl.
+    include("test_ptroffset.jl")
     # SC9 Case A Unit 2 — indexed lossy store + (addr, old_value) L2 delta
     # (bead `bennettvm-ekc`; ADR 0009 Decision 2b/4.4). The FIRST L2 delta
     # that needs PRE-`forward()` state: a `MemoryStore` reverses via the
@@ -414,9 +430,10 @@ using BennettVM
     # objectid / time / getpid … → a SPECIFIC "nondeterministic — no
     # deterministic forward, no replay" error, distinct from the generic
     # SoftCall allowlist message); F2 pins the impossible-CFG/memory defensive
-    # mirror (the sole remaining GAP IRInst subtype IRPtrOffset's shared `else`,
-    # the deferred aggregate-RETURN IRRet guard, the IRSwitch `_successors`
-    # reject, the non-SSA-ptr memory-floor reject) and documents that
+    # mirror (the shared `_lower_body_inst` `else` named for an unhandled
+    # subtype, the deferred aggregate-RETURN IRRet guard, the IRSwitch
+    # `_successors` reject, the non-SSA-ptr memory-floor reject) and documents
+    # that
     # atomic/volatile/indirectbr/inline-asm/opaque-call are rejected UPSTREAM in
     # Bennett.jl (U14/U15/U4eu) and so are unrepresentable at the ParsedIR
     # interface. Sits right after the coverage capstone (same hand-built

@@ -3,10 +3,27 @@
 Per PRD v3 §7.5 and CLAUDE.md Rule 14, BennettVM.jl pins Bennett.jl
 during initial development to insulate against frontend churn.
 
-**Pinned SHA:** `231bde6` (jfw6: Case A hardening — fail-loud cond_skel + P-callee)
-**Pinned date:** 2026-06-04 (repinned from `b234496` of 2026-06-02)
+**Pinned SHA:** `31b63a6` (xv0u: IRPtrOffset.elem_width for cell-addressed BennettVM)
+**Pinned date:** 2026-06-05 (repinned from `231bde6` of 2026-06-04)
 **Bennett.jl HEAD commit at pin time:**
-`fix(jfw6): Case A hardening — fail-loud cond_skel + P-callee (Bennett-bal6/msob)`
+`feat(xv0u): IRPtrOffset preserves elem_width for cell-addressed BennettVM (b5x)`
+
+## Repin rationale (2026-06-05)
+
+`Bennett-xv0u` added an additive `elem_width::Int` field to `IRPtrOffset`
+(`src/ir_types.jl`) so the cell-addressed BennettVM recovers the element index
+from the byte offset (`index = offset_bytes ÷ (elem_width÷8)`); the circuit
+backend keeps using `offset_bytes` as bytes and ignores the field. BennettVM
+`bennettvm-b5x` adds the `lower_vm` ingest arm that consumes it, so BennettVM
+`test/test_ptroffset.jl` REQUIRES a Bennett.jl defining the field — repinned to
+`31b63a6`. Additive (the circuit backend and all other `mem` modes are
+byte-identical; all 8 IRPtrOffset construction sites updated). Validation at
+pin: Bennett.jl full `Pkg.test` 688515 Pass / 1 pre-existing Broken; BennettVM
+full `Pkg.test` **6450/6450** (path dep, orchestrator-verified, fresh
+subprocess). Rule-14 `src/` change under standing cross-repo user approval
+(2026-06-05). Also at this SHA: a `_narrow_inst` pass-through for `IRPtrOffset`
+and a documented `mem=:heap` `offset_bytes`-holds-element-index quirk (a P3
+reconciliation bead filed).
 
 ## Repin rationale (2026-06-04)
 

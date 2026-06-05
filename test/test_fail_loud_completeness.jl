@@ -51,8 +51,10 @@
 #     This is the `_NONDETERMINISTIC_CALLEES` guard in `ingest.jl`'s IRCall arm.
 #   * **F2 impossible-CFG/memory belt-and-suspenders** (each already in place;
 #     this file PINS them as the defensive mirror):
-#       - the sole remaining GAP `IRInst` subtype (`IRPtrOffset`) falls through
-#         `_lower_body_inst`'s shared `else`, which names the typename;
+#       - `IRPtrOffset` now LOWERS (bead `bennettvm-b5x`; the cell-addressed
+#         STATIC GEP) but carries its own Rule-1 reject for a sub-element /
+#         struct byte offset (non-whole-element multiple, BG3 / U16 out of
+#         scope) — pinned here from the fail-loud angle;
 #       - a RETURNED aggregate (`IRInsertValue` / `IRExtractValue` now LOWER for
 #         ArrayType — bead `bennettvm-acq` — but a returned `[N x iW]` aggregate
 #         is still DEFERRED) hits the ingest IRRet aggregate-return guard;
@@ -70,8 +72,9 @@
 #     fail-loud" section (Nondeterminism row; U14/U15/U4eu upstream rejects)
 #     and the P6 "clean-fail-loud" phase row (bead `0kl`).
 #   * `src/ir/ingest.jl` — `_NONDETERMINISTIC_CALLEES` + the IRCall-arm guard
-#     (F1); `_lower_body_inst` shared `else` (the sole remaining GAP subtype,
-#     IRPtrOffset); the IRRet aggregate-return guard (the deferred surface of
+#     (F1); `_lower_body_inst` shared `else` (now a structural firewall — the
+#     GAP group is empty; IRPtrOffset lowers at bead `bennettvm-b5x`); the
+#     IRRet aggregate-return guard (the deferred surface of
 #     the now-lowering IRInsertValue / IRExtractValue, bead `bennettvm-acq`);
 #     the IRStore / IRLoad SSA-ptr rejects (the memory floor); `_successors`
 #     IRSwitch reject (F2).
@@ -152,18 +155,23 @@ _faillow_ret_x() = Bennett.IRRet(Bennett.SSAOperand(:__x), 32)
     # the message NAMES the cause.
     # =================================================================
 
-    # IRPtrOffset is the sole remaining GAP IRInst subtype: it falls through
-    # `_lower_body_inst`'s shared `else`, which interpolates `typeof(inst)` into
-    # the message. (IRInsertValue / IRExtractValue left the GAP group at bead
-    # `bennettvm-acq` — they now LOWER to a per-slot `Define` family for
-    # homogeneous ArrayType aggregates; the remaining DEFERRED surface for them
-    # is the aggregate-RETURN reject, pinned below.)
-    @testset "F2 GAP IRPtrOffset → shared-else names IRPtrOffset" begin
+    # IRPtrOffset LOWERS now (bead `bennettvm-b5x`): the cell-addressed STATIC
+    # GEP → `Define(dest, base, :add, element_index)` (ADR 0009 Decision 2b). It
+    # is no longer a GAP — but it carries its OWN Rule-1 fail-loud surface: a
+    # byte offset that is NOT a whole-element multiple is a sub-element / struct
+    # offset, out of scope (BG3 / U16), and must reject rather than silently
+    # misaddress. (The full COVERED round-trip lives in test_ptroffset.jl; here
+    # we pin the fail-loud half from the completeness angle.) off=3, ew=32:
+    # 3 % 4 != 0.
+    @testset "F2 IRPtrOffset sub-element offset → rejects naming the scope" begin
         e = _faillow_raise(
-            [Bennett.IRPtrOffset(:__d, Bennett.SSAOperand(:__x), 8)], _faillow_ret_x())
+            [Bennett.IRAlloca(:__a, 32, Bennett.ConstOperand(4)),
+             Bennett.IRPtrOffset(:__d, Bennett.SSAOperand(:__x), 3, 32)],
+            _faillow_ret_x())
         @test e isa ErrorException
         @test occursin("IRPtrOffset", e.msg)
-        @test occursin("unsupported IRInst body subtype", e.msg)
+        @test occursin("sub-element", e.msg)   # Rule 4 — names the cause
+        @test occursin("out of scope", e.msg)
     end
 
     # IRExtractValue / IRInsertValue now LOWER (bead `bennettvm-acq`): a

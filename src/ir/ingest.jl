@@ -322,9 +322,10 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
         inst.ptr isa Bennett.SSAOperand ||
             error("lower_vm: IRStore ptr is ", typeof(inst.ptr),
                   " — the memory floor (ADR 0014 §D1) requires an SSAOperand ",
-                  "pointer naming an alloca dest (a pointer is an Int64 ",
-                  "address in locals). Address arithmetic (IRPtrOffset / ",
-                  "IRVarGEP) is deferred to v2 (Rule 1).")
+                  "pointer naming an alloca dest or a GEP create (a pointer is ",
+                  "an Int64 address in locals; IRVarGEP / IRPtrOffset both ",
+                  "produce an SSAOperand-named pointer). A non-SSA ptr means a ",
+                  "malformed store (Rule 1 fail-loud).")
         return MemoryStore(inst.ptr.name, _lower_operand(inst.val))
     elseif inst isa Bennett.IRLoad
         # LLVM `dest = load ptr` → the plain non-injective heap read (ADR
@@ -334,9 +335,11 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
         inst.ptr isa Bennett.SSAOperand ||
             error("lower_vm: IRLoad ptr is ", typeof(inst.ptr),
                   " (dest=", inst.dest, ") — the memory floor (ADR 0014 §D1) ",
-                  "requires an SSAOperand pointer naming an alloca dest. ",
-                  "Address arithmetic (IRPtrOffset / IRVarGEP) is deferred ",
-                  "to v2 (Rule 1).")
+                  "requires an SSAOperand pointer naming an alloca dest or a ",
+                  "GEP create (a pointer is an Int64 address in locals; ",
+                  "IRVarGEP / IRPtrOffset both produce an SSAOperand-named ",
+                  "pointer). A non-SSA ptr means a malformed load (Rule 1 ",
+                  "fail-loud).")
         return MemoryLoad(inst.dest, inst.ptr.name)
     elseif inst isa Bennett.IRVarGEP
         # LLVM `getelementptr` → the runtime element-address create (ADR 0009
@@ -513,6 +516,56 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
               "aggregate-membership guard), NOT here. Reaching this arm means ",
               "the body-loop branch was bypassed; that is a wiring bug (bead ",
               "`bennettvm-acq`, Rule 1 fail-loud).")
+    elseif inst isa Bennett.IRPtrOffset
+        # Cell-addressed STATIC GEP (ADR 0009 Decision 2b; bead bennettvm-b5x).
+        # `IRPtrOffset(dest, base, offset_bytes, elem_width)` is a constant-
+        # offset pointer create: `dest := base + element_index`. A pointer is an
+        # Int64 CELL address in `locals`, and the bump allocator reserves one
+        # cell per ELEMENT (VarGEP stride 1), so the cell offset is the ELEMENT
+        # INDEX, not the byte offset. Bennett.jl stores the offset in BYTES
+        # (`offset_bytes`, the circuit-backend unit) plus the source element bit
+        # width (`elem_width`, the additive Bennett-xv0u field); the element
+        # index is `offset_bytes ÷ (elem_width ÷ 8)`. This MIRRORS the IRVarGEP
+        # arm above (`VarGEP(..., stride=1)`) for the constant-index case — both
+        # land `dest` on the cell the alloca reserved for element `index`. The
+        # produced pointer flows unchanged into a downstream MemoryStore /
+        # MemoryLoad (no store/load change, Law 2). Returns a real `Instruction`.
+        #
+        # BVM only ingests `mem=:vm` ParsedIR, whose IRPtrOffset sites (the
+        # integer-source constant-index GEP and vector-load lane offsets) store
+        # TRUE BYTE offsets, so the `÷` is exact. Sub-element / struct offsets
+        # (non-even division) are out of scope (BG3 / U16): fail loud rather than
+        # silently misaddress (Rule 1, Rule 2 — never paper over).
+        inst.base isa Bennett.SSAOperand ||
+            error("lower_vm: IRPtrOffset base is ", typeof(inst.base),
+                  " (dest=", inst.dest, ") — the array floor (ADR 0009 ",
+                  "Decision 2b) requires an SSAOperand base naming an alloca ",
+                  "dest (a pointer is an Int64 cell address in locals). A ",
+                  "non-SSA base means a malformed or unsupported GEP shape ",
+                  "(Rule 1 fail-loud).")
+        ew_bits = inst.elem_width
+        (ew_bits >= 8 && ew_bits % 8 == 0) ||
+            error("lower_vm: IRPtrOffset elem_width=", ew_bits, " (dest=",
+                  inst.dest, ") is not a whole positive byte count — cannot ",
+                  "recover an element index from the byte offset (ADR 0009 ",
+                  "Decision 2b; bead bennettvm-b5x, field Bennett-xv0u). ",
+                  "Rule 1 fail-loud.")
+        ew_bytes = ew_bits ÷ 8
+        inst.offset_bytes >= 0 ||
+            error("lower_vm: IRPtrOffset offset_bytes=", inst.offset_bytes,
+                  " (dest=", inst.dest, ") is negative — a GEP below the alloca ",
+                  "base is malformed under mem=:vm (no production site emits a ",
+                  "negative offset; Rule 1 fail-loud rather than misaddress).")
+        inst.offset_bytes % ew_bytes == 0 ||
+            error("lower_vm: IRPtrOffset offset_bytes=", inst.offset_bytes,
+                  " (dest=", inst.dest, ") is not evenly divisible by the ",
+                  "element byte width ", ew_bytes, " (elem_width=", ew_bits,
+                  " bits) — a sub-element / struct offset is out of scope ",
+                  "(BG3 / U16). The cell-addressed VM addresses whole ",
+                  "elements only; fail loud rather than silently misaddress ",
+                  "(Rule 1, Rule 2).")
+        return Define(inst.dest, inst.base.name, :add,
+                      Int64(inst.offset_bytes ÷ ew_bytes))
     elseif inst isa Bennett.IRPhi
         return nothing   # φ → block parameter; not a body instruction.
     else
@@ -527,10 +580,11 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
               "IRInsertValue (the ArrayType aggregate slot model, bead ",
               "`bennettvm-acq`; BOTH are lowered at the call site — insert ",
               "emits N slot Defines, and extract needs the `agg_dests` registry ",
-              "for its aggregate-membership guard, in scope only there). ",
+              "for its aggregate-membership guard, in scope only there), and ",
+              "IRPtrOffset (the cell-addressed STATIC GEP, ADR 0009 Decision ",
+              "2b, bead bennettvm-b5x). ",
               "IRAlloca is lowered at the ",
-              "call site via the bump allocator (ADR 0014 §D1). IRPtrOffset ",
-              "is deferred (Rule 1).")
+              "call site via the bump allocator (ADR 0014 §D1). (Rule 1.)")
     end
 end
 
