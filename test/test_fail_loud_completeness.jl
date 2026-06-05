@@ -51,9 +51,11 @@
 #     This is the `_NONDETERMINISTIC_CALLEES` guard in `ingest.jl`'s IRCall arm.
 #   * **F2 impossible-CFG/memory belt-and-suspenders** (each already in place;
 #     this file PINS them as the defensive mirror):
-#       - the 3 GAP `IRInst` subtypes (`IRPtrOffset` / `IRExtractValue` /
-#         `IRInsertValue`) fall through `_lower_body_inst`'s shared `else`,
-#         which names the typename;
+#       - the sole remaining GAP `IRInst` subtype (`IRPtrOffset`) falls through
+#         `_lower_body_inst`'s shared `else`, which names the typename;
+#       - a RETURNED aggregate (`IRInsertValue` / `IRExtractValue` now LOWER for
+#         ArrayType — bead `bennettvm-acq` — but a returned `[N x iW]` aggregate
+#         is still DEFERRED) hits the ingest IRRet aggregate-return guard;
 #       - an `IRSwitch` arriving as a terminator hits `_successors`' reject;
 #       - a non-SSA-operand `IRStore` / `IRLoad` ptr hits the memory-floor
 #         reject (a pointer must be an `SSAOperand` naming an alloca dest).
@@ -68,8 +70,10 @@
 #     fail-loud" section (Nondeterminism row; U14/U15/U4eu upstream rejects)
 #     and the P6 "clean-fail-loud" phase row (bead `0kl`).
 #   * `src/ir/ingest.jl` — `_NONDETERMINISTIC_CALLEES` + the IRCall-arm guard
-#     (F1); `_lower_body_inst` shared `else` (the 3 GAP subtypes); the
-#     IRStore / IRLoad SSA-ptr rejects (the memory floor); `_successors`
+#     (F1); `_lower_body_inst` shared `else` (the sole remaining GAP subtype,
+#     IRPtrOffset); the IRRet aggregate-return guard (the deferred surface of
+#     the now-lowering IRInsertValue / IRExtractValue, bead `bennettvm-acq`);
+#     the IRStore / IRLoad SSA-ptr rejects (the memory floor); `_successors`
 #     IRSwitch reject (F2).
 #   * `Bennett.jl/src/ir_types.jl` — the `IRInst` subtype constructors
 #     (read-only; Rule 14): IRCall:281, IRPtrOffset:144, IRExtractValue:273,
@@ -148,8 +152,12 @@ _faillow_ret_x() = Bennett.IRRet(Bennett.SSAOperand(:__x), 32)
     # the message NAMES the cause.
     # =================================================================
 
-    # The 3 GAP IRInst subtypes fall through `_lower_body_inst`'s shared
-    # `else`, which interpolates `typeof(inst)` into the message.
+    # IRPtrOffset is the sole remaining GAP IRInst subtype: it falls through
+    # `_lower_body_inst`'s shared `else`, which interpolates `typeof(inst)` into
+    # the message. (IRInsertValue / IRExtractValue left the GAP group at bead
+    # `bennettvm-acq` — they now LOWER to a per-slot `Define` family for
+    # homogeneous ArrayType aggregates; the remaining DEFERRED surface for them
+    # is the aggregate-RETURN reject, pinned below.)
     @testset "F2 GAP IRPtrOffset → shared-else names IRPtrOffset" begin
         e = _faillow_raise(
             [Bennett.IRPtrOffset(:__d, Bennett.SSAOperand(:__x), 8)], _faillow_ret_x())
@@ -158,22 +166,53 @@ _faillow_ret_x() = Bennett.IRRet(Bennett.SSAOperand(:__x), 32)
         @test occursin("unsupported IRInst body subtype", e.msg)
     end
 
-    @testset "F2 GAP IRExtractValue → shared-else names IRExtractValue" begin
-        e = _faillow_raise(
-            [Bennett.IRExtractValue(:__d, Bennett.SSAOperand(:__x), 0, 32, 2)],
-            _faillow_ret_x())
+    # IRExtractValue / IRInsertValue now LOWER (bead `bennettvm-acq`): a
+    # scalar-CONSUMED build/read chain lowers cleanly. What stays DEFERRED is a
+    # RETURNED aggregate — the decomposed per-slot family cannot dangle into the
+    # symbol-only `EndInstruction.returns` (the multi-key return keyed off
+    # `ret_elem_widths` is the follow-on bead). The ingest IRRet guard fails
+    # loud on it (Rule 1) — this is the fail-loud-completeness surface that
+    # replaces the old "extract/insert unsupported" GAP rows.
+    @testset "F2 DEFERRED aggregate IRRet → ingest guard names the deferral" begin
+        # Build a [2 x i32] aggregate, then RETURN it (the deferred shape).
+        agg_block = Bennett.IRBasicBlock(
+            :entry,
+            Bennett.IRInst[
+                Bennett.IRInsertValue(:__a0, Bennett.ZERO_AGG,
+                                      Bennett.SSAOperand(:__x), 0, 32, 2),
+                Bennett.IRInsertValue(:__a1, Bennett.SSAOperand(:__a0),
+                                      Bennett.ConstOperand(7), 1, 32, 2),
+            ],
+            Bennett.IRRet(Bennett.SSAOperand(:__a1), 64),
+        )
+        parsed = Bennett.ParsedIR(64, [(:__x, 32)], [agg_block], [32, 32])
+        e = try
+            lower_vm(parsed; opts=:fail_loud_agg)
+            nothing
+        catch ex
+            ex
+        end
         @test e isa ErrorException
-        @test occursin("IRExtractValue", e.msg)
-        @test occursin("unsupported IRInst body subtype", e.msg)
+        @test occursin("aggregate", e.msg)         # Rule 4 — names the cause
+        @test occursin("DEFERRED", e.msg)
+        @test occursin("bennettvm-acq", e.msg)
     end
 
-    @testset "F2 GAP IRInsertValue → shared-else names IRInsertValue" begin
-        e = _faillow_raise(
-            [Bennett.IRInsertValue(:__d, Bennett.ZERO_AGG,
-                                   Bennett.SSAOperand(:__x), 0, 32, 2)], _faillow_ret_x())
-        @test e isa ErrorException
-        @test occursin("IRInsertValue", e.msg)
-        @test occursin("unsupported IRInst body subtype", e.msg)
+    # And the scalar-consumed chain itself does NOT raise (the positive half of
+    # the lift — extract/insert are no longer a GAP). A `[2 x i32]` built, read
+    # back into scalars, and a scalar returned lowers to a runnable VMProgram.
+    @testset "F2 scalar-consumed extract/insert lowers (no longer a GAP)" begin
+        ok_block = Bennett.IRBasicBlock(
+            :entry,
+            Bennett.IRInst[
+                Bennett.IRInsertValue(:__a0, Bennett.ZERO_AGG,
+                                      Bennett.SSAOperand(:__x), 0, 32, 2),
+                Bennett.IRExtractValue(:__e0, Bennett.SSAOperand(:__a0), 0, 32, 2),
+            ],
+            Bennett.IRRet(Bennett.SSAOperand(:__e0), 32),
+        )
+        parsed = Bennett.ParsedIR(32, [(:__x, 32)], [ok_block], [32])
+        @test lower_vm(parsed; opts=:fail_loud_ok) isa VMProgram
     end
 
     # An IRSwitch arriving as a block terminator hits `_successors`' reject.

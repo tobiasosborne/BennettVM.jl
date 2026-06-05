@@ -499,6 +499,20 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
         # (`src/ir/revmap.jl`; ADR 0008 Finding 4, with the senior-grade
         # missing-sentinel hardening for absent-key delete). Void (no SSA dest).
         return IRMapDelete(_lower_operand(inst.key))
+    elseif inst isa Bennett.IRExtractValue
+        # RELOCATED to the body loop (bead `bennettvm-acq`, Rule 1/2 fix). The
+        # aggregate-membership guard (`agg.name ∈ agg_dests`) needs the routine-
+        # scope `agg_dests` registry, which is NOT visible from this pure per-
+        # instruction dispatch — only from the body loop in `_lower_parsed_ir`,
+        # where `IRExtractValue` (alongside `IRInsertValue`) is now handled. So
+        # `extractvalue` must NOT reach here. If it does, the body loop missed a
+        # branch — fail loud rather than emit an unguarded slot read (Rule 1).
+        error("lower_vm: IRExtractValue reached _lower_body_inst (dest=",
+              inst.dest, ") — it is handled in the body loop of ",
+              "`_lower_parsed_ir` (where `agg_dests` is in scope for the ",
+              "aggregate-membership guard), NOT here. Reaching this arm means ",
+              "the body-loop branch was bypassed; that is a wiring bug (bead ",
+              "`bennettvm-acq`, Rule 1 fail-loud).")
     elseif inst isa Bennett.IRPhi
         return nothing   # φ → block parameter; not a body instruction.
     else
@@ -508,10 +522,15 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
               "scalar memory floor, ADR 0014 §D2), IRVarGEP (the array ",
               "element-address create, ADR 0009 Decision 2b), IRCall to a ",
               "soft_f* callee (the SoftFloat-dispatch create, ADR 0011 §D1), ",
-              "and IRMapInsert / IRMapGet / IRMapDelete (the reversible-map ",
-              "ops, ADR 0008 / 0013 §D-3, SC9 Case B). IRAlloca is lowered at ",
-              "the call site via the bump allocator (ADR 0014 §D1). ",
-              "IRPtrOffset / IRExtractValue are deferred (Rule 1).")
+              "IRMapInsert / IRMapGet / IRMapDelete (the reversible-map ",
+              "ops, ADR 0008 / 0013 §D-3, SC9 Case B), and IRExtractValue / ",
+              "IRInsertValue (the ArrayType aggregate slot model, bead ",
+              "`bennettvm-acq`; BOTH are lowered at the call site — insert ",
+              "emits N slot Defines, and extract needs the `agg_dests` registry ",
+              "for its aggregate-membership guard, in scope only there). ",
+              "IRAlloca is lowered at the ",
+              "call site via the bump allocator (ADR 0014 §D1). IRPtrOffset ",
+              "is deferred (Rule 1).")
     end
 end
 
@@ -749,6 +768,34 @@ so each repeat slot needs its own non-destructive copy (`Define(dup, name, :add,
 _phi_ssa_dup_name(src::Symbol, name::Symbol, k::Int) =
     Symbol("_phi_ssadup_", src, "_", name, "_", k)
 
+"""
+    _agg_slot_name(agg::Symbol, k::Int) -> Symbol
+
+The synthetic per-slot SSA name for element `k` of aggregate SSA value
+`agg` (bead `bennettvm-acq`, OPCODE G2): `:_agg_<agg>_slot<k>`.
+
+`IState.locals` is a FLAT `Dict{Symbol,Int64}` — one key cannot hold the
+N scalar elements of an ArrayType aggregate (`[N x iW]`, which is the only
+aggregate shape Bennett.jl emits `IRExtractValue` / `IRInsertValue` for;
+StructType fails loud UPSTREAM in extract — `../Bennett.jl/src/extract/
+instructions.jl:1954-1957,1971-1974`). So an aggregate is modelled as a
+FAMILY of N synthetic per-slot keys, one per element, reusing the scalar
+`Define`-copy machinery — NO change to the IState type (hence no
+equality/hash/checkpoint ripple). `extractvalue agg, k` reads slot `k`;
+`insertvalue agg, v, k` rebuilds the family (slot `k` := `v`, the rest
+copied from `agg`'s slots).
+
+NOTE (lexical-collision caveat, mirroring `_phi_const_name`'s
+`bennettvm-3ah` DEF-3 note): the `_<agg>_slot<k>` form could in principle
+collide with a real SSA name a frontend happened to spell that way (e.g.
+a user value literally named `_agg_a0_slot0`). Acceptable for v1: Bennett
+SSA names are numeric (`%17`, `value_phi6`), never `_agg_…`-prefixed, so
+the synthetic namespace is disjoint from the emitted one. A frontend that
+ever emits an `_agg_`-prefixed name would need a counter-based mint (cf.
+`_phi_const_dup_name`); filed as the follow-on if it arises.
+"""
+_agg_slot_name(agg::Symbol, k::Int) = Symbol("_agg_", agg, "_slot", k)
+
 # ---------------------------------------------------------------------
 # Main assembly: ParsedIR → VMProgram.
 # ---------------------------------------------------------------------
@@ -890,6 +937,22 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
     alloca_cursor = Int64(1)
     saw_dynamic_alloca = false
 
+    # Aggregate-dest registry (bead `bennettvm-acq`, OPCODE G2). Every
+    # `IRInsertValue.dest` is an SSA name bound to an aggregate VALUE that this
+    # pass DECOMPOSES into a per-slot `Define` family (no scalar key of its own
+    # ever holds the aggregate). PRE-SCANNED over ALL blocks here — BEFORE the
+    # per-block Phase-2 loop — so a cross-block aggregate (built in one block,
+    # returned in another) is caught by the IRRet guard regardless of the
+    # block-emission order (which is `entry first, then original order`, NOT
+    # dominance order — populating during the loop could miss a return whose
+    # aggregate is defined in a later-emitted block). Read only by the `IRRet`
+    # aggregate-return reject (a decomposed aggregate name must NOT dangle into
+    # the single-symbol `EndInstruction.returns` — the multi-key return is the
+    # follow-on bead).
+    agg_dests = Set{Symbol}(inst.dest for b in blocks
+                            for inst in b.instructions
+                            if inst isa Bennett.IRInsertValue)
+
     # --- Phase 2: original blocks (entry block first). ---
     ordered = vcat(by_label[entry_label],
                    [b for b in blocks if b.label !== entry_label])
@@ -957,6 +1020,161 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
                     _lower_alloca!(inst, alloca_cursor, saw_dynamic_alloca)
                 saw_dynamic_alloca = saw_dynamic_alloca || was_dyn
                 push!(body, ainstr)
+            elseif inst isa Bennett.IRInsertValue
+                # LLVM `insertvalue agg, val, index` → N slot `Define`s rebuilding
+                # the aggregate family (bead `bennettvm-acq`, OPCODE G2). Because
+                # it emits N instructions it does NOT fit the single-instruction
+                # `_lower_body_inst` contract, so it is special-cased HERE,
+                # mirroring the `IRAlloca` branch. The aggregate `dest` is modelled
+                # as a family of per-slot keys (`_agg_slot_name`); after the build
+                # every slot j holds the correct scalar:
+                #
+                #   * slot `index` := the inserted `val` (an SSAOperand or a
+                #     ConstOperand, lowered via `_lower_operand` — the same helper
+                #     `_lower_body_inst` uses for every binop/store/etc. operand);
+                #   * every other slot j := `agg`'s slot j, copied non-
+                #     destructively (`agg` is READ, never consumed — SSA values
+                #     persist for later use of the same aggregate).
+                #
+                # Two base shapes for `agg`:
+                #   - `Bennett.ZERO_AGG` (a `ZeroAggSentinel` = an all-zero
+                #     `[N x iW]` `zeroinitializer`, `../Bennett.jl/src/ir_types.jl:
+                #     36,49`): the base of an insertvalue build-up chain. The
+                #     un-inserted slots are zero-CREATES (`Define(slot, 0, :add,
+                #     0)`), there being no prior aggregate to copy from.
+                #   - a prior aggregate `SSAOperand`: copy each un-inserted slot
+                #     from `agg.name`'s slot family.
+                #
+                # Each emitted `Define` is the non-destructive copy/create idiom
+                # (`Define(t, src_or_const, :add, 0)`) — non-injective, reversed by
+                # L3 checkpoint-replay like every other `Define`, so NO new delta
+                # and a clean round-trip to empty history. `dest` was registered
+                # in `agg_dests` by the pre-scan above so a later aggregate-return
+                # IRRet fails loud (the decomposed family must not dangle into a
+                # single-symbol End).
+                #
+                # Bennett.jl emits `IRInsertValue` ONLY for homogeneous ArrayType
+                # `[N x iW]` (StructType fails loud upstream — `../Bennett.jl/src/
+                # extract/instructions.jl:1971-1974`), so `n_elems` slots is the
+                # full, well-defined element count.
+                n = inst.n_elems
+                # SILENT-MISCOMPILE guard (bead `bennettvm-acq`, Rule 2). The
+                # slot loop is `for j in 0:(n-1)`; if `index ∉ [0, n_elems)` the
+                # loop NEVER hits `j == index`, so the inserted `val` is silently
+                # DROPPED — every slot would be a copy/zero and `val` vanishes
+                # with zero error at lower- or run-time. And `n_elems == 0` emits
+                # ZERO Defines (no slot family at all). Both are miscompiles, not
+                # crashes, so they must fail loud HERE before the loop runs.
+                # Reproducer: `IRInsertValue(:a, ZERO_AGG, x, 2, 32, 2)` — index
+                # 2 with n_elems 2 has no slot 2, so `x` would be dropped silently.
+                (n >= 1 && 0 <= inst.index < n) ||
+                    error("lower_vm: IRInsertValue index=", inst.index,
+                          " out of range for n_elems=", n, " (dest=", inst.dest,
+                          ") — a `[N x iW]` insert must target slot index ",
+                          "∈ [0, n_elems) with n_elems ≥ 1. An out-of-range ",
+                          "index would SILENTLY DROP the inserted value (the ",
+                          "slot loop never hits `j == index`) and n_elems=0 ",
+                          "would emit zero slot Defines; both are silent ",
+                          "miscompiles (bead `bennettvm-acq`, Rule 2 fail-loud).")
+                lowered_val = _lower_operand(inst.val)
+                for j in 0:(n - 1)
+                    slot = _agg_slot_name(inst.dest, j)
+                    if j == inst.index
+                        push!(body, Define(slot, lowered_val, :add, Int64(0)))
+                    elseif inst.agg === Bennett.ZERO_AGG
+                        # No prior aggregate — zeroinitializer base. Zero-create.
+                        # `width=64` (default) is correct for a pure create: it
+                        # is an identity at the Int64 carrier (`_apply_binop(:add,
+                        # 0, 0, 64) == 0`); width-masking is the downstream
+                        # consumer's job (the i32 carrier invariant, beads
+                        # `kmpg`/`bgc`), not the slot copy's.
+                        push!(body, Define(slot, Int64(0), :add, Int64(0)))
+                    else
+                        # Copy from the prior aggregate's slot j (READ, not
+                        # consumed). `inst.agg` must be an SSAOperand here.
+                        inst.agg isa Bennett.SSAOperand ||
+                            error("lower_vm: IRInsertValue agg is ",
+                                  typeof(inst.agg), " (dest=", inst.dest,
+                                  ") — the aggregate slot model (bead ",
+                                  "`bennettvm-acq`) requires the base to be the ",
+                                  "ZERO_AGG sentinel or an SSAOperand naming a ",
+                                  "prior aggregate; any other operand is an ",
+                                  "unhandled IR shape (Rule 1 fail-loud).")
+                        # `width=64` (default) is correct for a pure slot COPY:
+                        # `_apply_binop(:add, v, 0, 64) == v` is the identity at
+                        # the Int64 carrier precision, so the copied scalar is
+                        # bit-preserved; width-masking is the downstream
+                        # consumer's responsibility (the i32 carrier invariant,
+                        # beads `kmpg`/`bgc`), not this copy's.
+                        push!(body, Define(slot,
+                                           _agg_slot_name(inst.agg.name, j),
+                                           :add, Int64(0)))
+                    end
+                end
+            elseif inst isa Bennett.IRExtractValue
+                # LLVM `extractvalue agg, index` → ONE non-destructive slot COPY
+                # (bead `bennettvm-acq`, OPCODE G2). Relocated HERE (out of
+                # `_lower_body_inst`) to sit alongside `IRInsertValue`: the
+                # symmetry is the point (insert BUILDS the slot family, extract
+                # READS one slot), and the aggregate-membership guard below needs
+                # `agg_dests` — only in scope in this loop, not in the pure
+                # per-instruction dispatch. The slot key is READ, never destroyed
+                # (`Define(dest, slot, :add, 0)`, the same non-destructive copy
+                # idiom the φ-incoming constants and alloca-pointer create use).
+                #
+                # Two fail-loud guards (Rule 1 / Rule 2), both lower-time:
+                #   (a) BOUNDS — `index ∈ [0, n_elems)`. An out-of-range index
+                #       names a slot key (`_agg_<agg>_slot<index>`) NO insertvalue
+                #       ever defined, so forward `run!` would hit a bare KeyError
+                #       with no context. Fail loud here, named.
+                #   (b) MEMBERSHIP — `agg.name ∈ agg_dests`. An `extractvalue`
+                #       whose `agg` is an ordinary scalar SSA name (never produced
+                #       by any `insertvalue`) would emit `Define(dest, _agg_<sc>_
+                #       slot…)` against a slot family that does not exist → another
+                #       contextless runtime KeyError. The pre-scanned `agg_dests`
+                #       registry (every IRInsertValue.dest) is the authority.
+                #
+                # `agg` MUST be an `SSAOperand` (an extractvalue of a bare
+                # zeroinitializer is constant-folded upstream and never reaches
+                # ingest). Bennett.jl emits this ONLY for homogeneous ArrayType
+                # `[N x iW]` (StructType fails loud upstream — `../Bennett.jl/src/
+                # extract/instructions.jl:1954-1957`), so the slot model is sound.
+                inst.agg isa Bennett.SSAOperand ||
+                    error("lower_vm: IRExtractValue agg is ", typeof(inst.agg),
+                          " (dest=", inst.dest, ") — the aggregate slot model ",
+                          "(bead `bennettvm-acq`) requires an SSAOperand ",
+                          "aggregate naming a prior insertvalue build-up; an ",
+                          "extractvalue of a bare zeroinitializer/sentinel is ",
+                          "constant-folded upstream and should never reach ",
+                          "ingest (Rule 1 fail-loud).")
+                # (a) BOUNDS — index must name a real slot of the family.
+                (inst.n_elems >= 1 && 0 <= inst.index < inst.n_elems) ||
+                    error("lower_vm: IRExtractValue index=", inst.index,
+                          " out of range for n_elems=", inst.n_elems, " (dest=",
+                          inst.dest, ", agg=", inst.agg.name, ") — a `[N x iW]` ",
+                          "extract must read slot index ∈ [0, n_elems). An ",
+                          "out-of-range index names a `_agg_<agg>_slot` key no ",
+                          "insertvalue ever defined → a contextless runtime ",
+                          "KeyError (bead `bennettvm-acq`, Rule 1 fail-loud).")
+                # (b) MEMBERSHIP — `agg` must be a known aggregate (insertvalue
+                #     dest), not an ordinary scalar SSA name.
+                inst.agg.name in agg_dests ||
+                    error("lower_vm: IRExtractValue agg=:", inst.agg.name,
+                          " (dest=", inst.dest, ") is NOT a known aggregate — ",
+                          "no `insertvalue` defines it, so it has no per-slot ",
+                          "`_agg_<agg>_slot` family; extracting from it would ",
+                          "emit a Define against a never-defined slot key → a ",
+                          "contextless runtime KeyError. Only an SSA value built ",
+                          "by `insertvalue` is a valid extractvalue source (bead ",
+                          "`bennettvm-acq`, Rule 1 fail-loud).")
+                # `width=64` (default) is correct for a pure slot COPY:
+                # `_apply_binop(:add, v, 0, 64) == v` is the identity at the
+                # Int64 carrier precision (bit-preserving); width-masking is the
+                # downstream consumer's job (the i32 carrier invariant, beads
+                # `kmpg`/`bgc`), not this read's.
+                push!(body, Define(inst.dest,
+                                   _agg_slot_name(inst.agg.name, inst.index),
+                                   :add, Int64(0)))
             else
                 li = _lower_body_inst(inst)
                 li === nothing || push!(body, li)
@@ -984,6 +1202,28 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
                 error("lower_vm: IRRet of a literal (", retval, ") is ",
                       "unsupported — End.returns is symbol-only; a const ",
                       "return would need a synthetic create (Rule 1).")
+            # Aggregate-return guard (bead `bennettvm-acq`, OPCODE G2 — the
+            # fatal-flaw fix). If the returned SSA name is an aggregate `dest`
+            # this pass DECOMPOSED into a per-slot family, it has NO single
+            # scalar key — emitting `EndInstruction(routine, [name])` would key
+            # the output off a symbol that never holds a value (`result(rs)` is
+            # keyed by the End's single return symbol). This bead scopes
+            # scalar-CONSUMED extract/insert only (every aggregate fully decays
+            # into scalar slots before return); the multi-key return
+            # (`EndInstruction.returns = [name_slot0, …]`, keyed off Bennett's
+            # `ret_elem_widths`) is a follow-on bead. Fail loud rather than let a
+            # decomposed aggregate name dangle into a single-symbol End (Rule 1).
+            retval in agg_dests &&
+                error("lower_vm: IRRet returns aggregate SSA value :", retval,
+                      " — returning a `[N x iW]` aggregate is DEFERRED (bead ",
+                      "`bennettvm-acq` scopes scalar-CONSUMED extract/insert ",
+                      "only). This pass decomposed :", retval, " into a per-slot ",
+                      "`_agg_<name>_slot<k>` family (no single scalar key holds ",
+                      "the aggregate), so it cannot flow into the symbol-only ",
+                      "`EndInstruction.returns`. The multi-key aggregate return ",
+                      "(End.returns = [", retval, "_slot0, …], keyed off ",
+                      "ret_elem_widths) is a follow-on bead. Rule 1 fail-loud — ",
+                      "do not dangle a decomposed aggregate into a scalar End.")
             exit = EndInstruction(routine, Symbol[retval])
         else  # IRBranch
             succs = _successors(term)

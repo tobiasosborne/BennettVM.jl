@@ -34,14 +34,14 @@ GAP fail-loud site for all unhandled non-terminator subtypes. It interpolates
 | 2 | `IRICmp` (:74) | `Define` w/ comparison predicate | `_lower_body_inst` ingest.jl:231 | **COVERED** | test_opcode_coverage.jl, test_define.jl |
 | 3 | `IRSelect` (:89) | `SelectInstruction` (2-to-1 MUX) | `_lower_body_inst` ingest.jl:234 | **COVERED** | test_opcode_coverage.jl, test_select.jl |
 | 4 | `IRRet` (:105) | `EndInstruction(routine, [retval])` | exit-marker in `_lower_parsed_ir` ingest.jl:822 | **COVERED** | test_opcode_coverage.jl + 12 other test files |
-| 5 | `IRInsertValue` (:115) | — | falls through to `else` at ingest.jl:370 | **GAP** | test_opcode_coverage.jl (GAP assertion only) |
+| 5 | `IRInsertValue` (:115) | N × `Define` per-slot family (`_agg_<dest>_slot<k>`) | body-loop special case in `_lower_parsed_ir` (ArrayType `[N x iW]` only) | **COVERED** | test_opcode_coverage.jl, test_aggregate_extract_insert.jl |
 | 6 | `IRCast` (:126) | `CastInstruction` (sext/zext/trunc) | `_lower_body_inst` ingest.jl:248 | **COVERED** | test_opcode_coverage.jl, test_cast_instruction.jl, test_matrix_tri_roundtrip.jl |
 | 7 | `IRPtrOffset` (:144) | — | falls through to `else` at ingest.jl:370 | **GAP** | test_opcode_coverage.jl (GAP assertion only) |
 | 8 | `IRVarGEP` (:150) | `VarGEP(dest, base, index, stride=1)` | `_lower_body_inst` ingest.jl:283 | **COVERED** | test_opcode_coverage.jl, test_array_floor.jl, test_alloca_delta.jl, test_vec_vm_roundtrip.jl + 4 more |
 | 9 | `IRLoad` (:157) | `MemoryLoad(dest, ptr_name)` | `_lower_body_inst` ingest.jl:271 | **COVERED** | test_opcode_coverage.jl, test_array_floor.jl, test_memory_floor.jl, test_memory_floor_cll.jl + 5 more |
 | 10 | `IRStore` (:172) | `MemoryStore(ptr_name, val)` | `_lower_body_inst` ingest.jl:257 | **COVERED** | test_opcode_coverage.jl, test_array_floor.jl, test_memory_floor.jl, test_memory_floor_cll.jl + 5 more |
 | 11 | `IRAlloca` (:262) | `Define(dest, base, :add, 0)` (static-N) or `DynAlloca(dest, n, base)` (dynamic-N) | `_lower_alloca!` ingest.jl:423; dispatched in body loop at ingest.jl:789 | **COVERED** | test_opcode_coverage.jl, test_array_floor.jl, test_alloca_delta.jl, test_memory_floor.jl + 6 more |
-| 12 | `IRExtractValue` (:273) | — | falls through to `else` at ingest.jl:370 | **GAP** | test_opcode_coverage.jl (GAP assertion only) |
+| 12 | `IRExtractValue` (:273) | `Define(dest, _agg_<agg>_slot<index>, :add, 0)` (slot copy) | `_lower_body_inst` IRExtractValue arm (ArrayType `[N x iW]` only) | **COVERED** | test_opcode_coverage.jl, test_aggregate_extract_insert.jl |
 | 13 | `IRCall` (:281) | `SoftCall(dest, callee_name, args, arg_widths, ret_width)` for `soft_f*` callee; non-soft callee raises via `SoftCall` allowlist | `_lower_body_inst` ingest.jl:309 | **COVERED** (soft_f* only) | test_opcode_coverage.jl, test_fp_roundtrip.jl, test_softcall.jl, test_operators.jl |
 | 14 | `IRBranch` (:314) | `ConditionalExit` / `UnconditionalExit` + critical-edge trampoline block | `_successors` ingest.jl:503; exit marker in `_lower_parsed_ir` ingest.jl:829 | **COVERED** | test_opcode_coverage.jl |
 | 15 | `IRSwitch` (:320) | *(pre-expanded by frontend)* | `_successors` else-arm ingest.jl:512 (fail-loud if it ever arrives) | **N/A** | runtests.jl (doc note), test_opcode_coverage.jl (fail-loud belt-and-suspenders) |
@@ -52,38 +52,52 @@ GAP fail-loud site for all unhandled non-terminator subtypes. It interpolates
 
 ## Tally
 
-**15 COVERED / 3 GAP / 1 N/A** (total 19).
+**17 COVERED / 1 GAP / 1 N/A** (total 19).
 
 COVERED: `IRBinOp`, `IRICmp`, `IRSelect`, `IRRet`, `IRCast`, `IRVarGEP`,
 `IRLoad`, `IRStore`, `IRAlloca` (static + dynamic-N VLA), `IRCall` (soft_f*
 → `SoftCall`; non-soft callee raises via the `_SOFT_DISPATCH` allowlist),
-`IRBranch`, `IRPhi`, `IRMapInsert`, `IRMapGet`, `IRMapDelete`.
+`IRBranch`, `IRPhi`, `IRMapInsert`, `IRMapGet`, `IRMapDelete`,
+`IRInsertValue` (ArrayType `[N x iW]` → per-slot `Define` family),
+`IRExtractValue` (ArrayType `[N x iW]` → slot copy).
 
-GAP: `IRInsertValue`, `IRPtrOffset`, `IRExtractValue`.
+GAP: `IRPtrOffset`.
 
 N/A: `IRSwitch` (pre-expanded by `_expand_switches` in Bennett.jl
 `extract/module_walk.jl` before `ParsedIR` is returned; never reaches
 BennettVM; fail-loud if it somehow arrives as a terminator).
 
-## Fail-loud sites (GAP rows)
+## Aggregate coverage scope (rows 5 / 12 — bead `bennettvm-acq`)
 
-All three GAP subtypes are non-terminator body instructions. They reach the
-shared fail-loud `else` branch at the bottom of `_lower_body_inst`:
+`IRInsertValue` / `IRExtractValue` are emitted by Bennett.jl ONLY for
+homogeneous scalar-element **ArrayType** `[N x iW]` aggregates; StructType
+aggregates fail loud UPSTREAM in Bennett.jl extract (U10 / Bennett-tu6i), so
+they never reach BennettVM. BennettVM models an aggregate SSA value as a
+FAMILY of N synthetic per-slot keys (`_agg_<name>_slot<k>`), since
+`IState.locals` is a flat `Dict{Symbol,Int64}`. `insertvalue` rebuilds the
+family via N non-destructive `Define`s; `extractvalue` reads one slot. This
+scopes **scalar-consumed** aggregates — a RETURNED `[N x iW]` aggregate is
+DEFERRED: the IRRet aggregate-return guard fails loud (the multi-key return
+keyed off `ret_elem_widths` is the follow-on bead).
 
-- **`IRInsertValue`** — `src/ir/ingest.jl:370–381`
-  Error message: `"lower_vm: unsupported IRInst body subtype Bennett.IRInsertValue — the slice handles IRBinOp / IRICmp / …"` (interpolates `typeof(inst)`).
+## Fail-loud sites (GAP / deferred rows)
 
-- **`IRPtrOffset`** — `src/ir/ingest.jl:370–381`
-  Error message: same `else`-arm message; also named in the deferred note at
-  ingest.jl:268 and ingest.jl:380 (`"IRPtrOffset / IRExtractValue are deferred (Rule 1)."`).
+`IRPtrOffset` is the sole remaining GAP subtype — a non-terminator body
+instruction reaching the shared fail-loud `else` branch at the bottom of
+`_lower_body_inst`:
 
-- **`IRExtractValue`** — `src/ir/ingest.jl:370–381`
-  Error message: same `else`-arm message; also named in the deferred note at
-  ingest.jl:380.
+- **`IRPtrOffset`** — the shared `_lower_body_inst` `else` arm.
+  Error message: `"lower_vm: unsupported IRInst body subtype Bennett.IRPtrOffset — …"` (interpolates `typeof(inst)`); IRPtrOffset is named in the `else`-arm deferred note.
 
-All three are asserted in `test/test_opcode_coverage.jl` (rows 5, 7, 12):
-each test calls `_coverage_raise` with a hand-built `ParsedIR` fragment and
-asserts `e isa ErrorException` plus `occursin("<TypeName>", e.msg)`.
+A RETURNED aggregate (`IRInsertValue` / `IRExtractValue` build-up dangling
+into `IRRet`) hits the ingest IRRet aggregate-return guard, which fails loud
+naming the deferral (`"… returning a `[N x iW]` aggregate is DEFERRED (bead
+`bennettvm-acq` …)"`).
+
+These are asserted in `test/test_opcode_coverage.jl` (row 7) and
+`test/test_fail_loud_completeness.jl` (F2 IRPtrOffset; F2 deferred aggregate
+IRRet): each builds a hand-built `ParsedIR` fragment and asserts
+`e isa ErrorException` plus the cause-naming `occursin`.
 
 The N/A case (`IRSwitch` as a terminator) has its own fail-loud site at
 `_successors` ingest.jl:512–515:

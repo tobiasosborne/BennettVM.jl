@@ -414,13 +414,29 @@ using BennettVM
     # objectid / time / getpid … → a SPECIFIC "nondeterministic — no
     # deterministic forward, no replay" error, distinct from the generic
     # SoftCall allowlist message); F2 pins the impossible-CFG/memory defensive
-    # mirror (the 3 GAP IRInst subtypes' shared `else`, the IRSwitch
-    # `_successors` reject, the non-SSA-ptr memory-floor reject) and documents
-    # that atomic/volatile/indirectbr/inline-asm/opaque-call are rejected
-    # UPSTREAM in Bennett.jl (U14/U15/U4eu) and so are unrepresentable at the
-    # ParsedIR interface. Sits right after the coverage capstone (same
-    # hand-built ParsedIR idiom; depends only on already-loaded symbols).
+    # mirror (the sole remaining GAP IRInst subtype IRPtrOffset's shared `else`,
+    # the deferred aggregate-RETURN IRRet guard, the IRSwitch `_successors`
+    # reject, the non-SSA-ptr memory-floor reject) and documents that
+    # atomic/volatile/indirectbr/inline-asm/opaque-call are rejected UPSTREAM in
+    # Bennett.jl (U14/U15/U4eu) and so are unrepresentable at the ParsedIR
+    # interface. Sits right after the coverage capstone (same hand-built
+    # ParsedIR idiom; depends only on already-loaded symbols).
     include("test_fail_loud_completeness.jl")
+    # OPCODE G2 — aggregate IRExtractValue / IRInsertValue ingest for
+    # homogeneous ArrayType `[N x iW]` aggregates (bead `bennettvm-acq`, epic
+    # `bennettvm-x49`). An aggregate SSA value is modelled as a FAMILY of N
+    # synthetic per-slot keys (`_agg_<name>_slot<k>`), since `IState.locals` is
+    # a flat `Dict{Symbol,Int64}`: `insertvalue` rebuilds the family via N
+    # non-destructive `Define` copies/creates (slot k := inserted val; the rest
+    # copied from the prior aggregate or zero-created for the ZERO_AGG base);
+    # `extractvalue` reads ONE slot into a scalar. Reuses the scalar `Define`
+    # copy machinery so the IState type / equality / L3 checkpoint-replay all
+    # carry over unchanged. A hand-built `[2 x i32]` build/read/add chain
+    # (oracle `f(x)=x+7`) lowers, runs bit-exact, round-trips to empty history
+    # (P0.6), and per-step-inverts at K ∈ {1,4}; a RETURNED aggregate fails loud
+    # (the multi-key return is the follow-on bead). Same hand-built ParsedIR +
+    # `per_step_inverse_check` idiom; depends only on already-loaded symbols.
+    include("test_aggregate_extract_insert.jl")
     # M_FP.5 — Float32-rejection enforcement at the ingest boundary
     # (`bennettvm-h0t`; ADR 0011 §D2, Bennett-3rph). The witness half proves
     # the SC10 pure-Float64 lowering contains ZERO f32-touching SoftCalls; the

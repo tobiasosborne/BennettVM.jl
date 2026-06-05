@@ -14,8 +14,11 @@
 # `soft_f*` callee (lowers to `SoftCall`); a NON-soft callee still raises
 # loud (the allowlist boundary). As of M_DICT (beads `bennettvm-0do`/`7xa`)
 # the three language-neutral map ops (`IRMapInsert`/`IRMapGet`/`IRMapDelete`,
-# rows 17-19) ingest 1:1 to the VM-side IRMap* ops — all DONE. The tally is
-# now 15 DONE / 3 GAP / 1 N/A.
+# rows 17-19) ingest 1:1 to the VM-side IRMap* ops — all DONE. As of bead
+# `bennettvm-acq` (OPCODE G2) `IRInsertValue` (row 5) and `IRExtractValue`
+# (row 12) moved GAP → DONE for homogeneous ArrayType `[N x iW]` aggregates
+# (the per-slot `Define` family model; StructType still fails loud upstream).
+# The tally is now 17 DONE / 1 GAP / 1 N/A.
 # Prose rots.
 # This file turns every row into an `@test`, so a future change to
 # `_lower_body_inst` / `_successors` / `_lower_alloca!` that silently
@@ -28,11 +31,13 @@
 #
 # # What each subtype testset asserts (Rule 4 — never bare "didn't throw")
 #
-# DONE (15): a minimal hand-built `ParsedIR` fragment containing the
+# DONE (17): a minimal hand-built `ParsedIR` fragment containing the
 #   subtype is run through the REAL `lower_vm`; the test asserts the
 #   resulting `VMProgram`'s entry block (or exit marker) contains the
 #   *documented* VM instruction TYPE (`IRBinOp → Define`, `IRCast →
-#   CastInstruction`, …). Two of the eleven are additionally driven
+#   CastInstruction`, `IRInsertValue/IRExtractValue → Define` slot-family
+#   copies — bead `bennettvm-acq`). Two of the data/control DONE rows are
+#   additionally driven
 #   END-TO-END via `initial_state`/`run!`/`unrun!` against a hand-computed
 #   oracle and round-tripped to empty history (P0.6):
 #     • the DIAMOND witness (testset "DONE end-to-end #1") spans
@@ -47,15 +52,16 @@
 #   existing collatz / matrix_sum / memory-floor round-trip tests already
 #   prove the dynamics; this file proves the COVERAGE claim, once per row).
 #
-# GAP (3): a `ParsedIR` fragment containing the GAP subtype is run through
+# GAP (1): a `ParsedIR` fragment containing the GAP subtype is run through
 #   `lower_vm`; the test asserts it raises an `ErrorException` whose message
-#   NAMES the unsupported op (Rule 1 fail-loud). All three (IRPtrOffset,
-#   IRInsertValue, IRExtractValue) are non-terminator `IRInst`s, so they fall
-#   through `_lower_body_inst`'s final `else` which interpolates
-#   `typeof(inst)` into the message — verified empirically. (`IRCall` left
-#   this group at M_FP.2: a soft_f* callee now lowers to `SoftCall`; only a
-#   NON-soft callee raises, via the SoftCall allowlist rather than the final
-#   `else` — see row 13's testset.)
+#   NAMES the unsupported op (Rule 1 fail-loud). Only `IRPtrOffset` remains:
+#   it is a non-terminator `IRInst`, so it falls through `_lower_body_inst`'s
+#   final `else` which interpolates `typeof(inst)` into the message — verified
+#   empirically. (`IRCall` left this group at M_FP.2: a soft_f* callee now
+#   lowers to `SoftCall`; only a NON-soft callee raises, via the SoftCall
+#   allowlist rather than the final `else` — see row 13's testset.
+#   `IRInsertValue` / `IRExtractValue` left at bead `bennettvm-acq` — they now
+#   lower to per-slot `Define` families; see rows 5 / 12.)
 #
 # N/A (1) `IRSwitch`: the matrix records it is pre-expanded by
 #   `_expand_switches` (Bennett.jl `extract/module_walk.jl`) into
@@ -142,11 +148,13 @@ end
 @testset "IRInst opcode coverage (bennettvm-d7t; mirrors docs/coverage-matrix.md)" begin
 
     # =================================================================
-    # (0) The taxonomy itself: 19 concrete IRInst subtypes, 15/3/1.
-    #     coverage-matrix.md "The taxonomy" + Tally. The bead said "17";
-    #     the matrix corrects it to 16. We assert the count against the
-    #     LIVE Bennett.jl type tree so a Bennett.jl pin bump that adds /
-    #     removes a subtype trips here (and forces a matrix re-audit).
+    # (0) The taxonomy itself: 19 concrete IRInst subtypes, 17/1/1
+    #     (DONE/GAP/N-A) as of bead `bennettvm-acq` (was 15/3/1 — the
+    #     aggregate pair IRInsertValue/IRExtractValue moved GAP → DONE).
+    #     coverage-matrix.md "The taxonomy" + Tally. We assert the COUNT
+    #     (19, unchanged by the GAP→DONE move) against the LIVE Bennett.jl
+    #     type tree so a Bennett.jl pin bump that adds / removes a subtype
+    #     trips here (and forces a matrix re-audit).
     # =================================================================
     @testset "(0) 19 concrete IRInst subtypes (matrix taxonomy)" begin
         concrete = filter(isconcretetype,
@@ -333,9 +341,12 @@ end
 
     # =================================================================
     # DONE — END-TO-END round-trip witnesses (Rule 4: known value).
-    # Together these run 11 of the 15 DONE subtypes through run!/unrun!.
-    # The 12th (IRCall → SoftCall, M_FP.2) is round-tripped end-to-end in
-    # test_fp_roundtrip.jl and asserted per-subtype in row 13 below.
+    # Together these run 11 of the 17 DONE subtypes through run!/unrun!.
+    # IRCall → SoftCall (M_FP.2) is round-tripped end-to-end in
+    # test_fp_roundtrip.jl and asserted per-subtype in row 13. The
+    # aggregate pair (IRInsertValue / IRExtractValue, bead `bennettvm-acq`)
+    # is round-tripped end-to-end in test_aggregate_extract_insert.jl and
+    # asserted per-subtype in rows 5 / 12.
     # =================================================================
 
     # Witness #1 — control-flow quintet: IRICmp, IRBinOp, IRBranch, IRPhi,
@@ -425,9 +436,11 @@ end
     end
 
     # =================================================================
-    # GAP — each raises a Rule-1 fail-loud error NAMING the op.
-    # All four are non-terminator IRInsts → _lower_body_inst else
-    # (ingest.jl:286) which interpolates `typeof(inst)` into the message.
+    # GAP — each raises a Rule-1 fail-loud error NAMING the op. Only
+    # IRPtrOffset remains in this group; it is a non-terminator IRInst →
+    # _lower_body_inst else which interpolates `typeof(inst)` into the
+    # message. (IRInsertValue / IRExtractValue left this group at bead
+    # `bennettvm-acq` — see the DONE rows 5 / 12 below.)
     # =================================================================
 
     # Row 7 — IRPtrOffset (GAP, mem): static byte offset; last of the
@@ -440,24 +453,40 @@ end
         @test occursin("unsupported IRInst body subtype", e.msg)
     end
 
-    # Row 5 — IRInsertValue (GAP): aggregate insert (sret).
-    @testset "(5) GAP IRInsertValue → raises naming IRInsertValue" begin
-        e = _coverage_raise(
+    # Row 5 — IRInsertValue → N slot Defines (DONE at bead `bennettvm-acq`;
+    # the ArrayType aggregate slot model, ingest.jl insertvalue body-loop
+    # special case). `insertvalue ZERO_AGG, %x, 0` over a `[2 x i32]` emits a
+    # `Define` per slot (slot 0 := %x; slot 1 := 0). We assert the lowered body
+    # holds those slot creates (the multi-slot model) — Rule 4, the explicit
+    # coverage claim. (StructType aggregates fail loud UPSTREAM in Bennett.jl
+    # extract — U10 / Bennett-tu6i — so only the ArrayType case reaches ingest.)
+    @testset "(5) DONE IRInsertValue → N slot Defines" begin
+        _, t = _coverage_lower(
             [Bennett.IRInsertValue(:__d, Bennett.ZERO_AGG,
                                    Bennett.SSAOperand(:__x), 0, 32, 2)], _ret_x())
-        @test e isa ErrorException
-        @test occursin("IRInsertValue", e.msg)
-        @test occursin("unsupported IRInst body subtype", e.msg)
+        @test BennettVM.Define in t
+        # The lowered body materialises BOTH slots of the [2 x i32] family.
+        names = Symbol[i.target for i in first(_coverage_lower(
+            [Bennett.IRInsertValue(:__d, Bennett.ZERO_AGG,
+                                   Bennett.SSAOperand(:__x), 0, 32, 2)],
+            _ret_x())[1].blocks).instructions if i isa BennettVM.Define]
+        @test BennettVM._agg_slot_name(:__d, 0) in names
+        @test BennettVM._agg_slot_name(:__d, 1) in names
     end
 
-    # Row 12 — IRExtractValue (GAP): aggregate extract / multi-value return.
-    @testset "(12) GAP IRExtractValue → raises naming IRExtractValue" begin
-        e = _coverage_raise(
-            [Bennett.IRExtractValue(:__d, Bennett.SSAOperand(:__x), 0, 32, 2)],
+    # Row 12 — IRExtractValue → Define slot copy (DONE at bead `bennettvm-acq`;
+    # the ArrayType aggregate slot model, ingest.jl `_lower_body_inst`
+    # IRExtractValue arm). `extractvalue agg, k` reads slot k of the aggregate's
+    # synthetic per-slot family into the scalar `dest` (a non-destructive
+    # `Define(dest, _agg_<agg>_slot<k>, :add, 0)`). The aggregate base must be a
+    # prior insertvalue build-up (an SSAOperand), so we feed one upstream.
+    @testset "(12) DONE IRExtractValue → Define (slot copy)" begin
+        _, t = _coverage_lower(
+            [Bennett.IRInsertValue(:__a, Bennett.ZERO_AGG,
+                                   Bennett.SSAOperand(:__x), 0, 32, 2),
+             Bennett.IRExtractValue(:__d, Bennett.SSAOperand(:__a), 0, 32, 2)],
             _ret_x())
-        @test e isa ErrorException
-        @test occursin("IRExtractValue", e.msg)
-        @test occursin("unsupported IRInst body subtype", e.msg)
+        @test BennettVM.Define in t
     end
 
     # Row 13 — IRCall → SoftCall (DONE at M_FP.2; ADR 0011 §D1, ingest.jl).
