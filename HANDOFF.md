@@ -2,6 +2,78 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## ⏸ SESSION 2026-06-08 — acq + b5x/xv0u landed; Case B BLOCKED ON LEAD DECISION
+
+**2 opcode beads landed + pushed (both repos); suite 6308 → 6450.** Then SC9 Case B
+hit a verified ground-truth blocker and the lead chose to STOP. Orchestrated (Opus 4.8;
+Opus coders, Sonnet hostile reviewers/scouts, serial Julia, verify-don't-rubber-stamp,
+cross-repo explicitly allowed).
+
+### Landed
+- **`acq` ✅** (BVM `f77aade`): `IRExtractValue`/`IRInsertValue` (ArrayType) ingest →
+  per-slot `Define` family. Aggregate `IRRet` (sret) deferred (bead filed). 6308→6376.
+- **`b5x`/`xv0u` ✅** (Bennett `31b63a6` + BVM `c7d1016`; repinned 231bde6→31b63a6):
+  additive `IRPtrOffset.elem_width`; cell-index ingest arm; fixed a non-i64 silent ÷8
+  miscompile. **8** construction sites (the bead said 1). 6376→6450.
+
+### 🚨 CASE B (`tu9`/`90l`/`7xa`) — LEAD DECISION PENDING (do NOT build until decided)
+**The route-(b) premise of ADR 0015 / ADR 0016 D8 is FALSE against the real IR.** I
+captured `code_llvm(fdict, Tuple{Int8,Int8}; optimize=false)` → `test/reference/fdict_O0.ll`
+(Julia 1.12.5). Verified:
+- **No in-body `jl_alloc_genericmemory`** — keys/vals/slots backings are interned GLOBALS
+  (`@jl_global#146/#147`, the empty-Dict singleton, lines 9/28/29).
+- **The write is the OPAQUE `@j_setindex!_149` callee** (line 59) — not inlined.
+- The getindex READ is inlined: deterministic hash arithmetic (lines 102-157, NO
+  ptrtoint/objectid), open-addressing probe (ordinary CFG), KeyError/AssertionError
+  `unreachable` diamonds. Only real allocs are 3 `gc_alloc_obj` (Dict struct + 2 dead
+  throw-boxes); the 3 ptrtoint are type-object tagging (provably NOT in the key-hash cone).
+
+So a pure store-floor route (b) can't reverse a write it never executed, and there's no
+in-body alloc to model as a `DynAlloca` (no length witness). **Two independent design
+proposers converged on this** (full reports in this session's transcript). The 3 options
+(ADR 0015 carries a banner; my rec = **A**):
+- **A** — recognize the inlined `getindex` → the PROVEN `RevMap`/`IRMapGet` via decidable
+  positive obligations (return traces to `.vals` offset-16; probe key SSA-identical to the
+  `setindex!` key; ptr-free hash cone). Delivers bare `fdict` from source NOW, but uses
+  route-(a) primitives + revives the `9i1` recognizer ADR 0015 called undecidable. Ground
+  truth INVERTS the roles: RevMap = tractable correctness floor; raw-opcode execution = the
+  deferred optimization (it's the one needing `setindex!` inlined).
+- **B** — defer bare-`fdict`; prove the multi-backing DynAlloca machinery on hand-built IR +
+  fail loud on bare `fdict` from source.
+- **C** — Design G: extract/inline `setindex!` + model the global Memory singletons
+  (research-grade; ADR 0015 demoted this).
+
+### Buildable REGARDLESS of the Case B decision (next agent can start here)
+1. **The determinism guard `90l`/`klgz`** — durable under any option. Reject
+   `ptrtoint`/`inttoptr`/`objectid`/`pointer_from_objref` in the KEY-HASH provenance cone
+   (the 3 benign ptrtoint in `fdict` are type-tagging, provably outside it). Front-end
+   (Bennett `klgz`, `dict_vm.jl`) + BVM ingest mirror (`90l`, extend `_NONDETERMINISTIC_CALLEES`
+   to the inlined no-callee case). Adversarial: `Dict{MutableStruct,V}` must fail loud.
+2. **Case A part-2 push!/pop!** (`6db`/`ehp`/`xkl`): design pass (push! model on `uil`
+   `heap_top`) → lowering → Bennett push!/growend! recognizer → e2e. (Case A from-source
+   e2e IS proven: `test_vec_vm_roundtrip.jl`, green — the scout was WRONG that it's unproven.)
+3. **FP** (`01w` frem needs Bennett `soft_frem`/`Bennett-tfx`; `4dn` fdim + uitofp audit).
+4. **`dzd`** multi-index GEP (needs Bennett `Bennett-8e1f`).
+
+### Process lessons (READ before pushing Bennett.jl)
+- **Bennett.jl `.git/hooks/pre-push` runs the full ~65-min `Pkg.test`.** After manually
+  gating, push with `SKIP_PUSH_TESTS=1 git push`. NEVER fire multiple pushes (each spawns a
+  concurrent suite, Rule 7). Orphaned julia survive killing the git-push parent → kill by PID.
+  (`bd remember bennett-prepush-hook-runs-full-suite`.)
+- **Gate on a fresh-subprocess `Pkg.test()` you run yourself**, never a subagent's claim
+  (false-143). Hostile review caught a real silent miscompile in BOTH acq and b5x.
+- BVM↔Bennett.jl is a **path dep** (`../Bennett.jl`) → BVM tests see Bennett.jl edits live;
+  `BENNETT_JL_PIN.md` is documentation only.
+- `grep` for real alloc calls (`call.*alloc_genericmemory`), not the substring (matches
+  `genericmemory.jl` comments — the near-miss that almost hid the Case B blocker).
+
+### Beads
+Closed: `acq`, `b5x`, `Bennett-xv0u`. Filed: Case B decision bead (blocks `tu9`/`7xa`);
+multi-key aggregate `IRRet`; `ingest.jl` Rule-10 split; Bennett.jl `offset_bytes` reconcile.
+`tu9`/`90l`/`7xa` annotated with the finding.
+
+---
+
 ## ✅ SESSION 2026-06-04 (PM) — opcode-coverage BVM-only front cleared + dynamic-memory keystone
 
 **5 beads landed (all pushed), suite 4722 → 6308.** Orchestrated (Opus coders, Sonnet

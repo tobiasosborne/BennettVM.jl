@@ -7,6 +7,30 @@
 > Grounded in a 3-agent codebase sweep + a live `code_llvm` probe
 > (2026-06-04); see §Evidence.
 
+---
+
+> ⚠ **GROUND-TRUTH FINDING — 2026-06-08 (does NOT change the decision; for the lead).**
+> The route-(b) premise here ("the Dict's `keys`/`vals` `Memory` backing = the
+> store-level memory floor; reversibly execute the inlined opcodes") was verified
+> against the REAL `code_llvm(fdict, Tuple{Int8,Int8}; optimize=false)` IR
+> (committed at `test/reference/fdict_O0.ll`) and **does not hold for Julia 1.12.5**:
+> there is NO in-body `jl_alloc_genericmemory` — the keys/vals/slots backings are
+> interned GLOBALS (`@jl_global#146/#147`, the empty-`Dict` singleton), and the
+> mutating WRITE lives inside the OPAQUE `@j_setindex!_NNN` callee (not inlined).
+> So a pure store-floor route (b) cannot reverse a write it never executed, and
+> there is no in-body alloc to model as a `DynAlloca` (no length witness). Two
+> independent design proposers converged on this. SC9 Case B is therefore BLOCKED
+> ON A LEAD DECISION between: **(A)** recognize the inlined `getindex` → the proven
+> `RevMap`/`IRMapGet` (delivers bare `fdict` from source, but uses route-(a)
+> primitives + revives the `9i1` recognizer this ADR called undecidable — i.e. the
+> ground truth INVERTS which route is the tractable correctness floor); **(B)** defer
+> bare-`fdict`, prove the route-(b) machinery on hand-built IR + fail loud; **(C)**
+> Design G — extract/inline `setindex!` (the research-grade path this ADR demoted).
+> The determinism guard (`90l`/`klgz`) is durable under any option. See `HANDOFF.md`
+> (2026-06-08 session) for the full analysis and the two proposer reports.
+
+---
+
 ## Context
 
 ADR 0013 split the two heap-bearing SC9 cases by *how memory reaches the VM*:

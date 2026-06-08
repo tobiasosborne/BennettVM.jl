@@ -7,6 +7,63 @@
 
 ---
 
+## Session — 2026-06-08 — opcode-coverage: acq + b5x/xv0u landed; Case B ground-truth blocker surfaced (lead decision pending)
+
+**Agents:** Opus 4.8 (1M) orchestrator, foreground. Directive: Opus coders, Sonnet
+hostile reviewers/scouts, serial Julia (Rule 7), commit/push BOTH repos per unit,
+raise beads, "what would a senior expert say", verify-don't-rubber-stamp, cross-repo
+explicitly allowed. Suite 6308 → 6450.
+
+### Landed (both pushed)
+- **`acq`** (BVM `f77aade`): ingest `IRExtractValue`/`IRInsertValue` (ArrayType
+  aggregates) via a per-slot synthetic-name model reusing `Define`-copy (no IState
+  change). Hostile review caught a SILENT MISCOMPILE (`insertvalue index≥n_elems`
+  silently dropped the value) — closed with lower-time fail-loud guards + tests.
+  Aggregate `IRRet` (sret) fails loud (deferred → bead filed). 6308→6376.
+- **`b5x`/`xv0u`** (Bennett `31b63a6` + BVM `c7d1016`; repin 231bde6→31b63a6): additive
+  `IRPtrOffset.elem_width` so the cell-addressed VM recovers element index =
+  `offset_bytes÷(elem_width÷8)` (a hardcoded ÷8 silently miscompiled non-i64 — Rule 2).
+  The bead said "1 construction site"; there were **8** (positional ctor → all-or-build-
+  breaks). Circuit backend IGNORES `elem_width`, so a wrong UNIT at any site is invisible
+  to Bennett.jl's 688k suite — verified bits-not-bytes at all 8 by hand + hostile review.
+  6376→6450.
+
+### THE finding (Case B / `tu9`/`7xa`) — lead decision pending
+Captured the REAL `code_llvm(fdict, Tuple{Int8,Int8}; optimize=false)` IR
+(`test/reference/fdict_O0.ll`, Julia 1.12.5). It REFUTES ADR 0015 / ADR 0016 D8's
+route-(b) premise: NO in-body `jl_alloc_genericmemory` (the keys/vals/slots backings are
+interned globals `@jl_global#146/#147`, the empty-Dict singleton); the key/value WRITE is
+the opaque `@j_setindex!_149` callee (not inlined). So "two GenericMemory backings → two
+DynAlloca regions over the store floor" has nothing to anchor on (no alloc, no length
+witness), and a pure floor can't reverse the opaque write. Two independent Opus proposers
+converged. ADR 0015 now carries a finding banner; HANDOFF + this entry have the 3 options
+(A recognize-inlined-getindex→RevMap / B defer+prove-machinery / C Design-G) and my
+recommendation (A — the ground truth inverts which route is the tractable correctness
+floor). Escalated; lead chose to STOP and hand off.
+
+### Lessons (not derivable from git)
+- **Bennett.jl `.git/hooks/pre-push` runs the FULL `Pkg.test` (~65min, --check-bounds=yes)**
+  before allowing a push. After manually gating, push with `SKIP_PUSH_TESTS=1 git push`.
+  I tripped it 3× (3 concurrent suites — Rule 7 violation); orphaned julia children survive
+  a kill of the git-push parent → kill by PID. BennettVM has no such hook. (`bd remember
+  bennett-prepush-hook-runs-full-suite`.)
+- **A substring `grep` for "genericmemory" gave a FALSE "2 allocs"** — they were
+  `; @ genericmemory.jl:NNN` source-location comments. Grep `call.*alloc_genericmemory`
+  for real alloc calls. This near-miss is exactly why the proposers re-checked and found
+  the blocker; Rule-3 skepticism (verify the scout, verify your own grep) paid off twice
+  this session (also: the scout wrongly claimed Case A's Julia-source e2e is unproven —
+  `test_vec_vm_roundtrip.jl` proves it, in the green suite).
+- The orchestration loop (design-scout → Opus coder → my-own fresh `Pkg.test` gate →
+  Sonnet hostile review → fix → commit/push) caught a real silent miscompile in BOTH acq
+  and b5x. Worth the cost. Never trust a subagent's test count (false-143 trap).
+
+### Follow-up beads filed
+Multi-key aggregate `IRRet` return; split `src/ir/ingest.jl` (~1262 LOC, Rule 10);
+Bennett.jl reconcile `IRPtrOffset.offset_bytes` (mem=:heap stores element index, P3);
+Case B lead-decision bead (blocks `tu9`/`7xa`).
+
+---
+
 ## Session — 2026-06-04 (PM) — opcode-coverage epic: BVM-only front cleared + dynamic-memory keystone (5 beads; 4722→6308)
 
 **Agents:** Opus 4.8 (1M) orchestrator, foreground. Directive: Opus coders, Sonnet
