@@ -130,3 +130,61 @@ end
 # dispatches on `IState` (which is included AFTER this file — `IState`'s
 # `frames` field references `Frame`, so `Frame` must be defined first). See
 # the BennettVM.jl include-order comment for `call_frames.jl`.
+
+"""
+    FunctionEntry (CW-B2, ADR 0019 §2)
+
+The per-function record in `VMProgram.functions` — a function table laid
+over the SINGLE flat `blocks` vector. BennettVM keeps one global flat
+instruction stream and one `LabelTable` (ADR 0019 §2 rejects proposer B's
+per-function `(fn, pc)` addressing); `FunctionEntry` is the closed-world
+directory that `CallEnter` ingest consults to resolve a callee name to its
+entry label, formal parameters, and return values.
+
+# Field-by-field rationale
+
+- `name::Symbol`. The function's identity, used as the `functions` dict key
+  and as the `Frame.fname` of an activation of this function.
+- `entry_label::Symbol`. The `#`-qualified label of this function's entry
+  block (ADR 0019 §2 — `Symbol(string(name), "#", string(raw_label))`).
+  `CallEnter.forward` looks this up in the `LabelTable` to set the callee's
+  starting pc (`fwd_address + 1`, one past the Begin marker).
+- `params::Vector{Symbol}`. The formal parameter SSA names, in positional
+  order — the receiving side of the MOVE that `CallEnter` performs from the
+  caller's `args` (Vieri 1995 p.22; arity-checked against `args` in
+  `CallEnter`'s fail-loud guard, ADR 0019 §6b).
+- `returns::Vector{Symbol}`. The SSA names the function returns, in
+  positional order — the sending side of the MOVE that `ReturnExit`
+  performs into the caller's `targets` (arity-checked against `targets`,
+  ADR 0019 §6c). **CAVEAT (CW-B2b hostile review, risk 1): when populated
+  by `_declared_returns` (ingest_multi.jl) this holds the FIRST `IRRet`'s
+  SSA name only — for a multi-exit-block function it is NOT authoritative
+  for which name flows out at runtime (that is `EndInstruction.returns`).
+  Current code uses this field exclusively for `isempty` void detection;
+  do not build arity/liveness logic on it without fixing the population
+  (bead filed).**
+
+Ref: docs/adr/0019-reversible-calls.md §2 (function table over one flat
+     stream; `#`-qualified labels; closed-world callee resolution at ingest).
+"""
+struct FunctionEntry
+    name::Symbol
+    entry_label::Symbol
+    params::Vector{Symbol}
+    returns::Vector{Symbol}
+end
+
+function Base.:(==)(a::FunctionEntry, b::FunctionEntry)
+    a.name === b.name &&
+    a.entry_label === b.entry_label &&
+    a.params == b.params &&
+    a.returns == b.returns
+end
+
+function Base.hash(f::FunctionEntry, h::UInt)
+    h = hash(f.name, h)
+    h = hash(f.entry_label, h)
+    h = hash(f.params, h)
+    h = hash(f.returns, h)
+    return h
+end

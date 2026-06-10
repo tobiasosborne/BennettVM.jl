@@ -481,4 +481,19 @@ using BennettVM
     # idiom as test_fail_loud_completeness.jl; depends on already-loaded
     # symbols + the SC10 fixture from test_fp_roundtrip.jl (re-built locally).
     include("test_fp_f32_reject.jl")
+    # CW-B2/B3 — the reversible call/return machinery (ADR 0019; beads
+    # `bennettvm-416r.6` / `416r.7`). The `CallEnter` / `ReturnExit`
+    # transition pair over the `IState.frames` stack (chunk 1), the
+    # multi-function lowering (`lower_vm(::Vector{Pair{Symbol,ParsedIR}})`
+    # with `#`-qualified labels), and the interpreter's End-at-depth>1
+    # routing. Covers the ADR §8 list: nested two-level call (golden master),
+    # recursive factorial(5)==120 (frame depth 5, SSA collision), per-step
+    # inverse ON CallEnter and ON ReturnExit, zero-history CallEnter step,
+    # L3-checkpoint-inside-callee, malloc-in-callee pointer survival + arena
+    # monotone, void-return callee, the §6 fail-loud suite, and frames
+    # ==/hash sensitivity. Mutation-proof (M1–M4) is recorded in the file
+    # header and performed against these tests. Pulls in
+    # `per_step_inverse_check` via `test/test_per_step_inverse.jl`
+    # (re-include-guarded); depends only on already-loaded symbols.
+    include("test_call_roundtrip.jl")
 end

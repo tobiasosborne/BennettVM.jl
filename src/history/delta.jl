@@ -601,3 +601,40 @@ is_l2_capable(::Type{IntrinsicRealloc})::Bool = true
 is_l2_capable(::Type{IntrinsicMemset})::Bool  = true
 is_l2_capable(::Type{IntrinsicMemcpy})::Bool  = true
 is_l2_capable(::Type{IntrinsicMemmove})::Bool = true
+
+# CW-B2 (ADR 0019 §4 + hostile-review C2) — `ReturnExit`, the reversible
+# return transition. Same shape as `IntrinsicMalloc`: NO `make_delta` (the
+# raising fallback never reached), a non-`nothing` `predelta_payload`
+# returning `(residual, fname, end_pc)` (`src/ir/call_transitions.jl`) + a
+# matching `inverse(::ReturnExit, s, ::NamedTuple)` (same file). The push
+# gate's `pre_payload !== nothing` branch builds the DeltaEntry directly.
+# `CallEnter` is L1-injective (NOT L2 — explicit `false` per C2; the default
+# would also give `false`, but the ADR pins it so the trichotomy is auditable
+# at the definition site).
+is_l2_capable(::Type{ReturnExit})::Bool = true
+is_l2_capable(::Type{CallEnter})::Bool  = false
+
+"""
+    is_unconditional_l2(::Type{<:Instruction}) -> Bool
+
+L2-push-UNCONDITIONALLY trait (CW-B2, ADR 0019 §4). An instruction marked
+`true` here pushes its L2 `DeltaEntry` on EVERY non-replay forward step,
+independent of the `must_cache` set — because its history entry is
+load-bearing for BACKWARD CONTROL FLOW, not only for data recovery.
+
+Default `false` (every existing L2 instruction): the push gate consults
+`must_cache(must_cache_set, …)` and pushes only when the slot is selected
+by `compute_must_cache`. `ReturnExit` is the sole `true`: under a flat pc,
+the instruction before the post-call `link` is the `CallEnter`, so naive
+`pc-1` backward stepping would re-enter the call; the `ReturnExit` delta is
+the breadcrumb that routes the backward pass into the callee's `End`
+instead (ADR 0019 §4 property 2). It is also the block's EXIT marker, not a
+body slot, so `compute_must_cache` (which scans only `block.instructions`)
+would never select it anyway — making the unconditional push the only way
+its delta is ever recorded.
+
+Consumed by `step!`'s push gate (`src/interpreter/Interpreter.jl`): the L2
+branch fires when `is_unconditional_l2(typeof(instr)) || must_cache(…)`.
+"""
+is_unconditional_l2(::Type{<:Instruction})::Bool = false
+is_unconditional_l2(::Type{ReturnExit})::Bool = true

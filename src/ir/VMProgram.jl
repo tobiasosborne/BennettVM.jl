@@ -122,6 +122,19 @@ listing (per-block breakdown) would dominate the output. A future
 pretty-printer (M3.x or later) can opt into a `MIME"text/plain"`
 overload for verbose rendering; the bare `show` stays terse.
 
+# CW-B2 — the function table (ADR 0019 §2)
+
+`functions::Dict{Symbol,FunctionEntry}` is the closed-world directory of
+the program's functions over the SINGLE flat `blocks` vector (ADR 0019 §2
+rejects per-function addressing); `entry_function::Symbol` names the
+entry-routine activation. Both have BACK-COMPAT DEFAULTS (`Dict()` and
+`:main`) so every existing 5-arg `VMProgram(blocks, label_table,
+entry_label, arg_widths, return_widths)` call site — `_lower_parsed_ir`,
+the digest stub, and ~all unit tests — is untouched: a single-function
+program runs with an empty function table (no `CallEnter` to resolve) and
+behaves byte-identically. The multi-function lowering (`lower_vm` over a
+`Vector{Pair{Symbol,ParsedIR}}`) populates them.
+
 # Fields deliberately NOT here yet
 
 | Future field            | Introducing bead / milestone                       |
@@ -150,12 +163,17 @@ struct VMProgram
     entry_label::Symbol
     arg_widths::Vector{Int}
     return_widths::Vector{Int}
+    functions::Dict{Symbol,FunctionEntry}   # CW-B2 (ADR 0019 §2) — function table.
+    entry_function::Symbol                   # name of the entry-routine activation.
 
     function VMProgram(blocks::Vector{BasicBlock},
                        label_table::LabelTable,
                        entry_label::Symbol,
                        arg_widths::Vector{Int},
-                       return_widths::Vector{Int})
+                       return_widths::Vector{Int},
+                       functions::Dict{Symbol,FunctionEntry} =
+                           Dict{Symbol,FunctionEntry}(),
+                       entry_function::Symbol = :main)
         length(label_table) == length(blocks) ||
             error("VMProgram: label_table has ", length(label_table),
                   " entries but blocks has ", length(blocks),
@@ -175,7 +193,8 @@ struct VMProgram
                       "its own LabelTable cannot be started by the ",
                       "interpreter (M2.17 inner-constructor invariant)")
         end
-        return new(blocks, label_table, entry_label, arg_widths, return_widths)
+        return new(blocks, label_table, entry_label, arg_widths, return_widths,
+                   functions, entry_function)
     end
 end
 

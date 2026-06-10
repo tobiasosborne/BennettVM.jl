@@ -202,24 +202,45 @@ const _MS_INSTR   = BennettVM.MemorySwap(Int64(10), Int64(20))
 const _MS_PRE     = BennettVM.IState(0,
     Dict{Symbol,Int64}(), :running,
     Dict{Int64,Int64}(10 => Int64(111), 20 => Int64(222)))
-# Direct-path fixture for CallInstruction (bd `bennettvm-7cg`). The L2-
-# scaffold path is impossible to drive (its `make_delta` raises v5-
-# deferred; see src/ir/call_instruction.jl), but the pc-only forward/
-# inverse stubs ARE exercisable via the M6.3 direct round-trip: forward
-# bumps pc 0→1, the canonical inverse un-bumps 1→0. A `:direct` mutation
-# that drops the un-bump leaves pc stale → RED. `:sub` is a label-ish
-# callee symbol; targets/args/callee are pairwise disjoint, so the
-# constructor's SSA-overlap checks pass.
-const _CALL_INSTR = BennettVM.CallInstruction([:x], :sub, [:y], :call)
-const _CALL_PRE   = BennettVM.IState(0,
-    Dict(:y => Int64(1)),
-    :running, Dict{Int64,Int64}())
+# L2-direct fixture for ReturnExit (CW-B2, ADR 0019 §4, §8 C5 — SUPERSEDES the
+# old `CallInstruction/no-pc` :direct entry; `CallInstruction` is dead-letter,
+# §8). `CallEnter`/`ReturnExit` replaced `CallInstruction` (whose `make_delta`
+# raised v5-deferred). `ReturnExit`'s auditable inverse is its L2 path:
+# `predelta_payload` captures `(residual, fname, end_pc)`, `forward` pops the
+# frame + lands the return + sets pc=link, and `inverse(instr, s, payload)`
+# re-pushes the frame and restores pc. The `:l2direct` runner drives this
+# forward∘L2-inverse round-trip on a depth-2 IState (a suspended caller +
+# an active callee `:cf` with a dead temp `:dead` + the returned `:r`).
+# A mutation in `inverse` (drop the residual / mis-set pc) makes the round-
+# trip diverge → RED. `CallEnter` is NOT mutation-proofed here: its `forward`
+# is a pc-bump placeholder and its `prev::Any` inverse RAISES by design (ADR
+# 0019 §3) — there is no `:direct` round-trip surface; its substantive
+# `_handle_call_dispatch!` + M4.3-replay reversal is mutation-proofed in
+# `test/test_call_roundtrip.jl` (M4: shared-dict → recursion RED).
+function _return_exit_fixture()
+    # Active callee frame: returns :r, dead temp :dead; caller is the bottom
+    # frame. pc = 5 is the (synthetic) ReturnExit/End marker address; link = 9.
+    caller = BennettVM.Frame(0, Symbol[], Dict{Symbol,Int64}(), :__entry)
+    callee = BennettVM.Frame(9, Symbol[:c],
+        Dict(:r => Int64(7), :dead => Int64(99)), :cf)
+    s = BennettVM.IState(5, Dict{Symbol,Int64}(), :running)
+    push!(s.frames, callee)               # depth 2: [caller, callee]
+    s.frames[1] = caller                  # bottom is the entry caller
+    instr = BennettVM.ReturnExit(:cf, Symbol[:r], Symbol[:c])
+    return (instr, s)
+end
+const _RET_INSTR, _RET_PRE = _return_exit_fixture()
 
 # Type-tuple lookup for the inverse method signature per kind. Used
-# by both the snapshot/restore primitives and the run driver.
-const _TYPES = Dict(s => (getfield(BennettVM, s), BennettVM.IState, Any)
-    for s in (:ArithmeticAssignment, :MemoryAssignment, :SwapInstruction,
-              :MemoryInterchange, :MemorySwap, :CallInstruction))
+# by both the snapshot/restore primitives and the run driver. `ReturnExit`
+# uses the NamedTuple-payload inverse signature (its L2 path), not Any.
+const _TYPES = Dict(
+    (:ArithmeticAssignment => (BennettVM.ArithmeticAssignment, BennettVM.IState, Any),
+     :MemoryAssignment     => (BennettVM.MemoryAssignment, BennettVM.IState, Any),
+     :SwapInstruction      => (BennettVM.SwapInstruction, BennettVM.IState, Any),
+     :MemoryInterchange    => (BennettVM.MemoryInterchange, BennettVM.IState, Any),
+     :MemorySwap           => (BennettVM.MemorySwap, BennettVM.IState, Any),
+     :ReturnExit           => (BennettVM.ReturnExit, BennettVM.IState, NamedTuple))...)
 
 # ---------------------------------------------------------------------
 # 2. Mutation lifecycle primitives + drivers
@@ -306,6 +327,33 @@ function _green_direct(fixture)
     s_rec == s_pre || error("POST_RESTORE_GREEN: direct-inverse round-trip ",
         "failed; method table not restored. expected=$(repr(s_pre)) ",
         "actual=$(repr(s_rec))")
+end
+
+# RED driver — L2-direct path (CW-B2 ReturnExit). Capture the predelta
+# payload, run forward, then run the NamedTuple-payload inverse with that
+# payload — the L2 forward∘inverse round-trip. A mutation in `inverse`
+# (drop residual / mis-set pc / skip re-push) makes the reconstructed
+# pre-image diverge → RED.
+function _red_l2direct(fixture, label::AbstractString)
+    (instr, s_pre) = fixture
+    try
+        payload = Base.invokelatest(BennettVM.predelta_payload, instr, deepcopy(s_pre))
+        s_after = Base.invokelatest(BennettVM.forward, instr, deepcopy(s_pre))
+        s_rec = Base.invokelatest(BennettVM.inverse, instr, s_after, payload)
+        s_rec == s_pre && return (false, "")
+        return (true, "[$label] l2-inverse MISMATCH: expected $(repr(s_pre)) got $(repr(s_rec))")
+    catch e
+        return (true, "[$label] l2-inverse RAISED MISMATCH: $(sprint(showerror, e))")
+    end
+end
+
+function _green_l2direct(fixture)
+    (instr, s_pre) = fixture
+    payload = Base.invokelatest(BennettVM.predelta_payload, instr, deepcopy(s_pre))
+    s_after = Base.invokelatest(BennettVM.forward, instr, deepcopy(s_pre))
+    s_rec = Base.invokelatest(BennettVM.inverse, instr, s_after, payload)
+    s_rec == s_pre || error("POST_RESTORE_GREEN: l2-inverse round-trip failed; ",
+        "method table not restored. expected=$(repr(s_pre)) actual=$(repr(s_rec))")
 end
 
 # ---------------------------------------------------------------------
@@ -417,21 +465,46 @@ end, :direct, (_MS_INSTR, _MS_PRE)),
     end
 end, :direct, (_MS_INSTR, _MS_PRE)),
 
-# CallInstruction "no-pc" (bd `bennettvm-7cg`): the pc-only dispatch
-# inverse must un-bump the pc that `forward` bumped. Dropping `s.pc -= 1`
-# leaves pc stale, so forward∘inverse != identity (pc diverges). The
-# only audit reachable at this milestone — the L2-scaffold path is
-# impossible (make_delta v5-deferred) and the recursive-callee audit is
-# intrinsically v5. This `(CallInstruction, IState, Any)` method shadows
-# the canonical pc-only inverse; `_red_direct` then runs forward (pc→1)
-# and the mutated inverse (pc stays 1), giving s_rec != s_pre → RED.
-(:CallInstruction, "no-pc", quote
-    function inverse(instr::CallInstruction, s::IState, prev)::IState
-        # BUG: omit s.pc -= 1 — forward bumped pc, inverse must un-bump.
-        # Leaving pc stale makes forward∘inverse != identity (pc diverges).
+# ReturnExit "drop-residual" (CW-B2, ADR 0019 §4, §8 C5 — SUPERSEDES the
+# old `CallInstruction/no-pc` entry). The L2 inverse must re-push the
+# popped frame with `returns ∪ residual`; dropping the residual loop loses
+# the dead temporary, so the reconstructed callee frame lacks `:dead` →
+# l2-inverse round-trip diverges (the `frames` field). THE load-bearing
+# mutation for the ADR's residual-logging design.
+(:ReturnExit, "drop-residual", quote
+    function inverse(instr::ReturnExit, s::IState, p::NamedTuple)::IState
+        caller = active_locals(s)
+        retv = Int64[]
+        for t in instr.targets
+            push!(retv, caller[t]); delete!(caller, t)
+        end
+        locals = Dict{Symbol,Int64}()
+        for (r, v) in zip(instr.returns, retv); locals[r] = v; end
+        # BUG: omit the `for (k,v) in p.residual` loop — the dead temp is lost.
+        push!(s.frames, Frame(s.pc, instr.targets, locals, p.fname))
+        s.pc = p.end_pc
         return s
     end
-end, :direct, (_CALL_INSTR, _CALL_PRE)),
+end, :l2direct, (_RET_INSTR, _RET_PRE)),
+
+# ReturnExit "wrong-pc" (CW-B2): the inverse must restore `s.pc = p.end_pc`
+# (the End marker address from the payload — hostile-review B1). Setting it
+# to `p.end_pc - 1` makes the reconstructed pre-image's pc wrong → RED.
+(:ReturnExit, "wrong-pc", quote
+    function inverse(instr::ReturnExit, s::IState, p::NamedTuple)::IState
+        caller = active_locals(s)
+        retv = Int64[]
+        for t in instr.targets
+            push!(retv, caller[t]); delete!(caller, t)
+        end
+        locals = Dict{Symbol,Int64}()
+        for (r, v) in zip(instr.returns, retv); locals[r] = v; end
+        for (k, v) in p.residual; locals[k] = v; end
+        push!(s.frames, Frame(s.pc, instr.targets, locals, p.fname))
+        s.pc = p.end_pc - 1   # BUG: wrong pc restore (should be p.end_pc).
+        return s
+    end
+end, :l2direct, (_RET_INSTR, _RET_PRE)),
 ]
 
 # ---------------------------------------------------------------------
@@ -460,6 +533,7 @@ function run_mutation_cycle(entry)
         BennettVM.eval(body)
         result = mode === :scaffold ? _red_scaffold(fixture, diag) :
                  mode === :direct   ? _red_direct(fixture, diag) :
+                 mode === :l2direct ? _red_l2direct(fixture, diag) :
                  error("run_mutation_cycle: unknown mode $(mode)")
     finally
         n = _restore!(kind, before)
@@ -475,6 +549,7 @@ function run_mutation_cycle(entry)
         n >= 1 || error("[$diag] mutation eval added no methods ",
             "(n_deleted=0); cycle is meaningless. Check mutation signature.")
         mode === :scaffold ? _green_scaffold(fixture) :
+        mode === :l2direct ? _green_l2direct(fixture) :
                              _green_direct(fixture)
     end
     return result
@@ -504,23 +579,27 @@ end
     @test :MemoryAssignment     in kinds
     @test :MemoryInterchange    in kinds
     @test :MemorySwap           in kinds
-    @test :CallInstruction      in kinds
+    # CW-B2 (ADR 0019 §8 C5): `CallInstruction` is dead-letter — SUPERSEDED by
+    # `CallEnter`/`ReturnExit`. Its `:direct` `no-pc` entry is replaced by two
+    # `ReturnExit` `:l2direct` entries (drop-residual + wrong-pc). `CallEnter`
+    # has no `:direct` round-trip surface (pc-bump placeholder forward + a
+    # raising `prev::Any` inverse, ADR 0019 §3); it is mutation-proofed in
+    # `test/test_call_roundtrip.jl` (M4).
+    @test :ReturnExit           in kinds
+    @test !(:CallInstruction in kinds)
     @test length(kinds) == 6
     # Each of the five L2/injective kinds contributes >=2 *distinct*
     # mutations (Defect 1 post-fix: the prior manifest had MemorySwap
     # with two textually identical "skip-swap" entries; the one-sided
-    # body adds genuine coverage). CallInstruction (bd `bennettvm-7cg`)
-    # contributes ONE entry — its only auditable surface is the pc-only
-    # `no-pc` direct round-trip (the L2 path is v5-deferred), so a second
-    # distinct mutation would have to fabricate v5 semantics (scope
-    # creep). The per-kind distinctness loop below only requires unique
-    # bodies per kind (1==1 holds for CallInstruction), not >=2.
+    # body adds genuine coverage). `ReturnExit` (CW-B2) contributes TWO
+    # entries — drop-residual (the residual-logging design) and wrong-pc
+    # (the end_pc restore, B1) — both genuine, distinct L2-inverse audits.
     # Distinctness = unique (kind, label) pairs AND unique mutation
     # bodies per kind (catches a future copy-paste regression that lifts
     # the same body under two labels).
-    @test length(_MANIFEST) == 11
+    @test length(_MANIFEST) == 12
     pairs = Set((entry[1], entry[2]) for entry in _MANIFEST)
-    @test length(pairs) == 11
+    @test length(pairs) == 12
     for k in kinds
         bodies = [entry[3] for entry in _MANIFEST if entry[1] === k]
         @test length(Set(string(b) for b in bodies)) == length(bodies)

@@ -203,10 +203,31 @@ Block emission order: entry block first (so `VMProgram` / `LabelTable`
 see it as `blocks[1]`-resolvable via `entry_label`), then the remaining
 original blocks, then all trampolines.
 """
-function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
+function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
+                          label_prefix::Union{Nothing,Symbol} = nothing,
+                          functions::Dict{Symbol,FunctionEntry} =
+                              Dict{Symbol,FunctionEntry}(),
+                          frame::Bool = true)::VMProgram
     blocks = parsed.blocks
+    # CW-B2 (ADR 0019 §2) — `#`-label qualifier for multi-function lowering.
+    # `_q` prefixes every BLOCK-IDENTITY label (and every cross-block target,
+    # which derives from a block label via `_edge_label`) with
+    # `Symbol(string(prefix), "#", string(label))` (the ADR §2 scheme; `#` is
+    # collision-proof against the `e_`/`_phi_const_` synthetic conventions,
+    # which use `_`, never `#`). When `label_prefix === nothing` (the
+    # single-function path) `_q` is the identity, so single-function lowering is
+    # byte-identical. Begin/End MARKER labels carry `routine` (already
+    # function-unique since names are validated unique) and are NOT `_q`'d — the
+    # LabelTable keys off `BasicBlock.label`, not the marker label.
+    _q(lbl::Symbol) = label_prefix === nothing ? lbl :
+        Symbol(string(label_prefix), "#", string(lbl))
     by_label = Dict{Symbol,Bennett.IRBasicBlock}(b.label => b for b in blocks)
-    entry_label = first(blocks).label
+    # `raw_entry_label` keys the RAW-`b.label` internal lookups (`by_label`,
+    # `b.label === raw_entry_label`); `entry_label` is the QUALIFIED label that
+    # becomes the VMProgram's `entry_label` (and the `FunctionEntry.entry_label`
+    # in the multi-function table).
+    raw_entry_label = first(blocks).label
+    entry_label = _q(raw_entry_label)
 
     # --- Phase 1: edge args + per-source constant registry. ---
     # edge_args[(src,dst)]  :: Vector{Symbol}        — φ args in dst's φ order.
@@ -284,7 +305,7 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
                 end
             end
             edge_args[(src, dst)] = args
-            push!(preds[dst], _edge_label(src, dst))
+            push!(preds[dst], _q(_edge_label(src, dst)))
         end
     end
 
@@ -325,12 +346,14 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
                             if inst isa Bennett.IRInsertValue)
 
     # --- Phase 2: original blocks (entry block first). ---
-    ordered = vcat(by_label[entry_label],
-                   [b for b in blocks if b.label !== entry_label])
+    # Internal lookups use RAW `b.label` (`raw_entry_label`); the VMProgram-
+    # facing labels are `_q`-qualified at the BasicBlock-construction site below.
+    ordered = vcat(by_label[raw_entry_label],
+                   [b for b in blocks if b.label !== raw_entry_label])
     for b in ordered
         params = _collect_phi_params(b)
         # Entry marker by predecessor arity.
-        if b.label === entry_label
+        if b.label === raw_entry_label
             # Out-of-slice fail-loud (Rule 1): an entry block that is ALSO a
             # φ-join (a back-edge targets the entry directly) would need a
             # ConditionalEntry, but the Begin frame takes priority here and
@@ -369,10 +392,10 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
             # naming — robust where `parsed.args[1]` would fail for a
             # zero-arg routine or collide with a φ param.
             cond = Symbol("_cond_", b.label)
-            entry = ConditionalEntry(b.label, params, preds[b.label][1],
+            entry = ConditionalEntry(_q(b.label), params, preds[b.label][1],
                                      preds[b.label][2], cond)
         else
-            entry = UnconditionalEntry(b.label, params)
+            entry = UnconditionalEntry(_q(b.label), params)
         end
         # Body: lowered non-φ instructions, then synthetic constant creates.
         body = Instruction[]
@@ -547,7 +570,7 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
                                    _agg_slot_name(inst.agg.name, inst.index),
                                    :add, Int64(0)))
             else
-                li = _lower_body_inst(inst)
+                li = _lower_body_inst(inst, functions)
                 li === nothing || push!(body, li)
             end
         end
@@ -599,27 +622,31 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol)::VMProgram
         else  # IRBranch
             succs = _successors(term)
             if length(succs) == 1
-                exit = UnconditionalExit(_edge_label(b.label, succs[1]), Symbol[])
+                exit = UnconditionalExit(_q(_edge_label(b.label, succs[1])),
+                                         Symbol[])
             else
                 exit = ConditionalExit(term.cond.name,
-                                       _edge_label(b.label, term.true_label),
-                                       _edge_label(b.label, term.false_label),
+                                       _q(_edge_label(b.label, term.true_label)),
+                                       _q(_edge_label(b.label, term.false_label)),
                                        Symbol[])
             end
         end
-        push!(out, BasicBlock(b.label, entry, body, exit))
+        push!(out, BasicBlock(_q(b.label), entry, body, exit))
     end
 
-    # --- Phase 3: trampoline blocks (one per edge). ---
+    # --- Phase 3: trampoline blocks (one per edge). The trampoline's own
+    # label AND its exit target (`dst`) are `_q`-qualified so a multi-function
+    # module's edge labels never collide across functions (ADR 0019 §2).
     for ((src, dst), args) in edge_args
-        lbl = _edge_label(src, dst)
+        lbl = _q(_edge_label(src, dst))
         push!(out, BasicBlock(lbl,
                               UnconditionalEntry(lbl, Symbol[]),
                               Instruction[],
-                              UnconditionalExit(dst, args)))
+                              UnconditionalExit(_q(dst), args)))
     end
 
     arg_widths = Int[w for (_n, w) in parsed.args]
     return VMProgram(out, LabelTable(out), entry_label,
-                     arg_widths, copy(parsed.ret_elem_widths))
+                     arg_widths, copy(parsed.ret_elem_widths),
+                     functions, routine)
 end

@@ -173,6 +173,22 @@ include("ir/memory_instructions.jl")
 # `Instruction` (from `instructions.jl`) and `IState` (from
 # `IState.jl`); MUST follow both. Not yet exported.
 include("ir/call_instruction.jl")
+# CW-B2 (ADR 0019 §3–§4; bead `bennettvm-416r.6`/`416r.7`) — `CallEnter` /
+# `ReturnExit`, the reversible call/return transition pair that SUPERSEDES
+# the M2.14 `CallInstruction` stub (ADR 0019 §8). Built on the `Frame` stack
+# CW-B2 chunk 1 lifted into `IState`: `CallEnter` is zero-history
+# (L1-injective — MOVE args, push a fresh activation, jump to the callee
+# entry; reversed via M4.3 replay), `ReturnExit` is unconditionally L2 (pop
+# the activation, land returns, log the dead-temporary RESIDUAL the pop
+# would destroy + `end_pc` for the inverse's callee re-entry). Depends on
+# `Instruction` (`instructions.jl`), `IState` / `active_locals` / `Frame`
+# (`IState.jl` / `call_frames.jl`); MUST precede `history/Injective.jl`
+# (which PINS `is_injective(::CallEnter) = true`) and `history/delta.jl`
+# (which marks `is_l2_capable(::ReturnExit) = true` + `is_unconditional_l2`).
+# The substantive `CallEnter` semantics (callee-entry-pc resolution + param
+# bind, which need the function table `forward` cannot see) run in
+# `_handle_call_dispatch!` (`interpreter/Interpreter.jl`). Not yet exported.
+include("ir/call_transitions.jl")
 # M_UNBOUNDED (ADR 0012 §D1) — `Define`, the reversible SSA-create
 # instruction (`bennettvm-d3p`). LLVM `IRBinOp` / `IRICmp` lower to a
 # `Define` (`target := lhs op rhs`) whose operands are READ, never
@@ -490,6 +506,16 @@ include("analysis/liveness.jl")
 # through `lower_vm`.
 include("ir/ingest.jl")
 include("lower_vm.jl")
+# CW-B2 (ADR 0019 §2, §8; bead `bennettvm-416r.7`) — multi-function lowering.
+# `lower_vm(::Vector{Pair{Symbol,ParsedIR}})` builds the function table,
+# lowers each function with `#`-qualified labels (`_lower_parsed_ir`'s
+# `label_prefix`), and merges into one flat-stream VMProgram with one
+# LabelTable + the populated `functions` / `entry_function` fields. MUST
+# follow `ingest.jl` (uses `_lower_parsed_ir`, `BasicBlock`, `LabelTable`,
+# `FunctionEntry`, `VMProgram`) and `lower_vm.jl` (adds a method to the same
+# `lower_vm` generic). `Bennett.ParsedIR` is single-function, so the
+# Bennett.jl-side multi-function ParsedIR is CW-C2/CW-D territory (Rule 14).
+include("ir/ingest_multi.jl")
 # M3.1 — `initial_state(prog, input)` (`bennettvm-afj`). Gateway to the
 # forward-only interpreter milestone (M3). Consumes a `VMProgram`
 # (M2.17), reads the entry block's `fwd_address` via `LabelTable`

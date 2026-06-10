@@ -936,6 +936,39 @@ function step!(s::RState, prog::VMProgram;
     # raises in `_instruction_at` (Rule 1).
     instr = _instruction_at(prog, s.current.pc)
 
+    # (3-CW-B2) End-at-depth>1 routing (ADR 0019 §4, §8). The lowering
+    # frames EVERY function (entry routine AND callee) with the same
+    # `EndInstruction` exit marker; depth decides its role:
+    #
+    #   * depth == 1 (the bottom :__entry frame) — `End` is the HALT marker
+    #     exactly as today (handled at (6) below, unchanged).
+    #   * depth  > 1 (a suspended caller exists) — `End` is the callee's
+    #     RETURN: synthesize the `ReturnExit(fname, returns, frame.targets)` and
+    #     dispatch IT instead. This single-marker-two-roles design is what lets
+    #     a RECURSIVE function (whose one exit marker is reached at every
+    #     activation depth) both halt at the top and return at every inner
+    #     level. The synthesized `ReturnExit` is a real instruction: its
+    #     `predelta_payload` captures the residual + `end_pc = s.pc` (the End
+    #     marker's address — available HERE, before forward moves pc), its
+    #     `forward` pops + lands, and the push gate records a
+    #     `DeltaEntry{ReturnExit}` so `unstep!` reverses it via the L2 inverse.
+    #     `fname` / `targets` / `link` come from the active frame; `returns` is
+    #     the PER-BLOCK `EndInstruction.returns` (authoritative for THIS exit —
+    #     a function with multiple ret blocks returns a different SSA name per
+    #     block, so the marker's own returns is the correct value to read),
+    #     EXCEPT for a VOID callee: the function table records empty declared
+    #     returns, in which case the returns is forced empty (the per-block End
+    #     marker may carry a dummy ret symbol that the void caller never lands).
+    #     The empty-returns case also matches the void caller's empty `targets`,
+    #     so the `ReturnExit` returns↔targets arity holds.
+    if instr isa EndInstruction && length(s.current.frames) > 1
+        fr = s.current.frames[end]
+        rets = (haskey(prog.functions, fr.fname) &&
+                isempty(prog.functions[fr.fname].returns)) ?
+            Symbol[] : instr.returns
+        instr = ReturnExit(fr.fname, rets, fr.targets)
+    end
+
     # (3a) M_DYN (bd `bennettvm-ekc`) — PRE-`forward()` L2 delta capture.
     # An L2 delta whose `inverse` needs information DESTROYED by
     # `forward()` (the canonical case: `MemoryStore`, whose overwrite
@@ -971,10 +1004,26 @@ function step!(s::RState, prog::VMProgram;
     local pre_l2::Bool = false
     local pre_payload::Union{Nothing,NamedTuple} = nothing
     if !replay_mode && !is_injective(instr)
-        (block_label, body_idx) = _block_index_at(prog, pc_before)
-        if must_cache(must_cache_set, block_label, body_idx)
+        # CW-B2 (ADR 0019 §4): an `is_unconditional_l2` instruction
+        # (`ReturnExit`) pushes its L2 delta on EVERY forward step,
+        # independent of `must_cache` — its history entry is the backward-
+        # control-flow breadcrumb that routes `unstep!` into the callee's
+        # `End` (ADR 0019 §4 property 2), not only a data-recovery payload.
+        # It is also the block's EXIT marker, never a body slot, so
+        # `compute_must_cache` (which scans only `block.instructions`) would
+        # never select it — the unconditional flag is the ONLY path that
+        # records its delta. `_block_index_at` is consulted ONLY on the
+        # must_cache branch (the exit-marker pc would return the exit slot
+        # index, irrelevant here).
+        if is_unconditional_l2(typeof(instr))
             pre_l2 = true
             pre_payload = predelta_payload(instr, s.current)
+        else
+            (block_label, body_idx) = _block_index_at(prog, pc_before)
+            if must_cache(must_cache_set, block_label, body_idx)
+                pre_l2 = true
+                pre_payload = predelta_payload(instr, s.current)
+            end
         end
     end
 
@@ -995,6 +1044,15 @@ function step!(s::RState, prog::VMProgram;
     # docstring §"What this layer adds on top of forward()" for the
     # full rationale on why this overwrites forward()'s pc bump.
     _handle_cross_block_dispatch!(s, prog, instr)
+
+    # (5-CW-B2) Call dispatch on `CallEnter` (ADR 0019 §3). `CallEnter`'s
+    # `forward` is a pc-bumping placeholder (it cannot see `prog`); the
+    # substantive MOVE args + push the callee frame + bind params + jump to
+    # the callee entry runs HERE, where `prog.functions` / `prog.label_table`
+    # are in scope — the `_handle_cross_block_dispatch!` precedent. A no-op
+    # for every non-`CallEnter` instruction. (`ReturnExit` needs nothing from
+    # `prog`, so its full semantics live in `forward(::ReturnExit, s)`.)
+    _handle_call_dispatch!(s, prog, instr)
 
     # (6) Halt detection on EndInstruction. AFTER forward + cross-block
     # has run, so the IState is in its post-step shape (pc has been
@@ -1311,6 +1369,100 @@ function _rename_args_to_params!(locals::Dict{Symbol,Int64},
         locals[p] = v
     end
     return locals
+end
+
+"""
+    _handle_call_dispatch!(s::RState, prog::VMProgram, instr::Instruction)
+
+If `instr` is a `CallEnter`, perform the reversible call transition (ADR
+0019 §3): MOVE the args out of the caller frame, PUSH a fresh callee
+activation, BIND the moved values positionally under the callee's formal
+params, and JUMP to the callee's entry (one past its Begin marker). A no-op
+for every other instruction type — the `_handle_cross_block_dispatch!`
+sibling that runs immediately before this.
+
+The MOVE (not copy-and-drop) is Vieri 1995 p.22 — the args are DELETED from
+the caller and re-bound in the callee, so nothing is duplicated and the
+backward pass (M4.3 replay) reconstructs the frame exactly. The return site
+is saved in `Frame.link = pc_before + 1` (BobISA's branch register); the
+landing `targets` ride the frame so the matching `ReturnExit` (or
+End-at-depth>1) can un-land them.
+
+Fail-loud (ADR 0019 §6): unknown callee (closed-world miss), call arity
+mismatch (args↔params), and a `targets` name already live in the caller
+(SSA violation — it would be clobbered when the return lands).
+
+# Ref
+
+  * `docs/adr/0019-reversible-calls.md` §3 (CallEnter forward), §6 (a,b,c).
+  * `src/ir/call_transitions.jl` — the `CallEnter` instruction.
+  * `src/ir/call_frames.jl` — `Frame` / `FunctionEntry`.
+"""
+function _handle_call_dispatch!(s::RState, prog::VMProgram,
+                                instr::Instruction)
+    instr isa CallEnter || return s
+
+    # (a) Closed-world callee resolution (ADR 0019 §6a). The ingest guard-5
+    # already validated the callee at lowering time, but the dispatch layer
+    # is the last line of defense for a hand-built program (Rule 1).
+    haskey(prog.functions, instr.callee) ||
+        error("_handle_call_dispatch!: unknown callee :", instr.callee,
+              " — not in the function table (known: ",
+              sort!(collect(keys(prog.functions))), "). Indirect / open-world ",
+              "calls are deferred (ADR 0019 §6a, §7); Rule 1 fail-loud.")
+    fe = prog.functions[instr.callee]
+
+    # (b) Call arity check (ADR 0019 §6b).
+    length(instr.args) == length(fe.params) ||
+        error("_handle_call_dispatch!: call arity mismatch for :",
+              instr.callee, " — ", length(instr.args), " arg(s) ", instr.args,
+              " vs ", length(fe.params), " param(s) ", fe.params,
+              " (ADR 0019 §6b; Rule 1 fail-loud).")
+
+    caller = active_locals(s.current)
+
+    # (c) The `targets` SSA guard (ADR 0019 §6c): a landing name already live
+    # in the caller would be clobbered when the return lands. Caught here at
+    # CALL time (the earliest point) rather than at return.
+    for t in instr.targets
+        haskey(caller, t) &&
+            error("_handle_call_dispatch!: target :", t, " is already live ",
+                  "in the caller frame before the call to :", instr.callee,
+                  " — the return landing would clobber a live SSA name (ADR ",
+                  "0019 §6c; Rule 1 fail-loud).")
+    end
+
+    # MOVE args out of the caller (Vieri p.22): capture, then delete.
+    argv = Int64[]
+    for a in instr.args
+        haskey(caller, a) ||
+            error("_handle_call_dispatch!: arg :", a, " is absent from the ",
+                  "caller frame (reading an undefined SSA name as a call arg; ",
+                  "ADR 0019 §6f; Rule 1 fail-loud).")
+        push!(argv, caller[a])
+    end
+    for a in instr.args
+        delete!(caller, a)
+    end
+
+    # PUSH the callee activation. `link = pc_before + 1` is the return site
+    # (the flat-stream slot AFTER the CallEnter, where forward() bumped pc to
+    # — but `_handle_cross_block_dispatch!` ran first and is a no-op for
+    # CallEnter, so `s.current.pc` is exactly `pc_before + 1` here).
+    callee_locals = Dict{Symbol,Int64}()
+    for (p, v) in zip(fe.params, argv)
+        callee_locals[p] = v
+    end
+    link = s.current.pc
+    push!(s.current.frames, Frame(link, instr.targets, callee_locals,
+                                  instr.callee))
+
+    # JUMP to the callee entry: one past its Begin marker (the
+    # `_dispatch_to_block!` convention — the entry marker is a no-op-on-data
+    # whose forward we skip because we have bound the params ourselves).
+    entry_addr = prog.label_table[fe.entry_label]
+    s.current.pc = entry_addr.fwd_address + 1
+    return s
 end
 
 # ============================================================================

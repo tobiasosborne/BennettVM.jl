@@ -63,7 +63,10 @@ not in this pure per-instruction dispatch.
 
 Any other `IRInst` subtype is rejected loudly (Rule 1).
 """
-function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
+function _lower_body_inst(inst::Bennett.IRInst,
+                          functions::Dict{Symbol,FunctionEntry} =
+                              Dict{Symbol,FunctionEntry}()
+                          )::Union{Instruction,Nothing}
     if inst isa Bennett.IRBinOp
         # i1 (width==1) boolean algebra: a `ConstOperand` operand of an i1 op
         # is a 1-bit literal, but LLVM renders `true` as the SIGN-EXTENDED `-1`
@@ -280,6 +283,33 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
                   "this is unreachable-by-construction on accepted f64 IR — it ",
                   "fails loud only if a mixed-precision `.ll` reaches ingest ",
                   "(Rule 1 fail-loud).")
+        end
+        # Guard 5 — closed-world function-table resolution (CW-B2, ADR 0019 §2,
+        # §8 "Future guard-5"). AFTER the nondeterminism, heap, and Float32
+        # guards (the ADR 0018 §C ordering, preserved). An `IRCall` whose
+        # callee is a KNOWN in-module function (multi-function lowering passes
+        # the module's full `Dict{Symbol,FunctionEntry}` here) is a reversible
+        # VM call → emit a `CallEnter` (args = the `IRCall.args` SSA names). The
+        # `targets` are the single `inst.dest` UNLESS the callee is VOID (zero
+        # returns in its `FunctionEntry` — the C `ht_free` / `ht_put` shape), in
+        # which case targets is EMPTY: a void callee's `ReturnExit` lands
+        # nothing, so a `[dest]` target would mismatch its `[]` returns. When
+        # `functions` is empty (the single-function `lower_vm(::ParsedIR)` path
+        # — `Bennett.ParsedIR` is single-function only, so the table is never
+        # populated there), this guard never fires and a non-soft, non-heap
+        # callee still reaches the SoftCall allowlist reject below (unchanged).
+        if haskey(functions, nameof(inst.callee))
+            fe = functions[nameof(inst.callee)]
+            callargs = Symbol[a.name for a in inst.args
+                              if a isa Bennett.SSAOperand]
+            length(callargs) == length(inst.args) ||
+                error("lower_vm: IRCall to in-module function :",
+                      nameof(inst.callee), " has a non-SSA (constant) arg in ",
+                      inst.args, " — reversible VM-call args must be SSA names ",
+                      "(the MOVE semantics, ADR 0019 §3; Rule 1 fail-loud). ",
+                      "Materialise the constant via a synthetic Define first.")
+            targets = isempty(fe.returns) ? Symbol[] : Symbol[inst.dest]
+            return CallEnter(nameof(inst.callee), callargs, targets)
         end
         return SoftCall(inst.dest, nameof(inst.callee),
                         Union{Symbol,Int64}[_lower_operand(a)

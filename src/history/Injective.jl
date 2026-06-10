@@ -299,6 +299,18 @@ is_injective(::Type{MemoryInterchange})::Bool = true
 # `src/ir/memory_instructions.jl` M2.13 block docstring.
 is_injective(::Type{MemorySwap})::Bool = true
 
+# CW-B2 (ADR 0019 §3 + hostile-review C2) — the zero-history call
+# transition. `CallEnter` conserves information by construction: the return
+# site is in `Frame.link` (BobISA's saved branch register), the moved args
+# are under the callee's params, nothing is erased ⇒ nothing is logged. This
+# `true` is LOAD-BEARING (ADR 0019 §3, last paragraph): without it, the
+# M6.2/M7.6 push gate would route `CallEnter` to the `make_delta` fallback,
+# which raises for any non-L2 instruction — so every call-containing program
+# would abort. `CallEnter` is reversed by M4.3 checkpoint-replay (which
+# re-runs `forward` + `_handle_call_dispatch!`), never by a history entry.
+# (`ReturnExit`, by contrast, is NON-injective and L2: see `delta.jl`.)
+is_injective(::Type{CallEnter})::Bool = true
+
 # -----------------------------------------------------------------------------
 # Value-level discrimination — `ArithmeticAssignment` per-instance modop.
 # -----------------------------------------------------------------------------
