@@ -2,6 +2,70 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## ✅ SESSION 2026-06-10 — OPTION C DECIDED + CW-A/B/C COMPLETE: C-on-the-VM story demo GREEN
+
+**The lead resolved e67u as OPTION C** (closed-world reversible execution,
+ADR 0017) and the entire CW-A/B/C arc landed in one orchestrated session
+(Fable orchestrator; Opus coders, Sonnet hostile reviewers, serial Julia).
+**Suite 6450 → 6757. BVM: 8 commits pushed (HEAD `7634c0f`). Bennett.jl:
+3 commits pushed (HEAD `67f9107`), gated by the full 63m45s suite
+(688655 green; pinned gate-count baselines byte-identical throughout).**
+
+### What landed (controlling docs: ADR 0017 → 0018 → 0019+Amendment A → 0020)
+
+- **ADR 0017** — Option C as four capabilities (closed-world IR, reversible
+  calls, heap floor, intrinsic whitelist). `tu9` superseded; `90l` re-scoped
+  to the circuit boundary; route (a)/RevMap stays quantum-tier (`o1y`).
+- **CW-A (heap floor)** — ADR 0018; `IState.arena_top` + 7 `Intrinsic*`
+  (malloc/calloc/realloc/free/memset/memcpy/memmove); free = L1 no-op
+  (monotone cursor); bulk ops = L2 per-cell deltas.
+- **CW-B (calls)** — ADR 0019 (2 independent proposers → synthesis →
+  REJECT → fix → ACCEPT); frames in `IState` (locals field REMOVED,
+  wrap-at-construction); `CallEnter` zero-history L1; `ReturnExit`
+  unconditional L2 (residual + `end_pc` + `target_olds`); multi-function
+  `VMProgram` + `#`-qualified labels; recursion proven (factorial depth 5);
+  `u110` ingest split done en route (5 files).
+- **CW-C2 (front end, Bennett.jl)** — ADR 0020; `IRCall.callee::Union{
+  Function,Symbol}`; `ptr_cells=false` gate (Julia paths byte-identical);
+  C ptr params/store/load/ret + struct-GEP→IRPtrOffset + call emission +
+  void `IRRet()` + `extract_parsed_ir_set_from_ll` (12 ParsedIRs from the
+  fixture). Beads Bennett-k3ej/haiy/nd45.
+- **CW-C3 (THE STORY DEMO)** — `test/test_c_hashtable_e2e.jl`:
+  `hashtable.c` (clang -O0, 148 LOC, malloc-backed open addressing)
+  **executes AND reverses on the VM bit-for-bit vs `GOLDEN.txt`**, both
+  drivers, n ∈ {0,1,7,64,1000}; full `unrun!` → initial state, empty
+  history. **ADR 0019 Amendment A** (hostile-review-ratified): COPY-args,
+  OVERWRITE-targets (`target_olds` L2), per-frame `stack_top`/`StackAlloca`,
+  ≥3-pred `UnconditionalEntry`.
+
+### Process notes that mattered
+
+- Hostile review caught: a REJECT-grade pc-recovery hole in the call design
+  BEFORE implementation (B1 `end_pc`); the `IState.locals` staleness trap
+  (B2); a dead-condition `free` bounds bug; the false pgcstack comment
+  (swiftcc fixtures DO reach the D2 loop); the `nameof(::Symbol)` cross-repo
+  time bomb; aggregate-round-trip MASKING of a broken `target_olds` (M4.3
+  replay reconstructs the value — per-step inverse is the load-bearing
+  assertion; documented in test_call_roundtrip.jl).
+- The references PDFs were absent on this machine (never committed) —
+  re-acquired the open ones; `mogensen-2016-rssa.pdf` + `mogensen-ril.pdf`
+  still need user sync (bead `v5em`).
+
+### What's next (CW-D — the Julia track, ends at bare-fdict e2e = 7xa)
+
+1. **CW-D1** (`416r.11`): recursive callee extraction (opaque `j_*` calls →
+   MethodInstance IR → multi-function ParsedIR set). Design pass first.
+2. **CW-D2** (`416r.12`): Julia runtime intrinsic whitelist
+   (`jl_alloc_genericmemory`, `gc_alloc_obj`, memcpy/move, throw).
+3. **CW-D3** (`416r.13`): interned-global initializer extraction → CW-A3
+   globals-as-segments (re-scoped onto this track; fixture is globals-free).
+4. Deferred from reviews: `347o` (non-entry alloca guard), `zuem`
+   (recursion+allocas test), `hyi6` (stack/heap cursor overlap guard),
+   `r8nc` (≥3-pred backward dispatch), `w0a0` (e2e reverse perf), `r5c0`
+   (O1 track), `h4q4` (liveness COPY→MOVE shrink), `8e7t`
+   (FunctionEntry.returns void-flag), `efl2`/`7y2` (LOC splits), `lwhz`
+   (include guard).
+
 ## ⏸ SESSION 2026-06-08 — acq + b5x/xv0u landed; Case B BLOCKED ON LEAD DECISION
 
 **2 opcode beads landed + pushed (both repos); suite 6308 → 6450.** Then SC9 Case B
