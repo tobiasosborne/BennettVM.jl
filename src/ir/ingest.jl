@@ -590,7 +590,19 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
         end
         # Exit marker from the terminator.
         term = b.terminator
-        if term isa Bennett.IRRet
+        if term isa Bennett.IRRet && term.op === nothing
+            # Void-return form (Bennett-nd45 / BVM ADR 0020 D5b; CW-C2 chunk C):
+            # a C `ret void` (`ht_free`/`ht_put`) lowers to `IRRet()` with
+            # `op === nothing` + `width == 0` (no value). It becomes an
+            # `EndInstruction` with EMPTY returns — `result(rs)` keys off no
+            # symbol, and a void callee's `ReturnExit` lands nothing (the empty
+            # `CallEnter.targets` shape, ingest_body.jl guard-5). The matching
+            # `_declared_returns` (ingest_multi.jl) already returns `Symbol[]`
+            # for this terminator, so the function table's `FunctionEntry.returns`
+            # is empty and a caller emits empty targets. Placed BEFORE the
+            # value-bearing `IRRet` arm so `_lower_operand(nothing)` is never hit.
+            exit = EndInstruction(routine, Symbol[])
+        elseif term isa Bennett.IRRet
             retval = _lower_operand(term.op)
             retval isa Symbol ||
                 error("lower_vm: IRRet of a literal (", retval, ") is ",

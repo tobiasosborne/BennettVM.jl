@@ -63,6 +63,20 @@ not in this pure per-instruction dispatch.
 
 Any other `IRInst` subtype is rejected loudly (Rule 1).
 """
+
+# Resolve an `IRCall.callee` to its dispatch NAME (a `Symbol`). Bennett.jl
+# widened `IRCall.callee` to `Union{Function,Symbol}` (Bennett-k3ej / BVM ADR
+# 0020 D1): a Julia-sourced callee is a `Function` (named via `nameof`), a
+# C-track `.ll`-sourced callee is already a bare `Symbol` (name-only — no Julia
+# `Function` object exists to bind). Every IRCall-arm dispatch decision
+# (`_NONDETERMINISTIC_CALLEES`, `_HEAP_DISPATCH`, the SoftCall allowlist, and
+# the guard-5 function table) keys off this name, so both inputs collapse to a
+# `Symbol` here. NOT type-piracy on `Base.nameof` (CLAUDE.md Rule 14 / the
+# explicit chunk-C directive): a local helper, defined for exactly the two
+# `IRCall.callee` shapes.
+_callee_sym(callee::Function) = nameof(callee)
+_callee_sym(callee::Symbol)   = callee
+
 function _lower_body_inst(inst::Bennett.IRInst,
                           functions::Dict{Symbol,FunctionEntry} =
                               Dict{Symbol,FunctionEntry}()
@@ -176,7 +190,7 @@ function _lower_body_inst(inst::Bennett.IRInst,
         # FP op being an `IRCall` to a registered `soft_f*` callee — BennettVM
         # inherits Bennett.jl's bit-exact SoftFloat dispatch wholesale and
         # writes NO FP-reversibility code of its own (ADR 0011 D1). The callee
-        # is stored language-neutrally as `nameof(inst.callee)` (a Symbol),
+        # is stored language-neutrally as `_callee_sym(inst.callee)` (a Symbol),
         # NOT the Function (ADR 0013 callee_name direction); the SoftCall
         # constructor validates it against the `_SOFT_DISPATCH` allowlist
         # (built from Bennett.jl's FP callee groups). A NON-soft callee (a
@@ -210,9 +224,9 @@ function _lower_body_inst(inst::Bennett.IRInst,
         # cause). A soft_f* callee is not in `_NONDETERMINISTIC_CALLEES`, so
         # the soft path is unaffected; a non-soft, non-nondeterministic callee
         # still reaches the SoftCall allowlist reject below.
-        if nameof(inst.callee) in _NONDETERMINISTIC_CALLEES
+        if _callee_sym(inst.callee) in _NONDETERMINISTIC_CALLEES
             error("lower_vm: IRCall to nondeterministic callee :",
-                  nameof(inst.callee), " (dest=", inst.dest, ") cannot be ",
+                  _callee_sym(inst.callee), " (dest=", inst.dest, ") cannot be ",
                   "ingested — it has no deterministic forward, so the L3 ",
                   "checkpoint-replay reversal (ADR 0012; rr's record-",
                   "nondeterminism/replay-determinism lesson) cannot recover ",
@@ -231,8 +245,8 @@ function _lower_body_inst(inst::Bennett.IRInst,
         # `_HEAP_DISPATCH` hit emits the `Intrinsic*` family and returns; a miss
         # falls through to the Float32 guard + SoftCall below (and ultimately the
         # fail-loud allowlist reject).
-        if nameof(inst.callee) in _HEAP_DISPATCH
-            return _lower_intrinsic_call(inst, nameof(inst.callee))
+        if _callee_sym(inst.callee) in _HEAP_DISPATCH
+            return _lower_intrinsic_call(inst, _callee_sym(inst.callee))
         end
         # Float32-touching soft op guard (bead `bennettvm-h0t`; ADR 0011 §D2,
         # Bennett-3rph). A soft op "touches f32" iff its result OR any operand
@@ -269,7 +283,7 @@ function _lower_body_inst(inst::Bennett.IRInst,
         # the f32 widths for those tests (only the accepted-program ingest
         # BOUNDARY rejects them). See `src/ir/softcall_instruction.jl` §"Float32".
         if inst.ret_width == 32 || any(==(32), inst.arg_widths)
-            error("lower_vm: IRCall to soft op :", nameof(inst.callee),
+            error("lower_vm: IRCall to soft op :", _callee_sym(inst.callee),
                   " (dest=", inst.dest, ") touches Float32 (ret_width=",
                   inst.ret_width, ", arg_widths=", inst.arg_widths, ") — ",
                   "REJECTED at the BennettVM ingest boundary (ADR 0011 §D2, ",
@@ -298,20 +312,20 @@ function _lower_body_inst(inst::Bennett.IRInst,
         # — `Bennett.ParsedIR` is single-function only, so the table is never
         # populated there), this guard never fires and a non-soft, non-heap
         # callee still reaches the SoftCall allowlist reject below (unchanged).
-        if haskey(functions, nameof(inst.callee))
-            fe = functions[nameof(inst.callee)]
+        if haskey(functions, _callee_sym(inst.callee))
+            fe = functions[_callee_sym(inst.callee)]
             callargs = Symbol[a.name for a in inst.args
                               if a isa Bennett.SSAOperand]
             length(callargs) == length(inst.args) ||
                 error("lower_vm: IRCall to in-module function :",
-                      nameof(inst.callee), " has a non-SSA (constant) arg in ",
+                      _callee_sym(inst.callee), " has a non-SSA (constant) arg in ",
                       inst.args, " — reversible VM-call args must be SSA names ",
                       "(the MOVE semantics, ADR 0019 §3; Rule 1 fail-loud). ",
                       "Materialise the constant via a synthetic Define first.")
             targets = isempty(fe.returns) ? Symbol[] : Symbol[inst.dest]
-            return CallEnter(nameof(inst.callee), callargs, targets)
+            return CallEnter(_callee_sym(inst.callee), callargs, targets)
         end
-        return SoftCall(inst.dest, nameof(inst.callee),
+        return SoftCall(inst.dest, _callee_sym(inst.callee),
                         Union{Symbol,Int64}[_lower_operand(a)
                                             for a in inst.args],
                         inst.arg_widths, inst.ret_width)

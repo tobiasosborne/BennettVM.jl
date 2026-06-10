@@ -496,4 +496,11 @@ using BennettVM
     # `per_step_inverse_check` via `test/test_per_step_inverse.jl`
     # (re-include-guarded); depends only on already-loaded symbols.
     include("test_call_roundtrip.jl")
+    # CW-C2 chunk C (BVM ADR 0020 D5; Bennett-nd45): a C-track `.ll`-sourced
+    # IRCall has a bare `Symbol` callee. The IRCall arm now dispatches via
+    # `_callee_sym(inst.callee)` (nameof for Function, identity for Symbol), so
+    # a Symbol callee resolves through `_HEAP_DISPATCH` (:malloc → IntrinsicMalloc)
+    # and the guard-5 function table (in-module → CallEnter), and the
+    # nondeterminism/Float32 guards still fire.
+    include("test_symbol_callee_ingest.jl")
 end
