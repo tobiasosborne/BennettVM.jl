@@ -192,6 +192,7 @@ mutable struct IState
     memory::Dict{Int64,Int64}
     revmap::Dict{Int64,Int64}   # RevMap, the reversible-map ADT (ADR 0008).
     heap_top::Int64             # runtime bump-pointer offset (ADR 0009; uil).
+    arena_top::Int64            # malloc-arena bump-pointer offset (ADR 0018; CW-A2).
 
     # 3-arg constructor: preserves every existing call site (M2.1
     # through M2.10) — empty memory AND empty revmap are the right
@@ -199,7 +200,8 @@ mutable struct IState
     # `heap_top = 0` (no dynamic allocation yet) keeps a single DynAlloca
     # byte-identical (base = instr.base + 0 == instr.base; bead `bennettvm-uil`).
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol) =
-        new(pc, locals, status, Dict{Int64,Int64}(), Dict{Int64,Int64}(), Int64(0))
+        new(pc, locals, status, Dict{Int64,Int64}(), Dict{Int64,Int64}(),
+            Int64(0), Int64(0))
 
     # 4-arg constructor: explicit memory, empty revmap. Used by M2.11+
     # tests and by any lowering pass that materializes a heap snapshot up
@@ -209,7 +211,8 @@ mutable struct IState
     # at the start, before any dynamic alloc has advanced the cursor.
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}) =
-        new(pc, locals, status, memory, Dict{Int64,Int64}(), Int64(0))
+        new(pc, locals, status, memory, Dict{Int64,Int64}(),
+            Int64(0), Int64(0))
 
     # 5-arg constructor: explicit memory AND revmap (ADR 0008 Decision 1).
     # Used by the `IRMap*` unit tests to build an IState with a populated
@@ -218,7 +221,7 @@ mutable struct IState
     # existing 3-/4-arg call site resolves to. `heap_top` defaults to 0 (uil).
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64}) =
-        new(pc, locals, status, memory, revmap, Int64(0))
+        new(pc, locals, status, memory, revmap, Int64(0), Int64(0))
 
     # 6-arg constructor: explicit `heap_top` (bead `bennettvm-uil`). Used
     # ONLY by the multi-DynAlloca unit tests to build an IState mid-stream (a
@@ -228,7 +231,18 @@ mutable struct IState
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64},
            heap_top::Integer) =
-        new(pc, locals, status, memory, revmap, Int64(heap_top))
+        new(pc, locals, status, memory, revmap, Int64(heap_top), Int64(0))
+
+    # 7-arg constructor: explicit `arena_top` (ADR 0018 §A; bead CW-A2). Used
+    # ONLY by the malloc-arena unit tests to build an IState mid-stream (a
+    # non-zero arena cursor). The trailing `arena_top` is unambiguous —
+    # distinct in arity from the 6-arg form — so adding it changes no existing
+    # call site's resolution. `Integer` is coerced to `Int64` for caller
+    # convenience, exactly as the 6-arg `heap_top` form does.
+    IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
+           memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64},
+           heap_top::Integer, arena_top::Integer) =
+        new(pc, locals, status, memory, revmap, Int64(heap_top), Int64(arena_top))
 end
 
 """
@@ -300,7 +314,11 @@ function Base.:(==)(a::IState, b::IState)
     a.locals == b.locals &&  # Dict's overloaded ==, content-comparing.
     a.memory == b.memory &&  # M2.11: same content-comparing pattern.
     a.revmap == b.revmap &&  # ADR 0008 Finding 3: RevMap content participates.
-    a.heap_top == b.heap_top # uil: the runtime bump offset MUST round-trip.
+    a.heap_top == b.heap_top &&  # uil: the runtime bump offset MUST round-trip.
+    a.arena_top == b.arena_top   # ADR 0018 §H: the malloc-arena cursor MUST
+                                 # round-trip — omitting it would make a
+                                 # round-trip test pass spuriously when a
+                                 # malloc inverse forgot to retract the cursor.
 end
 
 function Base.hash(s::IState, h::UInt)
@@ -310,5 +328,7 @@ function Base.hash(s::IState, h::UInt)
     h = hash(s.memory, h)   # M2.11: heap content participates in hash.
     h = hash(s.revmap, h)   # ADR 0008 Finding 3: RevMap content participates.
     h = hash(s.heap_top, h) # uil: hash the bump offset in lock-step with ==.
+    h = hash(s.arena_top, h) # ADR 0018 §H: hash the malloc-arena cursor in
+                             # lock-step with == (preserves a==b ⟹ hash(a)==hash(b)).
     return h
 end

@@ -516,6 +516,40 @@ is_injective(::Type{IRMapGet})::Bool    = false
 # ONLY — `compute_must_cache` never selects it. Do NOT mark this `true`.
 is_injective(::Type{SoftCall})::Bool = false
 
+# -----------------------------------------------------------------------------
+# Heap intrinsics (CW-A, ADR 0018 §B; `src/ir/intrinsics.jl`).
+# -----------------------------------------------------------------------------
+#
+# `IntrinsicFree` is the ONE injective heap intrinsic: at the floor `free` is a
+# no-op (ADR 0017 item 3 — leaked space is history cost) that mutates NO state
+# (cursor, memory, locals all unchanged), so the inverse is a clean `pc -= 1`
+# recoverable from current state alone — `true` (L1, ADR 0018 §B¹). This is
+# correct precisely because the arena cursor only GROWS: a freed region is
+# never re-allocated, so there is no aliasing for a later malloc to expose.
+is_injective(::Type{IntrinsicFree})::Bool = true
+#
+# The other six are NON-injective (same shape as `MemoryStore` / `DynAlloca`):
+#
+#   * `IntrinsicMalloc` / `IntrinsicCalloc` / `IntrinsicRealloc` materialise a
+#     pointer (a loop re-def overwrites a prior `dest`) AND open a region whose
+#     element writes must be undone — they carry the L2 `(base, cells)` delta
+#     (the unconditional-delete lemma, `src/ir/alloca.jl`).
+#   * `IntrinsicMemset` / `IntrinsicMemcpy` / `IntrinsicMemmove` are bounded
+#     runtime-length OVERWRITES of a dest range — they lose the prior cell
+#     values, so they are not bijections on the cells; they carry the per-cell
+#     `(addr, old, was_present)` dest-range delta (the `MemoryStore` schema).
+#
+# Per Rule 1 ("fail safe — push when in doubt") all six are `false`, so the
+# M6.2/M7.6 push gate records a history entry; with the L2-capability rows in
+# `src/history/delta.jl` they push their delta, else fall through to L3. Do NOT
+# mark any of these `true`.
+is_injective(::Type{IntrinsicMalloc})::Bool  = false
+is_injective(::Type{IntrinsicCalloc})::Bool  = false
+is_injective(::Type{IntrinsicRealloc})::Bool = false
+is_injective(::Type{IntrinsicMemset})::Bool  = false
+is_injective(::Type{IntrinsicMemcpy})::Bool  = false
+is_injective(::Type{IntrinsicMemmove})::Bool = false
+
 """
     is_injective(x::ArithmeticAssignment) -> Bool
 

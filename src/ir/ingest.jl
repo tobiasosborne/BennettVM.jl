@@ -182,6 +182,68 @@ function _lower_bool_operand(op::Bennett.IROperand, width::Int)::Union{Symbol,In
     (width == 1 && lowered isa Int64) ? (lowered & Int64(1)) : lowered
 end
 
+# Lower an operand that MUST be an SSA pointer (a `free` / `realloc` / `memcpy`
+# pointer arg — an `Int64` cell address living in `locals`). A constant
+# pointer is malformed under the segment model (Rule 1, ADR 0018 §E).
+function _lower_ptr_operand(op::Bennett.IROperand, callee::Symbol, dest)::Symbol
+    op isa Bennett.SSAOperand ||
+        error("lower_vm: heap intrinsic :", callee, " (dest=", dest, ") has a ",
+              "non-SSA pointer operand ", typeof(op), " — a pointer is an ",
+              "Int64 cell address materialised by malloc/alloca and named by an ",
+              "SSAOperand (ADR 0018 §E; Rule 1 fail-loud).")
+    return op.name
+end
+
+"""
+    _lower_intrinsic_call(inst::Bennett.IRCall, callee::Symbol) -> Instruction
+
+Lower a whitelisted heap `IRCall` (`callee ∈ _HEAP_DISPATCH`) to its
+`Intrinsic*` instruction (CW-A, ADR 0018 §C–D). The arg positions follow the
+C signatures: `malloc(nbytes)`, `calloc(n, sz)`, `realloc(ptr, nbytes)`,
+`free(ptr)`, `memset(ptr, byte, nbytes)`, `memcpy/memmove(dest, src, nbytes)`.
+Allocation-size operands lower via `_lower_operand` (SSA ref OR LLVM constant
+— byte→cell conversion is deferred to the intrinsic's `_cell_count` at run
+time, the `IRPtrOffset` cell-index discipline); pointer operands via
+`_lower_ptr_operand` (must be SSA). A wrong arg count for the named intrinsic
+is malformed IR — fail loud (Rule 1). Extracted into this helper to keep the
+`IRCall` arm small (`ingest.jl` is over the Rule-10 cap, bead `u110`).
+"""
+function _lower_intrinsic_call(inst::Bennett.IRCall, callee::Symbol)::Instruction
+    a = inst.args
+    _need(k) = length(a) == k ||
+        error("lower_vm: heap intrinsic :", callee, " (dest=", inst.dest,
+              ") expects ", k, " arg(s), got ", length(a),
+              " — malformed IR (Rule 1 fail-loud).")
+    if callee === :malloc
+        _need(1); return IntrinsicMalloc(inst.dest, _lower_operand(a[1]))
+    elseif callee === :calloc
+        _need(2)
+        return IntrinsicCalloc(inst.dest, _lower_operand(a[1]), _lower_operand(a[2]))
+    elseif callee === :realloc
+        _need(2)
+        return IntrinsicRealloc(inst.dest,
+                                _lower_ptr_operand(a[1], callee, inst.dest),
+                                _lower_operand(a[2]))
+    elseif callee === :free
+        _need(1)
+        return IntrinsicFree(_lower_ptr_operand(a[1], callee, inst.dest))
+    elseif callee === :memset
+        _need(3)
+        return IntrinsicMemset(_lower_ptr_operand(a[1], callee, inst.dest),
+                               _lower_operand(a[2]), _lower_operand(a[3]))
+    elseif callee === :memcpy
+        _need(3)
+        return IntrinsicMemcpy(_lower_ptr_operand(a[1], callee, inst.dest),
+                               _lower_ptr_operand(a[2], callee, inst.dest),
+                               _lower_operand(a[3]))
+    else  # :memmove (the only remaining _HEAP_DISPATCH key)
+        _need(3)
+        return IntrinsicMemmove(_lower_ptr_operand(a[1], callee, inst.dest),
+                                _lower_ptr_operand(a[2], callee, inst.dest),
+                                _lower_operand(a[3]))
+    end
+end
+
 # ---------------------------------------------------------------------
 # Nondeterminism guard: callees that have NO deterministic forward and so
 # can never be reversed by replay (the doubly-fatal class).
@@ -221,6 +283,22 @@ const _NONDETERMINISTIC_CALLEES = Set{Symbol}((
                                                     # a bare `rdrand` Function)
     :objectid, :pointer_from_objref,                # identity / pointer hash
     :time, :time_ns, :getpid,                       # wall-clock / process id
+))
+
+# ---------------------------------------------------------------------
+# Heap-intrinsic whitelist (CW-A, ADR 0018 §C–D): the bounded set of
+# libc/runtime heap callees that get hand-written reversible semantics
+# (`src/ir/intrinsics.jl`). An IRCall whose `nameof(callee)` is in this set
+# routes to `_lower_intrinsic_call` and emits an `Intrinsic*` instruction; a
+# miss falls through to the Float32 guard + SoftCall path (and ultimately the
+# fail-loud allowlist reject). This is the same name→handler allowlist pattern
+# as `_SOFT_DISPATCH` (the Rule-1 boundary, ADR 0017 item 4). The `_HEAP_DISPATCH`
+# check MUST precede the Float32 guard and the SoftCall constructor in the
+# IRCall arm (ADR 0018 §C) — a heap intrinsic must never reach those.
+# ---------------------------------------------------------------------
+const _HEAP_DISPATCH = Set{Symbol}((
+    :malloc, :calloc, :realloc, :free,              # allocation / reclamation
+    :memset, :memcpy, :memmove,                     # bulk memory
 ))
 
 # ---------------------------------------------------------------------
@@ -419,6 +497,18 @@ function _lower_body_inst(inst::Bennett.IRInst)::Union{Instruction,Nothing}
                   "plan.md \"Genuinely impossible\", Nondeterminism row). ",
                   "Rejected callees: ", sort!(collect(_NONDETERMINISTIC_CALLEES)),
                   " (Rule 1 fail-loud).")
+        end
+        # Heap-intrinsic dispatch (CW-A, ADR 0018 §C). MUST come BEFORE the
+        # Float32 guard and the SoftCall constructor: a heap intrinsic
+        # (malloc/calloc/realloc/free/memset/memcpy/memmove) is NOT a soft_f*
+        # scalar create — it mutates `s.memory` / `s.arena_top` and reverses by
+        # L2 delta (not the SoftCall L3-only path), so routing it through the
+        # SoftCall path would mis-classify its reversal (ADR 0018 §C). A
+        # `_HEAP_DISPATCH` hit emits the `Intrinsic*` family and returns; a miss
+        # falls through to the Float32 guard + SoftCall below (and ultimately the
+        # fail-loud allowlist reject).
+        if nameof(inst.callee) in _HEAP_DISPATCH
+            return _lower_intrinsic_call(inst, nameof(inst.callee))
         end
         # Float32-touching soft op guard (bead `bennettvm-h0t`; ADR 0011 §D2,
         # Bennett-3rph). A soft op "touches f32" iff its result OR any operand

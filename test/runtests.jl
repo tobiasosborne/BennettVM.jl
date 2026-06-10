@@ -305,6 +305,24 @@ using BennettVM
     # output rather than a hand-built ParsedIR. Sits right after the
     # `test_alloca_delta.jl` DynAlloca unit it builds on.
     include("test_dyn_roundtrip.jl")
+    # CW-A2 — the reversible malloc-arena floor (bead `bennettvm-416r.3`; ADR
+    # 0018). The THIRD address-space tier beside alloca-stack (`heap_top`) and
+    # globals: a deterministic arena bump allocator over the new
+    # `IState.arena_top` cursor. Hand-built IR drives the heap-intrinsic family
+    # (`src/ir/intrinsics.jl`): malloc→store→load→free round-trip, realloc =
+    # malloc + memcpy composite, calloc reads-as-0 (absent=0), memset runtime-n
+    # over mixed present/absent cells (the missing-sentinel was_present branch),
+    # memmove overlap-safe, per-step inverse at K∈{1,4} (the M8.2 scaffold), the
+    # ==/hash arena_top sensitivity guard (ADR 0018 §H — else a malloc inverse
+    # that forgot the cursor retract would round-trip spuriously), and the §E
+    # fail-loud matrix (bad free, non-cell-divisible / negative size, overlapping
+    # memcpy, out-of-whitelist callee). The arena allocs reverse via an L2
+    # `(base, cells)` delta (the DynAlloca template); the bulk ops via a per-cell
+    # `(addr, old, was_present)` dest-range delta (the MemoryStore schema); free
+    # is L1 injective (no-op, leaked). Sits right after the Case A dynamic-N heap
+    # e2e it sits beside; reuses the same hand-built-VMProgram + M8.2
+    # `per_step_inverse_check` idiom as test_multi_dynalloca.jl.
+    include("test_arena_roundtrip.jl")
     # SC9 Case A — THE Julia-`Vector` round-trip gate (bead `Bennett-jfw6`, ADR
     # 0016). Drives a REAL Julia `Vector{T}(undef,n)` write/read/reduce loop
     # (`fvec` Int64 + `vsum` Int8) from SOURCE through Bennett.jl's `mem=:vm`

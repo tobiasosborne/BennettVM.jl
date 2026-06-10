@@ -353,6 +353,31 @@ include("ir/revmap.jl")
 # double-rounding); a pure-Float64 program (the SC10 gate) never emits an
 # f32-result `soft_fptrunc` as its output. Not yet exported.
 include("ir/softcall_instruction.jl")
+# CW-A2 (ADR 0018; bead `bennettvm-416r.3`) — the heap-intrinsic family
+# (`IntrinsicMalloc` / `Calloc` / `Realloc` / `Free` / `Memset` / `Memcpy` /
+# `Memmove`), the reversible malloc-arena floor. LLVM `call @malloc` (etc.)
+# lowers to these leaf primitives: a deterministic arena bump allocator over
+# the new `IState.arena_top` cursor (mirroring `heap_top`), the THIRD
+# address-space tier beside alloca-stack and globals (ADR 0017 §3–4). The
+# arena allocs carry an L2 `(base, cells)` delta (the `DynAlloca` template +
+# unconditional-delete lemma); the bulk ops (memset/memcpy/memmove/realloc-
+# copy) carry a per-cell `(addr, old, was_present)` dest-range delta (the
+# `MemoryStore` schema); `free` is a no-op classified L1 injective. Reuses
+# `_resolve` (from `arithmetic_assignment.jl`, Law 2), so MUST follow it;
+# placed right after `softcall_instruction.jl` and BEFORE `history/Injective.jl`
+# (which PINS `is_injective(::Type{IntrinsicFree}) = true` + the `false` rows
+# for the others) and BEFORE `history/delta.jl` (which marks the L2 intrinsics
+# `is_l2_capable = true`). `ARENA_BASE` / `CELL_BYTES` are the frozen segment
+# constants (ADR 0018 §A). Not yet exported.
+include("ir/intrinsics.jl")
+# CW-A2 (ADR 0018 §H; Rule 10 split) — the bulk-memory heap intrinsics
+# (`IntrinsicMemset` / `IntrinsicMemcpy` / `IntrinsicMemmove`), split out of
+# `intrinsics.jl` to keep both files under the ~200-LOC cap. Shares
+# `intrinsics.jl`'s helpers (`_cell_count` / `_cell_pattern` / `_range_deltas`
+# / `_restore_deltas!`), so MUST be included immediately after it (same module)
+# and BEFORE `history/Injective.jl` / `history/delta.jl` (which pin the
+# memset/memcpy/memmove traits). Not yet exported.
+include("ir/intrinsics_bulk.jl")
 # M6.1 — `is_injective` trait (`bennettvm-9hf`). The L1 "no-log"
 # layer-1 predicate of PRD v4 §3.3: tells the rest of the VM whether
 # an instruction needs a history entry. Type-level `true` for the

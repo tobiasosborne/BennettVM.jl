@@ -584,3 +584,20 @@ is_l2_capable(::Type{DynAlloca})::Bool = true
 # `false` default above.)
 is_l2_capable(::Type{IRMapInsert})::Bool = true
 is_l2_capable(::Type{IRMapDelete})::Bool = true
+
+# Heap intrinsics (CW-A, ADR 0018 §B; `src/ir/intrinsics.jl`) — same shape as
+# `MemoryStore` / `DynAlloca`: NO `make_delta` (would hit the raising fallback)
+# but a non-`nothing` `predelta_payload` (the arena allocs return `(base,
+# cells)`; the bulk ops return a `(deltas,)` vector of per-cell triples;
+# realloc bundles both) + a matching `inverse(::T, s, ::NamedTuple)` (same
+# file). The push gate's `pre_payload !== nothing` branch builds the DeltaEntry
+# directly, so the raising `make_delta` is never reached. L2 path verified
+# against `src/ir/intrinsics.jl` (Rule 3). `IntrinsicFree` is NOT here — it is
+# injective (L1, no history), so `compute_must_cache` never routes it to L2;
+# it keeps the `false` default.
+is_l2_capable(::Type{IntrinsicMalloc})::Bool  = true
+is_l2_capable(::Type{IntrinsicCalloc})::Bool  = true
+is_l2_capable(::Type{IntrinsicRealloc})::Bool = true
+is_l2_capable(::Type{IntrinsicMemset})::Bool  = true
+is_l2_capable(::Type{IntrinsicMemcpy})::Bool  = true
+is_l2_capable(::Type{IntrinsicMemmove})::Bool = true
