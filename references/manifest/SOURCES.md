@@ -287,3 +287,22 @@ publisher-level entitlement not covered by standard IEEE subscription. Recommend
 request via TIB ILL (https://www.tib.eu/de/suchen-finden/tib-portal-de-suche/ or
 mailto:fernleihe@tib.eu) using DOI 10.1147/rd.176.0525 (Bennett) and 10.1147/rd.53.0183
 (Landauer). Both are 8 pages; ILL delivery typically 1-3 days.
+
+---
+
+## Re-acquisition addendum (2026-06-10, this machine)
+
+The PDFs marked HAVE above were never committed (licensed sources); on this
+machine they were re-acquired per ADR 0017 CW-0 (bead bennettvm-416r.1):
+
+| Path | SHA256 (this machine) | Note |
+|---|---|---|
+| `reversible-isa/vieri-1995-pendulum-ms.pdf` | matches manifest | MIT DSpace (archive.org mirror) |
+| `reversible-isa/vieri-1999-reversible-arch-phd.pdf` | matches manifest | MIT DSpace (archive.org mirror) |
+| `reversible-isa/frank-1999-thesis.pdf` | matches manifest | MIT DSpace (archive.org mirror) |
+| `reversible-isa/axelsen-yokoyama-2011-bobisa.pdf` | `28bda96d…` DIFFERS | aggregate.org open copy of Thomsen–Axelsen–Glück RC 2012 (the actual BobISA paper per §Citation-errata); manifest hash was the Springer PDF |
+| `foundational/bennett-1973-logical-reversibility.pdf` | `ad73fb54…` DIFFERS | UCSD Math course mirror; same paper, different scan than the user-supplied 496K copy |
+| `reversible-languages/AxelsenGluck2013_reversible_heap.pdf` | `4415c987…` | local mirror: ../Bennett.jl/docs/literature/memory/ |
+| `reversible-languages/Mogensen2018_reversible_gc.pdf` | `91edc495…` | NEW — Mogensen, "Reversible Garbage Collection for Reversible Functional Languages", NGC 36 (2018); local mirror ../Bennett.jl/docs/literature/memory/ (note: the §2.2 row says "AxelsenGluck2018_reversible_gc.pdf" — that row's attribution appears to be this Mogensen paper) |
+| `reversible-ir/mogensen-2016-rssa.pdf` | — STILL MISSING | Springer paywall; sync from acquisition machine or TIB (bead filed) |
+| `reversible-ir/mogensen-ril.pdf` | — STILL MISSING | Springer paywall; sync from acquisition machine or TIB (bead filed) |
