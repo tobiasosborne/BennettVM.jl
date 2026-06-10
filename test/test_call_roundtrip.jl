@@ -41,8 +41,24 @@
 #
 # # MUTATION-PROOF (Rule 5; ≥3, recorded here per the test_arena_roundtrip.jl
 # # convention). Each: perturb the impl, confirm RED, restore, confirm GREEN.
-# # All four were performed during development against this file's tests:
+# # All were performed during development against this file's tests:
 # #
+# #   (M-TO) [CW-C3 review nit 1] `predelta_payload(::ReturnExit, …)` returns
+# #        `target_olds = []` (always empty) → RED on testset 10. The second
+# #        ReturnExit overwrites the live caller `:r` (= the first call's n+10)
+# #        but its L2 inverse then deletes `:r` WITHOUT restoring the prior
+# #        value. Caught by the PER-STEP inverse check (part (b)): at step 6 —
+# #        immediately after the second ReturnExit's L2 inverse, BEFORE any
+# #        masking replay — `rs.current` diverges on the `frames` field (the
+# #        suspended `:__entry` caller frame is `Dict(:n=>5)` instead of the
+# #        forward snapshot's `Dict(:n=>5, :r=>15)`). The payload assertion (a)
+# #        `target_olds == [(:r, n+10)]` also fires. NOTE: the AGGREGATE
+# #        round-trip (part (c) `rs.current == init`) does NOT catch this even at
+# #        K = typemax — reversing the second CallEnter (L1) falls to M4.3 replay
+# #        from the initial checkpoint, which re-runs the first call and
+# #        reconstructs `:r = n+10`, masking the broken delete. The per-step
+# #        check is the ONLY assertion that exposes target_olds; this is the
+# #        non-injective-slot / L2-only gap nit 1 was filed to close.
 # #   (M1) ReturnExit.forward skips `pop!(s.frames)` → RED. The frame stack
 # #        never shrinks, so the top-level End fires at depth>1 (never halts /
 # #        wrong result) and the round-trip depth assertion (`frames` length
@@ -359,17 +375,34 @@ end
 
     # (c) return arity mismatch — ReturnExit constructor rejects it directly.
     @test_throws ErrorException _BV.ReturnExit(:f, Symbol[:r], Symbol[])
-    # (c') a target already live in the caller before the call.
+    # (c') a target already live in the caller before the call. CW-C3 CHANGED
+    # this from fail-loud (old ADR 0019 §6c SSA single-assignment guard) to an
+    # OVERWRITE-with-L3-recovery, because C `-O0` REDEFINES a call-result SSA
+    # name every loop iteration (`%call8 = call @ht_del(...)` inside a `for`) —
+    # the same cross-iteration crux `Define` handles by unconditional overwrite.
+    # This dead-letters the old fail-loud assertion (the ADR 0019 §8 / hostile-
+    # review-C5 supersession pattern). The replacement pins the NEW correct
+    # behaviour: the live target is overwritten by the return and the program
+    # round-trips under L3 (a finite checkpoint_interval captures the old value).
     fns2 = Dict(:main => _BV.FunctionEntry(:main, Symbol("main#top"), Symbol[:n], Symbol[:c]),
                 :inc  => _BV.FunctionEntry(:inc, Symbol("inc#top"), Symbol[:x], Symbol[:r]))
     livemain = _BV.BasicBlock(Symbol("main#top"), _BV.BeginInstruction(:main, Symbol[:n]),
-        _BV.Instruction[_BV.Define(:c, :n, :add, Int64(0)),
-                        _BV.CallEnter(:inc, Symbol[:n], Symbol[:c])],
+        _BV.Instruction[_BV.Define(:c, :n, :add, Int64(0)),   # :c := n (live before call)
+                        _BV.CallEnter(:inc, Symbol[:n], Symbol[:c])],  # inc(n) lands in :c
         _BV.EndInstruction(:main, Symbol[:c]))
     prog_lv = _BV.VMProgram([livemain, incb], _BV.LabelTable([livemain, incb]),
         Symbol("main#top"), Int[64], Int[64], fns2, :main)
     rs_lv = _BV.initial_state(prog_lv, Dict(:n => Int64(1)))
-    @test_throws ErrorException _BV.run!(rs_lv, prog_lv)
+    init_lv = deepcopy(rs_lv.current)
+    # Forward: :c starts as n (=1), then inc(n)=n+1 (=2) OVERWRITES it. K small so
+    # L3 captures the overwritten prior value of :c.
+    _BV.run!(rs_lv, prog_lv; max_steps = 1000, checkpoint_interval = 1)
+    @test _BV.result(rs_lv)[:c] == 2          # overwrite landed (was 1, now n+1)
+    # Round-trip restores the pre-overwrite state exactly (the L3 floor recovers
+    # the destroyed prior :c value).
+    _BV.unrun!(rs_lv, prog_lv; max_unsteps = 1000)
+    @test isempty(rs_lv.history)
+    @test rs_lv.current == init_lv
 
     # (d) frame-stack underflow on ReturnExit at depth 1 (predelta + forward).
     s1 = _BV.IState(5, Dict(:x => Int64(1)), :running)
@@ -415,4 +448,119 @@ end
     sc = deepcopy(sa)
     push!(sc.frames, _BV.Frame(3, Symbol[:t], Dict(:y => Int64(9)), :f))  # link differs
     @test sa != sc
+end
+
+# ---------------------------------------------------------------------
+# 10. ReturnExit target_olds L2-only (CW-C3 review nit 1)
+# ---------------------------------------------------------------------
+#
+# CW-C3's `ReturnExit` `target_olds` mechanism: when `forward` lands a return
+# into a caller target that is ALREADY LIVE, it OVERWRITES (the loop-reused
+# call-result shape — `%call8` redefined every iteration), and the destroyed
+# prior value is captured in the L2 payload's `target_olds` at predelta; the
+# L2 `inverse` must RESTORE it (not merely delete the target). The other tests
+# in this file run at a small `checkpoint_interval` OR with single-use targets,
+# so they never exercise this restore. This testset removes that gap: a program
+# where the SAME caller target `:r` receives a call result TWICE, run at
+# `checkpoint_interval = typemax(Int)` (L3 suppressed) + a `must_cache_set`
+# covering the non-injective body slots, so the ReturnExit steps reverse via the
+# L2 inverse only.
+#
+# Shape: main(n) calls g(n)→:r [:r := n+10], then calls h(n)→:r [:r := n+110,
+# OVERWRITING the live :r=n+10]. The second ReturnExit's `target_olds` is
+# {(:r, n+10)}; its inverse must put n+10 back. With n=5: first :r=15, final
+# :r=115.
+#
+# CRUCIAL SUBTLETY (why aggregate round-trip is NOT enough, even at K=typemax):
+# reversing the SECOND CallEnter is L1 (zero-history) → it falls to M4.3 replay
+# from the INITIAL checkpoint, which re-runs the first call forward and
+# reconstructs the caller's :r = n+10 — masking a broken target_olds delete.
+# So the load-bearing assertion is the PER-STEP inverse check (part (b)), which
+# compares `rs.current` to the forward snapshot IMMEDIATELY after the second
+# ReturnExit's L2 inverse — before any masking replay. Part (a) additionally
+# pins the captured payload; part (c) keeps the aggregate round-trip (a real but
+# weaker invariant here).
+#
+# MUTATION-PROOF (Rule 5, M-TO — performed 2026-06-10): perturb
+# `predelta_payload(::ReturnExit, …)` so `target_olds` is always empty
+# (`target_olds = Tuple{Symbol,Int64}[]`). Forward is unaffected (the overwrite
+# still lands). RED via TWO assertions: (a) the payload check
+# `target_olds == [(:r, n+10)]` (got `[]`), AND (b) the per-step inverse check
+# at step 6 — `IState field `frames` diverged`, the suspended `:__entry` caller
+# frame being `Dict(:n=>5)` instead of the snapshot's `Dict(:n=>5, :r=>15)` (the
+# unrestored :r). Part (c) aggregate round-trip stayed GREEN under the mutation
+# (replay masked it — the very gap nit 1 closes). Restored, confirmed GREEN.
+function _g_plus10 end
+function _h_plus110 end
+function _target_olds_module()
+    main_blk = _BV.BasicBlock(Symbol("main#top"),
+        _BV.BeginInstruction(:main, Symbol[:n]),
+        _BV.Instruction[_BV.CallEnter(:_g_plus10, Symbol[:n], Symbol[:r]),    # :r := g(n) = n+10
+                        _BV.CallEnter(:_h_plus110, Symbol[:n], Symbol[:r])],  # :r := h(n) = n+110 (OVERWRITE)
+        _BV.EndInstruction(:main, Symbol[:r]))
+    g_blk = _BV.BasicBlock(Symbol("_g_plus10#top"),
+        _BV.BeginInstruction(:_g_plus10, Symbol[:x]),
+        _BV.Instruction[_BV.Define(:y, :x, :add, Int64(10))],
+        _BV.EndInstruction(:_g_plus10, Symbol[:y]))
+    h_blk = _BV.BasicBlock(Symbol("_h_plus110#top"),
+        _BV.BeginInstruction(:_h_plus110, Symbol[:x]),
+        _BV.Instruction[_BV.Define(:z, :x, :add, Int64(110))],
+        _BV.EndInstruction(:_h_plus110, Symbol[:z]))
+    blocks = [main_blk, g_blk, h_blk]
+    fns = Dict(:main       => _BV.FunctionEntry(:main, Symbol("main#top"), Symbol[:n], Symbol[:r]),
+               :_g_plus10  => _BV.FunctionEntry(:_g_plus10, Symbol("_g_plus10#top"), Symbol[:x], Symbol[:y]),
+               :_h_plus110 => _BV.FunctionEntry(:_h_plus110, Symbol("_h_plus110#top"), Symbol[:x], Symbol[:z]))
+    return _BV.VMProgram(blocks, _BV.LabelTable(blocks), Symbol("main#top"),
+                         Int[64], Int[64], fns, :main)
+end
+
+@testset "ReturnExit target_olds L2-only (CW-C3 review nit 1)" begin
+    prog = _target_olds_module()
+    # must_cache covering the non-injective body slots (the test_arena_roundtrip.jl
+    # idiom). ReturnExit is `is_unconditional_l2` so it pushes regardless; this set
+    # ensures NO body slot silently defers to L3 either. K = typemax ⇒ L3 OFF, so
+    # the only reversal path for the two ReturnExit steps is the L2 inverse.
+    mc = _BV.compute_must_cache(prog)
+    n = Int64(5)
+
+    # (a) Forward golden master + the L2-only history shape.
+    rs = _BV.initial_state(prog, Dict(:n => n))
+    _BV.run!(rs, prog; max_steps = 1000,
+             checkpoint_interval = typemax(Int), must_cache_set = mc)
+    @test _BV.is_halted(rs)
+    @test _BV.result(rs)[:r] == n + 110               # final overwrite landed (h, not g)
+    # The two ReturnExit deltas are the ONLY pushes (CallEnter L1, bodies replayed);
+    # no CheckpointEntry exists (K = typemax) so the L2 inverse is forced.
+    @test count(e -> e isa _BV.DeltaEntry, rs.history) == 2
+    @test !any(e -> e isa _BV.CheckpointEntry, rs.history)
+    # The second return's L2 payload captured the live caller :r (= first call's
+    # n+10) in target_olds — the value its inverse must restore on un-landing.
+    second_re = rs.history[2]
+    @test second_re isa _BV.DeltaEntry && second_re.instruction isa _BV.ReturnExit
+    @test second_re.payload.target_olds == [(:r, n + 10)]
+
+    # (b) PER-STEP inverse — THE load-bearing check for target_olds. Aggregate
+    # round-trip alone is masked even at K = typemax: reversing the second
+    # CallEnter (L1) falls to M4.3 replay from the INITIAL checkpoint, which
+    # re-runs the first call forward and reconstructs the caller's :r = n+10
+    # regardless of whether the second ReturnExit's L2 inverse restored it. The
+    # per-step check compares `rs.current` to the forward snapshot IMMEDIATELY
+    # after each unstep — i.e. right after the second ReturnExit's L2 inverse,
+    # BEFORE any masking replay — so a target_olds that fails to restore the
+    # suspended caller frame's :r diverges on the `frames` field at that step.
+    per_step_inverse_check(prog, Dict(:n => n);
+        checkpoint_interval = typemax(Int), must_cache_set = mc,
+        label = "target_olds/L2-only")
+    @test true   # reached ⇒ no per-step mismatch raised (incl. the target_olds step)
+
+    # (c) Aggregate round-trip to empty history / depth 1 / initial (still a real
+    # invariant, even though replay masks target_olds for this assertion alone).
+    rs2 = _BV.initial_state(prog, Dict(:n => n))
+    init = deepcopy(rs2.current)
+    _BV.run!(rs2, prog; max_steps = 1000,
+             checkpoint_interval = typemax(Int), must_cache_set = mc)
+    _BV.unrun!(rs2, prog; max_unsteps = 1000)
+    @test isempty(rs2.history)
+    @test length(rs2.current.frames) == 1
+    @test rs2.current == init
 end

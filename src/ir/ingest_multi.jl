@@ -49,6 +49,33 @@ function _declared_returns(parsed::Bennett.ParsedIR)::Vector{Symbol}
     return Symbol[]
 end
 
+# Total STATIC stack-alloca cells of a function — its activation-record size in
+# the global stack segment (CW-C3, ADR 0019; see `src/ir/IState.jl` `stack_top`).
+# Sums `n_elems` over every STATIC `IRAlloca` (a `ConstOperand` n_elems), the
+# cells the per-function `alloca_cursor` reserves (`_lower_alloca!`). Dynamic-N
+# allocas (`SSAOperand` n_elems) ride the SEPARATE `heap_top` offset and do NOT
+# count toward the static frame (the hashtable fixture has none; a function
+# mixing static + dynamic allocas across a call boundary is out of the O0
+# fixture surface — `_lower_alloca!` already fails loud on static-after-dynamic).
+# This MUST equal `alloca_cursor - 1` after `_lower_parsed_ir` lowers the same
+# function (cursor starts at 1, advances by N per static alloca), which is the
+# invariant CallEnter's `stack_top` advance depends on.
+function _static_frame_size(parsed::Bennett.ParsedIR)::Int64
+    total = Int64(0)
+    for b in parsed.blocks
+        for inst in b.instructions
+            if inst isa Bennett.IRAlloca && inst.n_elems isa Bennett.ConstOperand
+                n = Int64(inst.n_elems.value)
+                n >= 1 || error("_static_frame_size: IRAlloca(", inst.dest,
+                    ") has n_elems=", n, " < 1 — malformed (matches ",
+                    "`_lower_alloca!`'s N>=1 guard; Rule 1 fail-loud).")
+                total += n
+            end
+        end
+    end
+    return total
+end
+
 function lower_vm(funcs::Vector{<:Pair{Symbol,Bennett.ParsedIR}};
                   entry::Symbol = first(funcs).first)::VMProgram
     isempty(funcs) &&
@@ -77,7 +104,8 @@ function lower_vm(funcs::Vector{<:Pair{Symbol,Bennett.ParsedIR}};
         params = Symbol[n for (n, _w) in parsed.args]
         entry_label = Symbol(string(name), "#", string(first(parsed.blocks).label))
         table[name] = FunctionEntry(name, entry_label, params,
-                                    _declared_returns(parsed))
+                                    _declared_returns(parsed),
+                                    _static_frame_size(parsed))
     end
     haskey(table, entry) ||
         error("lower_vm(multi): entry function :", entry, " is not in the ",

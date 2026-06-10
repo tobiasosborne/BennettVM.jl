@@ -503,4 +503,13 @@ using BennettVM
     # and the guard-5 function table (in-module → CallEnter), and the
     # nondeterminism/Float32 guards still fire.
     include("test_symbol_callee_ingest.jl")
+    # CW-C3 (bead `bennettvm-416r.10`): THE STORY DEMO — a normal C hash-table
+    # program (clang -O0 .ll) executes and REVERSES on the VM, bit-for-bit
+    # against its native golden master (`test/reference/c/GOLDEN.txt`). The first
+    # full proof of the language-agnostic claim (ADR 0017 §Sequencing CW-C).
+    # Exercises the multi-function lowering, the frame-disjoint stack
+    # (`stack_top` / `StackAlloca`), the COPY-arg / OVERWRITE-target call ABI,
+    # the heap arena, and the IRPtrOffset struct GEP — end to end. Uses
+    # `per_step_inverse_check` (re-include-guarded include inside the file).
+    include("test_c_hashtable_e2e.jl")
 end

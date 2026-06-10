@@ -15,10 +15,13 @@ A reversible call is asymmetric in its history cost (ADR 0019 §3–§4):
   * **`CallEnter` costs NO history (L1-injective).** Information is
     conserved by construction: the return site lives in `Frame.link`
     (BobISA's saved branch register, Thomsen–Axelsen–Glück 2012 §3.2),
-    the moved args live under the callee's params, and nothing is erased
-    ⇒ nothing is logged. The backward pass crosses it via the M4.3
-    checkpoint-replay path — replay re-executes `forward(CallEnter, …)`,
-    which reconstructs the frame (ADR 0019 §3 normative dispatch note).
+    the args are COPIED into the callee's params (the caller KEEPS its
+    own bindings — CW-C3, ADR 0019 Amendment A: an LLVM SSA arg is
+    multi-use, so the call side copies rather than moves), and nothing
+    is erased ⇒ nothing is logged. The backward pass crosses it via the
+    M4.3 checkpoint-replay path — replay re-executes
+    `forward(CallEnter, …)`, which reconstructs the frame (ADR 0019 §3
+    normative dispatch note).
   * **`ReturnExit` costs ONE L2 delta, UNCONDITIONALLY.** Our callees are
     lowered from irreversible LLVM IR and arrive with DEAD TEMPORARIES
     live at `End` (ADR 0019 §"the constraint that drives everything"): a
@@ -39,8 +42,10 @@ argument), but resolving the callee's `entry_label` → starting pc and its
 formal `params` requires the function table + `LabelTable`. So `CallEnter`
 follows the `UnconditionalExit` / `ConditionalExit` precedent
 (`_handle_cross_block_dispatch!`): `forward(::CallEnter, s)` is a minimal
-pc-bumping placeholder, and the substantive MOVE + frame-push + param-bind
-+ pc-set runs in `_handle_call_dispatch!` (`src/interpreter/Interpreter.jl`),
+pc-bumping placeholder, and the substantive arg-COPY + frame-push +
+param-bind + pc-set (args are COPIED, not moved — CW-C3, ADR 0019
+Amendment A; the caller keeps its multi-use SSA args) runs in
+`_handle_call_dispatch!` (`src/interpreter/Interpreter.jl`),
 which DOES have `prog`. `ReturnExit`, by contrast, needs NOTHING from
 `prog` (its `returns` live on the instruction, its `targets` / `link` live
 on the frame being popped), so its full semantics live in
@@ -62,7 +67,11 @@ Ref: docs/adr/0019-reversible-calls.md §3 (CallEnter, zero-history),
 Ref: references/reversible-isa/axelsen-yokoyama-2011-bobisa.pdf §3.2
      (link register; call site recovered from state on the backward pass).
 Ref: references/reversible-isa/vieri-1995-pendulum-ms.pdf p.22
-     (argument/return passing is a MOVE, never copy-and-drop).
+     (the MOVE — read-and-drop, never copy — discipline). Under CW-C3
+     (ADR 0019 Amendment A) this discipline applies to the RETURN side
+     ONLY: an LLVM SSA call arg is multi-use (the caller reads it again
+     after the call), so the CALL side COPIES the args into the callee
+     rather than moving them; the return still MOVEs its values out.
 """
 
 # ===========================================================================
@@ -73,9 +82,13 @@ Ref: references/reversible-isa/vieri-1995-pendulum-ms.pdf p.22
     CallEnter(callee, args, targets)
 
 A reversible call to function `callee`. `args` are caller-frame SSA names
-whose values are MOVED (Vieri p.22) into the callee's params; `targets`
-are caller-frame SSA names where the callee's return values will land on
-`ReturnExit`. `targets` is carried HERE (not only on the matching
+whose values are COPIED into the callee's params — the caller KEEPS its
+bindings (CW-C3, ADR 0019 Amendment A: an LLVM SSA arg is multi-use, so
+the call side copies rather than the Vieri p.22 MOVE, which now governs
+the RETURN side only); `targets` are caller-frame SSA names where the
+callee's return values will land on `ReturnExit` (OVERWRITING any live
+prior value, whose old binding is captured in the L2 `target_olds`
+payload). `targets` is carried HERE (not only on the matching
 `ReturnExit`) because the `ReturnExit` reads it off the suspended frame —
 `CallEnter` is what writes `Frame.targets` at push time.
 
@@ -87,7 +100,7 @@ checks (`src/ir/call_instruction.jl`), the instruction it supersedes.
 """
 struct CallEnter <: Instruction
     callee::Symbol               # function name — resolved in VMProgram.functions
-    args::Vector{Symbol}         # caller SSA names MOVED into callee params
+    args::Vector{Symbol}         # caller SSA names COPIED into callee params (caller keeps them — CW-C3)
     targets::Vector{Symbol}      # caller SSA names that receive returns at ReturnExit
 
     function CallEnter(callee::Symbol, args::Vector{Symbol},
@@ -113,8 +126,10 @@ end
 """
     forward(instr::CallEnter, s::IState) -> IState
 
-Minimal pc-bumping placeholder. The substantive call semantics (MOVE args,
-push the callee frame, bind params, jump to the callee entry) run in
+Minimal pc-bumping placeholder. The substantive call semantics (COPY args
+into the callee — the caller keeps its multi-use SSA args, CW-C3 / ADR 0019
+Amendment A — push the callee frame, bind params, jump to the callee entry)
+run in
 `_handle_call_dispatch!` (`src/interpreter/Interpreter.jl`), which has the
 `VMProgram` this layer lacks — the `UnconditionalExit` precedent. Reaching
 the un-overwritten pc bump only happens in a unit test that drives
@@ -215,7 +230,24 @@ function predelta_payload(instr::ReturnExit, s::IState)
               " — corrupted call stack (ADR 0019 §6; Rule 1 fail-loud).")
     residual = Tuple{Symbol,Int64}[(k, v) for (k, v) in active_locals(s)
                                    if !(k in instr.returns)]
-    return (residual = residual, fname = fr.fname, end_pc = s.pc)
+    # CW-C3: capture the CALLER's PRE-OVERWRITE target values. `forward` lands the
+    # returns into the caller by OVERWRITE (a loop-reused call target like
+    # `%call8` is redefined each iteration), so the caller's PRIOR value of each
+    # target — if any — is destroyed and the L2 inverse must restore it rather
+    # than blindly delete. At predelta time the callee is still active, so the
+    # caller is `s.frames[end-1]`; record `(t, old)` for each target present
+    # there, so the inverse restores the prior binding (the cross-iteration
+    # overwrite recovery) and deletes only the targets that were genuinely fresh.
+    caller_locals = s.frames[end - 1].locals
+    target_olds = Tuple{Symbol,Int64}[(t, caller_locals[t]) for t in instr.targets
+                                      if haskey(caller_locals, t)]
+    # CW-C3: capture the popped frame's `stack_delta` (the CallEnter advance) so
+    # the inverse re-pushes the frame with the SAME delta and re-advances
+    # `stack_top` exactly — `forward` retracts it, the inverse restores it, so
+    # `stack_top` round-trips. Captured PRE-`forward` (the frame is still on the
+    # stack here) for the same reason `end_pc` is (hostile-review B1).
+    return (residual = residual, fname = fr.fname, end_pc = s.pc,
+            stack_delta = fr.stack_delta, target_olds = target_olds)
 end
 
 """
@@ -224,11 +256,15 @@ end
 Read the return values, POP the activation, MOVE the returns into the
 caller frame under the popped frame's `targets`, and set pc to the popped
 frame's `link` (the caller's return site; BobISA). Fully `prog`-free: the
-returns are on the instruction, the targets / link are on the frame.
+returns are on the instruction, the targets / link are on the frame. The
+return side still MOVEs (Vieri p.22) — it is the CALL side that COPIES
+(CW-C3, ADR 0019 Amendment A).
 
-Fail-loud (ADR 0019 §6): depth-underflow guard (>1), and a `targets` name
-already live in the caller (SSA single-assignment violation — the landed
-value would clobber a live binding).
+A target already live in the caller is OVERWRITTEN, not rejected (CW-C3,
+ADR 0019 Amendment A): C `-O0` redefines a call-result SSA name every loop
+iteration, so the old single-assignment guard is GONE; the overwritten
+prior value is captured in the L2 `target_olds` payload and restored by the
+inverse. Fail-loud (ADR 0019 §6) reduces to the depth-underflow guard (>1).
 """
 function forward(instr::ReturnExit, s::IState)::IState
     length(s.frames) > 1 ||
@@ -237,12 +273,30 @@ function forward(instr::ReturnExit, s::IState)::IState
               "(ADR 0019 §6d; Rule 1 fail-loud).")
     retv = Int64[active_locals(s)[r] for r in instr.returns]
     fr = pop!(s.frames)
+    # CW-C3: RETRACT the call-stack cursor by exactly the advance CallEnter made
+    # entering this activation (recorded on the popped frame). This restores
+    # `stack_top` to the caller's value, so the caller's static allocas remain at
+    # the cells they occupied before the call, and a SIBLING call after this
+    # return reuses the same stack region (LIFO activation records). `stack_top`
+    # round-trips because every CallEnter advance has this matching retract.
+    s.stack_top -= fr.stack_delta
     caller = active_locals(s)            # now the caller's register file
+    # Land the returns by OVERWRITE (CW-C3 — the LLVM-IR adaptation of ADR 0019
+    # §6c). The ADR forbade landing over a live target on an SSA
+    # single-assignment premise, but C `-O0` REDEFINES a call-result SSA name
+    # every loop iteration (`%call8 = call @ht_del(...)` inside a `for` is the
+    # same static name, overwritten each turn — exactly the cross-iteration crux
+    # `Define.forward` handles by unconditional overwrite). So this overwrites
+    # like `Define` rather than erroring. The OLD target value is recovered by L3
+    # checkpoint-replay (a finite `checkpoint_interval` captures it — the
+    # universal correctness floor, ADR 0012; the residual delta below recovers
+    # the CALLEE's scratch, the L3 checkpoint recovers the CALLER's overwritten
+    # target). A program whose call targets are single-use (the CW-B factorial /
+    # two-level tests) overwrites nothing, so the L2-only (K=typemax) round-trip
+    # is unaffected; only loop-reused targets need L3, which the C-track e2e runs
+    # with. Shrinking this to a live-target guard via liveness is the deferred
+    # optimisation tier (ADR 0002), never a correctness gate.
     for (t, v) in zip(fr.targets, retv)
-        haskey(caller, t) &&
-            error("ReturnExit.forward: target :", t, " is already live in ",
-                  "the caller frame — landing a return over a live SSA name ",
-                  "violates single-assignment (ADR 0019 §6c; Rule 1).")
         caller[t] = v
     end
     s.pc = fr.link
@@ -273,6 +327,16 @@ function inverse(instr::ReturnExit, s::IState, p::NamedTuple)::IState
         push!(retv, caller[t])
         delete!(caller, t)
     end
+    # CW-C3: RESTORE the caller's PRE-OVERWRITE target values. `forward` lands
+    # returns by overwrite (a loop-reused target), so un-landing must put back
+    # the PRIOR binding the overwrite destroyed, not merely delete the target.
+    # `target_olds` (captured by predelta from the caller frame) holds `(t, old)`
+    # for exactly the targets that were live before the landing; the `delete!`
+    # above already removed every target, so re-inserting the recorded olds
+    # restores the prior bindings and leaves the genuinely-fresh targets deleted.
+    for (t, old) in p.target_olds
+        caller[t] = old
+    end
     locals = Dict{Symbol,Int64}()
     for (r, v) in zip(instr.returns, retv)
         locals[r] = v
@@ -280,7 +344,14 @@ function inverse(instr::ReturnExit, s::IState, p::NamedTuple)::IState
     for (k, v) in p.residual
         locals[k] = v
     end
-    push!(s.frames, Frame(s.pc, instr.targets, locals, p.fname))
+    # CW-C3: RE-ADVANCE the call-stack cursor by the captured `stack_delta`
+    # (the exact inverse of `forward`'s `stack_top -= fr.stack_delta`), and
+    # re-push the frame carrying that same delta so a subsequent backward step
+    # across the matching CallEnter (L3 replay) sees a consistent stack. This
+    # restores `stack_top` to the value it held inside the callee — exactly what
+    # the callee's StackAlloca pointers were resolved against.
+    s.stack_top += p.stack_delta
+    push!(s.frames, Frame(s.pc, instr.targets, locals, p.fname, p.stack_delta))
     s.pc = p.end_pc
     return s
 end

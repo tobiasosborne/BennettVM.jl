@@ -1,8 +1,11 @@
 # ADR 0019 — Reversible call/return: frame stack in `IState`, zero-history call, L2-residual return
 
-> **Status: ACCEPTED 2026-06-10.** Bead `bennettvm-416r.5` (CW-B1). First
-> hostile review: REJECT (B1, B2 blocking + C1–C6); all fixes applied;
-> focused re-review: ACCEPT (reviews archived in session transcript).
+> **Status: ACCEPTED 2026-06-10, AMENDED same day (Amendment A, CW-C3).**
+> Bead `bennettvm-416r.5` (CW-B1). First hostile review: REJECT (B1, B2
+> blocking + C1–C6); all fixes applied; focused re-review: ACCEPT.
+> **Amendment A (CW-C3, bead `416r.10`, hostile-review-ratified): the call
+> ABI adapts to LLVM-derived IR — see the Amendment A section at the end;
+> where it conflicts with §3/§6, Amendment A controls.**
 > Implements ADR 0017 §Decision 2 under the constraints of ADR 0018 §C.
 > Synthesized from two independent design proposals (proposer A: ISA-faithful
 > minimal-history; proposer B: explicit frame stack; both archived in the
@@ -297,3 +300,65 @@ CLAUDE.md; Janus-specific direction bits and `allDestroyed` are out of
 scope/deferred). **Vieri 1995 p.22:** argument passing as exchange (move,
 never copy-and-drop) — both transitions MOVE values between frames.
 **Enzyme min-cut (ADR 0002, deferred):** the residual-shrinking tier.
+
+---
+
+## Amendment A (2026-06-10, CW-C3 — ratified by hostile review)
+
+Implementing the C-fixture e2e (`bennettvm-416r.10`) exposed three places
+where the accepted design met LLVM-derived IR and had to adapt. All three
+were implemented, mutation-proved, hostile-reviewed, and RATIFIED. Where
+this amendment conflicts with §1–§6 above, the amendment controls.
+
+### A.1 CallEnter COPIES args (supersedes §3's MOVE)
+
+C/LLVM SSA values are **multi-use**: `ht_get(ptr %t, …)` passes `%t` and
+the caller uses `%t` again afterward. The §3 MOVE (delete from caller)
+broke real programs (`KeyError: :found`). `CallEnter` now **copies** arg
+values into the fresh callee frame; the caller frame is untouched.
+Soundness (reviewer-verified): the L1-injective/zero-history claim is
+*stronger* under COPY — the CallEnter step modifies nothing but the pushed
+frame and pc, so M4.3 replay is trivially deterministic; nothing is erased.
+Cost: copied params land in the ReturnExit residual (sound, wasteful —
+the §7 liveness tier now also covers "args provably dead after call →
+restore MOVE"). The Vieri 1995 p. 22 exchange discipline now grounds ONLY
+the return side (retvals still MOVE callee→caller).
+
+### A.2 ReturnExit OVERWRITES live targets (supersedes §6c's fail-loud)
+
+A loop-reused call result (`%call8` landing each iteration) makes "target
+already live ⇒ SSA violation" wrong for LLVM-derived IR. The landing now
+**overwrites**, with the caller's prior values captured at predelta time
+in a `target_olds` payload field (presence-encoded: a target absent
+pre-call is simply not in the list). Inverse: delete the landed value,
+restore from `target_olds` if present. First-landing and Nth-landing both
+reverse exactly (reviewer-worked). The L2 payload is now
+`(residual, fname, end_pc, target_olds, …)`. An L2-only (K=typemax)
+mutation-proof for `target_olds` is mandatory coverage (review nit 1).
+
+### A.3 Per-frame stack region: `IState.stack_top` + `StackAlloca` (new)
+
+C at -O0 puts every local in a static alloca; with VM memory global
+across frames and the compile-time alloca cursor restarting per function,
+nested calls clobbered caller stack cells (the "garbage pointer" wall).
+New machinery, mirroring `heap_top`/`arena_top` a third time:
+`IState.stack_top::Int64` (in `==`/`hash`), `StackAlloca` (`dest := base
++ stack_top`, non-injective → L3), `FunctionEntry.frame_size` (static),
+`Frame.stack_delta` (the advance CallEnter made; ReturnExit retracts it —
+LIFO, recursion-safe, no `prog` needed at return). Single-function
+programs have `stack_top == 0` throughout (byte-identical).
+
+### A.4 ≥3-predecessor joins emit `UnconditionalEntry`
+
+`ConditionalEntry` models 2-way joins only; forward dispatch reads only
+the entry marker's `params` (verified at `Interpreter.jl` dispatch site),
+so a ≥3-pred join lowers to `UnconditionalEntry`. Predecessor-set info is
+absent there — recorded for the future per-instruction backward-dispatch
+tier as bead `bennettvm-r8nc` (sibling of `gqd`).
+
+### Deferred beads filed with this amendment
+
+`bennettvm-347o` (non-entry-block alloca fail-loud), `bennettvm-zuem`
+(recursion+allocas test), `bennettvm-hyi6` (cross-function mixed
+static+DynAlloca segment-overlap guard), `bennettvm-r8nc` (≥3-pred
+backward-dispatch info).

@@ -263,14 +263,17 @@ end
     end
 
     # Row 11 — IRAlloca → bump-allocator cursor (ingest.jl:337,
-    # _lower_alloca!). Static-N (ConstOperand) materialises a Define;
-    # dynamic-N (SSAOperand) materialises a DynAlloca. BOTH are DONE.
-    @testset "(11) DONE IRAlloca → Define (static) / DynAlloca (dynamic)" begin
-        # Static: ConstOperand(N) → Define(dest, base, :add, 0).
+    # _lower_alloca!). Static-N (ConstOperand) materialises a StackAlloca (the
+    # frame-relative `dest := base + stack_top` create, CW-C3 / ADR 0019 —
+    # superseded the pre-CW-C3 `Define(dest, base, :add, 0)` so multi-function C
+    # stack allocas are frame-disjoint); dynamic-N (SSAOperand) materialises a
+    # DynAlloca. BOTH are DONE.
+    @testset "(11) DONE IRAlloca → StackAlloca (static) / DynAlloca (dynamic)" begin
+        # Static: ConstOperand(N) → StackAlloca(dest, base) (CW-C3).
         _, ts = _coverage_lower(
             [Bennett.IRAlloca(:__a, 32, Bennett.ConstOperand(4))],
             Bennett.IRRet(Bennett.SSAOperand(:__a), 32))
-        @test BennettVM.Define in ts
+        @test BennettVM.StackAlloca in ts
         # Dynamic: SSAOperand → DynAlloca (bead 0zn; ADR 0009 Decision 2a).
         _, td = _coverage_lower(
             [Bennett.IRAlloca(:__a, 32, Bennett.SSAOperand(:__x))],

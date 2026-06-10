@@ -98,6 +98,23 @@ struct Frame
     targets::Vector{Symbol}      # caller SSA dests where return values land
     locals::Dict{Symbol,Int64}   # this activation's register file
     fname::Symbol                # callee name (diagnostics + End resolution)
+    stack_delta::Int64           # CW-C3: the IState.stack_top advance CallEnter
+                                 # made entering THIS activation (= the caller's
+                                 # frame_size). ReturnExit retracts exactly this
+                                 # when popping the frame, so stack_top
+                                 # round-trips without needing `prog` at return.
+
+    # 4-arg constructor: stack_delta defaults to 0 (CW-C3). The bottom
+    # `:__entry` frame (no CallEnter pushed it — `IState`'s constructors build
+    # it) and EVERY hand-built `Frame(link, targets, locals, fname)` test/IState
+    # call site keep their meaning: a 0 stack delta means popping the frame
+    # retracts `stack_top` by 0 (byte-identical to pre-CW-C3). `CallEnter` uses
+    # the 5-arg form with the real caller frame size.
+    Frame(link::Int64, targets::Vector{Symbol}, locals::Dict{Symbol,Int64},
+          fname::Symbol) = new(link, targets, locals, fname, Int64(0))
+    Frame(link::Int64, targets::Vector{Symbol}, locals::Dict{Symbol,Int64},
+          fname::Symbol, stack_delta::Integer) =
+        new(link, targets, locals, fname, Int64(stack_delta))
 end
 
 """
@@ -113,6 +130,8 @@ clause is "use `==`, not `===`".
 function Base.:(==)(a::Frame, b::Frame)
     a.link == b.link &&
     a.fname === b.fname &&        # interned Symbol: === and == agree.
+    a.stack_delta == b.stack_delta &&  # CW-C3: the stack_top advance must
+                                 # round-trip with the frame (Rule 4).
     a.targets == b.targets &&     # Vector's content-comparing ==.
     a.locals == b.locals          # Dict's content-comparing ==.
 end
@@ -120,6 +139,7 @@ end
 function Base.hash(f::Frame, h::UInt)
     h = hash(f.link, h)
     h = hash(f.fname, h)
+    h = hash(f.stack_delta, h)  # CW-C3: hash in lock-step with == above.
     h = hash(f.targets, h)   # Vector's hash respects content + order.
     h = hash(f.locals, h)    # Dict's hash respects content (order-independent).
     return h
@@ -163,6 +183,15 @@ entry label, formal parameters, and return values.
   Current code uses this field exclusively for `isempty` void detection;
   do not build arity/liveness logic on it without fixing the population
   (bead filed).**
+- `frame_size::Int64` (CW-C3, bead `bennettvm-416r.10`). The total number of
+  STATIC stack-alloca cells this function reserves — the size of its
+  activation record in the global stack segment. `CallEnter` advances
+  `IState.stack_top` by the CALLER's `frame_size` (so the callee's allocas
+  land past it), `ReturnExit` retracts the same; this is what makes a
+  multi-function C `-O0` module's memory-backed locals frame-disjoint (see
+  `src/ir/IState.jl` `stack_top`). Defaults to 0 (a function with no static
+  allocas / the CW-B frame-register test builders), populated by
+  `ingest_multi.jl` from the function's static `IRAlloca` cells.
 
 Ref: docs/adr/0019-reversible-calls.md §2 (function table over one flat
      stream; `#`-qualified labels; closed-world callee resolution at ingest).
@@ -172,13 +201,31 @@ struct FunctionEntry
     entry_label::Symbol
     params::Vector{Symbol}
     returns::Vector{Symbol}
+    frame_size::Int64    # total STATIC stack-alloca cells of this function (CW-C3)
+
+    # `frame_size` defaults to 0 (CW-C3): a function with no static allocas
+    # occupies no stack region, and EVERY existing 4-arg `FunctionEntry(name,
+    # entry_label, params, returns)` call site (the CW-B `_two_level_module` /
+    # factorial test builders, which use frame-register locals, not allocas)
+    # keeps its meaning — a zero stack frame means `CallEnter` advances
+    # `stack_top` by 0 across it, i.e. no change (byte-identical to pre-CW-C3).
+    # The multi-function lowering (`ingest_multi.jl`) populates the real size
+    # from the function's static `IRAlloca` cells so a caller of an
+    # alloca-bearing callee offsets correctly.
+    FunctionEntry(name::Symbol, entry_label::Symbol, params::Vector{Symbol},
+                  returns::Vector{Symbol}) =
+        new(name, entry_label, params, returns, Int64(0))
+    FunctionEntry(name::Symbol, entry_label::Symbol, params::Vector{Symbol},
+                  returns::Vector{Symbol}, frame_size::Integer) =
+        new(name, entry_label, params, returns, Int64(frame_size))
 end
 
 function Base.:(==)(a::FunctionEntry, b::FunctionEntry)
     a.name === b.name &&
     a.entry_label === b.entry_label &&
     a.params == b.params &&
-    a.returns == b.returns
+    a.returns == b.returns &&
+    a.frame_size == b.frame_size
 end
 
 function Base.hash(f::FunctionEntry, h::UInt)
@@ -186,5 +233,6 @@ function Base.hash(f::FunctionEntry, h::UInt)
     h = hash(f.entry_label, h)
     h = hash(f.params, h)
     h = hash(f.returns, h)
+    h = hash(f.frame_size, h)
     return h
 end

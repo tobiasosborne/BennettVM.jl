@@ -322,6 +322,14 @@ include("ir/array_index.jl")
 # `predelta_payload`, like `MemoryStore`); the raising `prev::Any` inverse is
 # the never-taken L3 catch-all (Rule 1). Not yet exported.
 include("ir/alloca.jl")
+# CW-C3 (ADR 0019; bead `bennettvm-416r.10`) — `StackAlloca`, the frame-relative
+# static-alloca create. Materialises `dest = base + s.stack_top` so each call
+# frame's memory-backed locals (C `-O0` allocas) occupy a DISJOINT region of the
+# global stack segment (a nested call no longer clobbers its caller's stack
+# cells). `is_injective` / `is_l2_capable` inherit the conservative `false`
+# defaults (L3-reversed, like the static-alloca `Define` it supersedes — the
+# include need NOT precede Injective/delta since it registers no specialisation).
+include("ir/stack_alloca.jl")
 # SC9 Case B (ADR 0008; bead `bennettvm-jrc`) — `RevMap` + `IRMapInsert` /
 # `IRMapDelete` / `IRMapGet`, the reversible-map ADT and its three IR ops.
 # `RevMap` is `const Dict{Int64,Int64}` (mirroring `memory`); the map lives

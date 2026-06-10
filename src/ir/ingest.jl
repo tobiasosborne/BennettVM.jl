@@ -329,6 +329,15 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
     alloca_cursor = Int64(1)
     saw_dynamic_alloca = false
 
+    # Constant-call-arg counter (CW-C3, ADR 0019 §3). A reversible VM call
+    # passes args by MOVE, so a `ConstOperand` arg (the C idiom `ht_new(2048)`)
+    # has no SSA name to MOVE — it is materialised into a fresh synthetic name
+    # via a `Define(name, value, :add, 0)` emitted BEFORE the `CallEnter`
+    # (mirroring the alloca-pointer/φ-incoming const-create idiom). The counter
+    # is monotone across ALL in-module IRCalls of the routine so distinct
+    # constant args never collide (`_call_const_arg_name`, ingest_phi.jl).
+    call_const_counter = 0
+
     # Aggregate-dest registry (bead `bennettvm-acq`, OPCODE G2). Every
     # `IRInsertValue.dest` is an SSA name bound to an aggregate VALUE that this
     # pass DECOMPOSES into a per-slot `Define` family (no scalar key of its own
@@ -369,31 +378,50 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
                       "Bennett.jl typically emits a separate preheader, so this ",
                       "is rare; file a follow-up if a real program hits it.")
             entry = BeginInstruction(routine, Symbol[n for (n, _w) in parsed.args])
-        elseif length(preds[b.label]) >= 2
-            # `ConditionalEntry` is a 2-predecessor join (true/false).
-            # A ≥3-predecessor join would need a nested-merge lowering
-            # not in the M_UNBOUNDED slice; fail loud (Rule 1) rather
-            # than silently dropping the extra predecessors. Collatz has
-            # no 3-way join (max in-degree 2).
-            length(preds[b.label]) == 2 ||
-                error("lower_vm: block :", b.label, " has ",
-                      length(preds[b.label]), " predecessors (",
-                      preds[b.label], "); ConditionalEntry models a ",
-                      "2-way join only. A ≥3-predecessor join needs a ",
-                      "nested-merge lowering, deferred past the ",
-                      "M_UNBOUNDED slice (ADR 0012; Rule 1 fail-loud).")
+        elseif length(preds[b.label]) == 2
+            # `ConditionalEntry` is the canonical 2-predecessor join
+            # (true/false). Retained as the 2-pred shape for byte-for-byte
+            # stability of the pinned collatz / matrix_sum / matrix_tri
+            # dispatch+step counts (which all have max in-degree 2).
+            #
             # Vestigial condition under L3 replay (ADR 0012 §D4):
             # `_dispatch_to_block!` does NOT read a ConditionalEntry's
-            # `condition` on forward arrival, and backward dispatch is
-            # never taken under checkpoint-replay — so any symbol ∉ params
-            # satisfies the constructor. A per-block synthetic sentinel
-            # `:_cond_<label>` is guaranteed fresh (φ params are LLVM SSA
-            # names, never `_cond_`-prefixed) regardless of arg count or
-            # naming — robust where `parsed.args[1]` would fail for a
-            # zero-arg routine or collide with a φ param.
+            # `condition` (NOR its `predecessor_true/false`) on forward
+            # arrival, and backward dispatch is never taken under
+            # checkpoint-replay — so any symbol ∉ params satisfies the
+            # constructor. A per-block synthetic sentinel `:_cond_<label>`
+            # is guaranteed fresh (φ params are LLVM SSA names, never
+            # `_cond_`-prefixed) regardless of arg count or naming —
+            # robust where `parsed.args[1]` would fail for a zero-arg
+            # routine or collide with a φ param.
             cond = Symbol("_cond_", b.label)
             entry = ConditionalEntry(_q(b.label), params, preds[b.label][1],
                                      preds[b.label][2], cond)
+        elseif length(preds[b.label]) >= 3
+            # ≥3-predecessor join (CW-C3, ADR 0019; the C open-addressing
+            # `ht_put` `for.end` block has THREE predecessors — the loop-exit
+            # plus two early-return paths — converging on `ret void`). Under L3
+            # checkpoint-replay, forward dispatch into a join block consults ONLY
+            # the entry marker's `params` for the positional args→params rename
+            # (`_dispatch_to_block!`, Interpreter.jl:1287-1326) — it reads
+            # NEITHER a `ConditionalEntry.condition` NOR its `predecessor_*`
+            # labels, and backward stepping is never per-instruction (the M4.3
+            # checkpoint-replay path re-runs forward). So the predecessor labels
+            # a `ConditionalEntry` carries are VESTIGIAL on forward; an N-way
+            # join needs only a marker that (a) binds the φ params positionally
+            # and (b) imposes no fixed predecessor arity. `UnconditionalEntry`
+            # (no predecessor fields, just `label` + `params`) is exactly that
+            # marker — each of the N trampoline edges sends its own arg list (the
+            # critical-edge split, this file's §2), and `_rename_args_to_params!`
+            # binds whichever edge fired. This is NOT the "nested-merge lowering"
+            # the old reject deferred — it is the correct, minimal N-way merge
+            # under the replay reversal model (Law 1: grounded in the dispatch
+            # code that ignores predecessor labels, not a guess). A future
+            # per-instruction backward-dispatch path (ADR 0019 §3 normative note,
+            # bead `xtb` territory) that DID consult predecessor labels would
+            # need the full predecessor set here; it does not exist yet, and the
+            # join arity is recoverable from the LabelTable when it lands.
+            entry = UnconditionalEntry(_q(b.label), params)
         else
             entry = UnconditionalEntry(_q(b.label), params)
         end
@@ -404,7 +432,7 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
                 # Alloca needs the bump-allocator state (ADR 0014 §D1 / ADR
                 # 0009 Decision 2a), so it is lowered here, not in the pure
                 # per-instruction dispatch. A static `ConstOperand(N)` alloca
-                # emits a `Define(dest, base, :add, 0)` and advances the cursor
+                # emits a `StackAlloca(dest, base)` (frame-relative create; CW-C3) and advances the cursor
                 # by N; a dynamic `SSAOperand` alloca emits a `DynAlloca` (with
                 # an L2 (base, n) delta), leaves the COMPILE-TIME cursor frozen
                 # (dynamic regions offset apart at runtime via heap_top), and
@@ -569,6 +597,47 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
                 push!(body, Define(inst.dest,
                                    _agg_slot_name(inst.agg.name, inst.index),
                                    :add, Int64(0)))
+            elseif inst isa Bennett.IRCall &&
+                   haskey(functions, _callee_sym(inst.callee)) &&
+                   any(a -> a isa Bennett.ConstOperand, inst.args)
+                # In-module IRCall with one or more CONSTANT args (CW-C3, ADR
+                # 0019 §3). A reversible VM call passes args by MOVE (Vieri 1995
+                # p.22 — the arg SSA name is consumed out of the caller frame and
+                # rebound under the callee's param), so a `ConstOperand` arg (the
+                # C idiom `ht_new(2048)`, `ht_put(t, k, 3)`) has no SSA name to
+                # MOVE — guard-5 in `_lower_body_inst` fails loud on it. Because
+                # the fix EMITS MULTIPLE instructions (one synthetic `Define` per
+                # constant arg, then the `CallEnter`), it does not fit the single-
+                # instruction `_lower_body_inst` contract, so it is special-cased
+                # HERE, mirroring the `IRAlloca` / `IRInsertValue` branches.
+                #
+                # For each constant arg, mint a fresh collision-proof name
+                # (`_call_const_arg_name`, counter-based) and materialise the
+                # constant into it with `Define(name, value, :add, 0)` — the same
+                # const-create idiom the φ-incoming constants and the alloca
+                # pointer use (non-injective, L3-reversed, no new delta, clean
+                # round-trip to empty history). The synthetic name is then passed
+                # as the call arg, MOVEd like any SSA arg. Already-SSA args pass
+                # through unchanged. The rewritten `IRCall` then flows through the
+                # SAME guard-5 path in `_lower_body_inst` (now with all-SSA args),
+                # so the void/dest target derivation and arity stay single-sourced
+                # there (Law 2 — no duplicated CallEnter-construction logic).
+                callee_sym = _callee_sym(inst.callee)
+                new_args = Bennett.IROperand[]
+                for a in inst.args
+                    if a isa Bennett.ConstOperand
+                        call_const_counter += 1
+                        nm = _call_const_arg_name(callee_sym, call_const_counter)
+                        push!(body, Define(nm, Int64(a.value), :add, Int64(0)))
+                        push!(new_args, Bennett.SSAOperand(nm))
+                    else
+                        push!(new_args, a)
+                    end
+                end
+                rewritten = Bennett.IRCall(inst.dest, inst.callee, new_args,
+                                           inst.arg_widths, inst.ret_width)
+                li = _lower_body_inst(rewritten, functions)
+                li === nothing || push!(body, li)
             else
                 li = _lower_body_inst(inst, functions)
                 li === nothing || push!(body, li)

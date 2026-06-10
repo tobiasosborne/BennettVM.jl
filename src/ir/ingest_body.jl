@@ -537,12 +537,20 @@ function _lower_alloca!(inst::Bennett.IRAlloca,
               "static alloca must reserve at least one cell (N >= 1); ",
               "N=", nelems, " is malformed IR (Rule 1 fail-loud).")
     base = next_addr
-    # Materialise the pointer as an Int64 in `locals`: `dest := base + 0`.
-    # A constant-create Define (the same form the φ-incoming constants use,
-    # `Define(name, value, :add, 0)`), so `dest` holds `base` and downstream
-    # MemoryStore / MemoryLoad / VarGEP resolve it as the cell base address.
-    # The cursor advances by `N` cells (CELL-addressed: one Int64 per element,
-    # cells base … base+N-1), so a VarGEP with cell stride 1 lands on exactly
-    # the cell this alloca reserved for element i (ADR 0009 Decision 2b).
-    return (Define(inst.dest, base, :add, Int64(0)), next_addr + nelems, false)
+    # Materialise the pointer FRAME-RELATIVELY via `StackAlloca(dest, base)`
+    # (CW-C3, ADR 0019; `src/ir/stack_alloca.jl`): `dest := base + s.stack_top`,
+    # so `dest` holds the compile-time per-frame cell `base` OFFSET by the
+    # runtime call-stack cursor. For a single-function program `stack_top == 0`
+    # throughout, so `dest == base` — BYTE-IDENTICAL to the pre-CW-C3
+    # `Define(dest, base, :add, 0)` constant-create (every collatz / arena /
+    # single-function test is unchanged). For a multi-function module the
+    # CallEnter/ReturnExit `stack_top` advance/retract places each call frame's
+    # allocas in a DISJOINT stack region, so a nested call no longer clobbers
+    # its caller's memory-backed C `-O0` locals (the CW-C3 wall). Downstream
+    # MemoryStore / MemoryLoad / VarGEP resolve `dest` as the cell base address
+    # exactly as before (no store/load change, Law 2). The cursor advances by
+    # `N` cells (CELL-addressed: one Int64 per element, cells base … base+N-1),
+    # so a VarGEP with cell stride 1 lands on exactly the cell this alloca
+    # reserved for element i (ADR 0009 Decision 2b).
+    return (StackAlloca(inst.dest, base), next_addr + nelems, false)
 end

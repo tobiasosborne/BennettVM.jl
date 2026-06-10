@@ -176,3 +176,31 @@ ever emits an `_agg_`-prefixed name would need a counter-based mint (cf.
 `_phi_const_dup_name`); filed as the follow-on if it arises.
 """
 _agg_slot_name(agg::Symbol, k::Int) = Symbol("_agg_", agg, "_slot", k)
+
+"""
+    _call_const_arg_name(callee::Symbol, k::Int) -> Symbol
+
+A FRESH, collision-proof synthetic SSA name for the `k`-th constant
+argument of an in-module `IRCall` to `callee` (CW-C3, ADR 0019 §3). A
+reversible VM call passes args by MOVE (Vieri 1995 p.22 — the arg SSA name
+is consumed out of the caller frame and rebound under the callee's param),
+so a `ConstOperand` arg (the C idiom `ht_new(2048)`, `ht_put(t, k, 3)`)
+has no SSA name to MOVE. We materialise each constant into its own
+synthetic name via a `Define(name, value, :add, 0)` (the same const-create
+idiom the φ-incoming constants and alloca-pointer create use,
+`ingest.jl`/`_lower_alloca!`) emitted in the caller's body immediately
+before the `CallEnter`, then pass the synthetic name as the arg.
+
+`k` is the per-CALLEE monotone occurrence counter threaded through the body
+loop (`call_const_counter` in `_lower_parsed_ir`): every distinct constant
+arg across the whole routine gets a distinct `k`, so two calls to the same
+callee in one function never collide. The `_callconst_` prefix is
+collision-proof against the existing synthetic-name conventions — `e_` /
+`_phi_const_` / `_phi_ssadup_` / `_agg_` (the `#`-qualifier uses `#`; LLVM
+SSA names are numeric / `value_phi*`, never `_callconst_`-prefixed). It
+mirrors the counter-based `_phi_const_dup_name` discipline (the
+`bennettvm-3ah` DEF-3 lexical-collision hardening): a monotone counter
+sidesteps any label/value-shape collision.
+"""
+_call_const_arg_name(callee::Symbol, k::Int) =
+    Symbol("_callconst_", callee, "_", k)

@@ -1375,26 +1375,35 @@ end
     _handle_call_dispatch!(s::RState, prog::VMProgram, instr::Instruction)
 
 If `instr` is a `CallEnter`, perform the reversible call transition (ADR
-0019 §3): MOVE the args out of the caller frame, PUSH a fresh callee
-activation, BIND the moved values positionally under the callee's formal
-params, and JUMP to the callee's entry (one past its Begin marker). A no-op
-for every other instruction type — the `_handle_cross_block_dispatch!`
-sibling that runs immediately before this.
+0019 §3): COPY the args into a fresh callee activation, PUSH it, BIND the
+copied values positionally under the callee's formal params, and JUMP to
+the callee's entry (one past its Begin marker). A no-op for every other
+instruction type — the `_handle_cross_block_dispatch!` sibling that runs
+immediately before this.
 
-The MOVE (not copy-and-drop) is Vieri 1995 p.22 — the args are DELETED from
-the caller and re-bound in the callee, so nothing is duplicated and the
-backward pass (M4.3 replay) reconstructs the frame exactly. The return site
-is saved in `Frame.link = pc_before + 1` (BobISA's branch register); the
+The args are COPIED, not moved (CW-C3, ADR 0019 Amendment A): ADR 0019 §3
+specified the Vieri 1995 p.22 MOVE (read-and-drop) on the premise that a
+call arg is dead after the call — true for reversible-by-construction
+source, false for our irreversible-LLVM-IR callees, where an SSA value is
+MULTI-USE (a C `-O0` `alloca` pointer is passed to a callee AND read back
+after). So the caller KEEPS its bindings; the copy is a pure deterministic
+function of caller state, so the backward pass (M4.3 / L3 replay)
+reconstructs both the untouched caller arg and the re-copied callee param.
+The MOVE discipline now governs the RETURN side only. The return site is
+saved in `Frame.link = pc_before + 1` (BobISA's branch register); the
 landing `targets` ride the frame so the matching `ReturnExit` (or
 End-at-depth>1) can un-land them.
 
-Fail-loud (ADR 0019 §6): unknown callee (closed-world miss), call arity
-mismatch (args↔params), and a `targets` name already live in the caller
-(SSA violation — it would be clobbered when the return lands).
+Fail-loud (ADR 0019 §6): unknown callee (closed-world miss) and call arity
+mismatch (args↔params). The old "targets name already live" SSA-violation
+guard is GONE (CW-C3, ADR 0019 Amendment A): a live target is OVERWRITTEN
+on return (its prior value captured in the L2 `target_olds` payload), not
+rejected — C `-O0` redefines a call-result SSA name every loop iteration.
 
 # Ref
 
-  * `docs/adr/0019-reversible-calls.md` §3 (CallEnter forward), §6 (a,b,c).
+  * `docs/adr/0019-reversible-calls.md` §3 (CallEnter forward), §6 (a,b;
+    the §6c live-target guard is superseded by Amendment A / CW-C3).
   * `src/ir/call_transitions.jl` — the `CallEnter` instruction.
   * `src/ir/call_frames.jl` — `Frame` / `FunctionEntry`.
 """
@@ -1421,18 +1430,28 @@ function _handle_call_dispatch!(s::RState, prog::VMProgram,
 
     caller = active_locals(s.current)
 
-    # (c) The `targets` SSA guard (ADR 0019 §6c): a landing name already live
-    # in the caller would be clobbered when the return lands. Caught here at
-    # CALL time (the earliest point) rather than at return.
-    for t in instr.targets
-        haskey(caller, t) &&
-            error("_handle_call_dispatch!: target :", t, " is already live ",
-                  "in the caller frame before the call to :", instr.callee,
-                  " — the return landing would clobber a live SSA name (ADR ",
-                  "0019 §6c; Rule 1 fail-loud).")
-    end
-
-    # MOVE args out of the caller (Vieri p.22): capture, then delete.
+    # COPY args into the callee (CW-C3 — the LLVM-IR adaptation of ADR 0019 §3's
+    # MOVE). ADR 0019 §3 specified a MOVE (Vieri p.22 — read the arg, DELETE it
+    # from the caller) on the premise that a call arg is dead after the call,
+    # which holds for reversible-by-construction source (BobISA/RC3/Janus). Our
+    # callees are lowered from irreversible C/Rust/Julia LLVM IR, where an SSA
+    # value has MULTIPLE uses: a C `-O0` pointer like `%found = alloca i64` is
+    # passed to `ht_get(..., ptr %found)` AND read back afterwards (`load ptr
+    # %found`). DELETING it on the call would make the post-call use read an
+    # undefined name — a forward miscompile. This is the SAME assumption-mismatch
+    # ADR 0019 §"the constraint that drives everything" already documents for the
+    # RETURN side (callees arrive with dead temporaries live at End, so the return
+    # logs a residual). The symmetric adaptation on the CALL side is: do NOT
+    # consume the caller's arg — COPY its value into the callee. Reversibility is
+    # UNAFFECTED: CallEnter stays L1 (no own history push) and is reversed by L3
+    # checkpoint-replay (ADR 0019 §3 normative note — replay re-runs `forward`
+    # deterministically); a copy is a pure deterministic forward function of
+    # caller state, so the replay reconstructs both the caller arg (untouched) and
+    # the callee param (re-copied). The copied value is captured in the callee's
+    # ReturnExit residual on return (ADR 0019 §4), so the floor's per-call cost is
+    # the residual it already pays. A dead-after-call arg simply lingers in the
+    # caller frame (harmless; round-trips); shrinking that via liveness is the
+    # deferred optimisation tier (ADR 0002 / §7), never a correctness gate.
     argv = Int64[]
     for a in instr.args
         haskey(caller, a) ||
@@ -1441,21 +1460,49 @@ function _handle_call_dispatch!(s::RState, prog::VMProgram,
                   "ADR 0019 §6f; Rule 1 fail-loud).")
         push!(argv, caller[a])
     end
-    for a in instr.args
-        delete!(caller, a)
-    end
+
+    # ADVANCE the call-stack cursor by the CALLER's frame size (CW-C3, ADR 0019;
+    # `src/ir/IState.jl` `stack_top`). The caller is the CURRENT top frame (still
+    # active — the callee is not pushed yet). Its static allocas occupy cells
+    # `stack_top + 1 … stack_top + caller_frame_size` of the global stack
+    # segment; advancing past that region BEFORE the callee runs makes the
+    # callee's own (compile-time-cell `1…F_callee`) `StackAlloca`s land at
+    # `new_stack_top + 1 …`, DISJOINT from the caller — so a nested C `-O0` call
+    # no longer clobbers its caller's memory-backed locals (the CW-C3 wall). The
+    # matching `ReturnExit` retracts the same amount, so `stack_top` round-trips.
+    # The `:__entry` bottom frame's name is in the table (it is the entry
+    # function); a callee with no allocas has caller_frame_size contribution only
+    # from the caller, never itself. A missing caller in the table is a Rule-1
+    # corruption (every active frame names an in-module function).
+    # The bottom (`:__entry`) frame runs the ENTRY function's code but carries the
+    # reserved `:__entry` name (IState's constructor builds it; ADR 0019 §1), so
+    # its frame size is the entry function's. Any other active frame names an
+    # in-module function directly. A name that is neither is a corrupted stack.
+    caller_fname = s.current.frames[end].fname
+    caller_lookup = caller_fname === :__entry ? prog.entry_function : caller_fname
+    haskey(prog.functions, caller_lookup) ||
+        error("_handle_call_dispatch!: active (caller) frame names :",
+              caller_fname, " which is absent from the function table (known: ",
+              sort!(collect(keys(prog.functions))), ") — a corrupted call stack ",
+              "(CW-C3 stack_top advance needs the caller frame size; Rule 1 ",
+              "fail-loud).")
+    stack_delta = prog.functions[caller_lookup].frame_size
+    s.current.stack_top += stack_delta
 
     # PUSH the callee activation. `link = pc_before + 1` is the return site
     # (the flat-stream slot AFTER the CallEnter, where forward() bumped pc to
     # — but `_handle_cross_block_dispatch!` ran first and is a no-op for
-    # CallEnter, so `s.current.pc` is exactly `pc_before + 1` here).
+    # CallEnter, so `s.current.pc` is exactly `pc_before + 1` here). The
+    # `stack_delta` (= caller frame size advanced above) rides the Frame so the
+    # matching `ReturnExit` retracts EXACTLY this on pop without consulting
+    # `prog` (CW-C3; `src/ir/call_frames.jl` Frame.stack_delta).
     callee_locals = Dict{Symbol,Int64}()
     for (p, v) in zip(fe.params, argv)
         callee_locals[p] = v
     end
     link = s.current.pc
     push!(s.current.frames, Frame(link, instr.targets, callee_locals,
-                                  instr.callee))
+                                  instr.callee, stack_delta))
 
     # JUMP to the callee entry: one past its Begin marker (the
     # `_dispatch_to_block!` convention — the entry marker is a no-op-on-data

@@ -205,6 +205,54 @@ the caller's variable, defeating the in-place mutation convention the
   admits >=2 dynamic allocas reached AT MOST ONCE each; in-loop / back-edge
   re-execution (same dest) and a static alloca after a dynamic one stay
   fail-loud (deferred follow-up beads — ADR 0009 §Consequences).
+
+- `stack_top::Int64` (the runtime CALL-STACK bump-pointer OFFSET; CW-C3,
+  bead `bennettvm-416r.10`). The architectural piece that makes multi-function
+  C round-trip. A C `-O0` translation unit stores EVERY local in an `alloca`
+  (memory-backed), and the VM's `s.memory` is GLOBAL across call frames (ADR
+  0019 §1 — frames carry registers, never memory). The static-alloca bump
+  cursor RESETS to cell 1 per function (`_lower_parsed_ir`, `alloca_cursor`),
+  so without a runtime offset a callee's stack allocas land at the SAME
+  absolute cells as its caller's — a nested call CLOBBERS the caller's
+  memory-backed locals, and the caller reads garbage after the call returns
+  (the exact CW-C3 wall: `ht_demo_basic`'s `t` pointer was overwritten by a
+  nested `ht_get`/`ht_third_pass` and the final `ht_free(t)` got a garbage
+  address).
+
+  The fix mirrors `heap_top` exactly: a runtime OFFSET (starting at 0) added
+  to each STATIC alloca's compile-time cell so each call frame occupies a
+  DISJOINT region of the stack segment. `CallEnter` advances `s.stack_top` by
+  the CALLER's frame size (the cells the caller occupies) BEFORE the callee's
+  allocas run, so the callee's compile-time cells `1…F` land at
+  `stack_top + 1 … stack_top + F`, past every ancestor frame; the matching
+  `ReturnExit` retracts `s.stack_top` by the same caller frame size, so it
+  round-trips `0 → … → 0`. Recursion is safe (each activation's `CallEnter`
+  advances the cursor again, so every activation's allocas get fresh cells —
+  no per-frame alloca-name mangling needed, mirroring the frame-register
+  isolation of ADR 0019 §5). A SINGLE-function program never calls, so
+  `stack_top` stays 0 throughout and `StackAlloca(dest, base).forward`
+  computes `dest = base + 0 == base` — BYTE-IDENTICAL to the pre-CW-C3
+  absolute-address behaviour (no churn to the collatz / arena / single-fn
+  tests).
+
+  Why an OFFSET inside `IState` (the ADR 0008 Finding-3 / `heap_top`
+  argument, applied a third time): an `Int64` rides L3 checkpoints
+  automatically (`deepcopy`), and it MUST participate in `==`/`hash` so a
+  round-trip test that failed to restore the call-stack cursor FAILS (Rule 4)
+  rather than passing spuriously. Default 0 in every constructor keeps all
+  111+ existing `IState(...)` call sites byte-identical.
+
+  The cursor is LIFO (advance at `CallEnter`, retract the SAME amount at the
+  matching `ReturnExit`), so `stack_top` is bounded by live call DEPTH, not
+  total call count — a returned frame's stack region is reused by the next
+  sibling call (the C activation-record discipline). This is correct because
+  a returned frame's allocas are dead at the C level (the fixture never leaks
+  a stack address out of a function). The dead cell CONTENTS linger in
+  `s.memory` until the run's reverse retracts the whole call (the
+  correctness-first leak floor, like `free`); only the ADDRESS space is reused,
+  bounded by depth. The cursor itself round-trips 0 to ... to 0 because every
+  advance has a matching retract; an L2 payload on `ReturnExit` carries the
+  amount so the inverse re-advances exactly (CW-C3).
 """
 mutable struct IState
     pc::Int
@@ -214,6 +262,7 @@ mutable struct IState
     revmap::Dict{Int64,Int64}   # RevMap, the reversible-map ADT (ADR 0008).
     heap_top::Int64             # runtime bump-pointer offset (ADR 0009; uil).
     arena_top::Int64            # malloc-arena bump-pointer offset (ADR 0018; CW-A2).
+    stack_top::Int64            # runtime call-stack bump offset (CW-C3; see below).
 
     # 3-arg constructor: preserves every existing call site (M2.1
     # through M2.10) — empty memory AND empty revmap are the right
@@ -226,7 +275,7 @@ mutable struct IState
     # and behaves identically (single frame ⇒ byte-identical register file).
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol) =
         new(pc, [Frame(0, Symbol[], locals, :__entry)], status,
-            Dict{Int64,Int64}(), Dict{Int64,Int64}(), Int64(0), Int64(0))
+            Dict{Int64,Int64}(), Dict{Int64,Int64}(), Int64(0), Int64(0), Int64(0))
 
     # 4-arg constructor: explicit memory, empty revmap. Used by M2.11+
     # tests and by any lowering pass that materializes a heap snapshot up
@@ -238,7 +287,7 @@ mutable struct IState
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}) =
         new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory,
-            Dict{Int64,Int64}(), Int64(0), Int64(0))
+            Dict{Int64,Int64}(), Int64(0), Int64(0), Int64(0))
 
     # 5-arg constructor: explicit memory AND revmap (ADR 0008 Decision 1).
     # Used by the `IRMap*` unit tests to build an IState with a populated
@@ -249,7 +298,7 @@ mutable struct IState
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64}) =
         new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory, revmap,
-            Int64(0), Int64(0))
+            Int64(0), Int64(0), Int64(0))
 
     # 6-arg constructor: explicit `heap_top` (bead `bennettvm-uil`). Used
     # ONLY by the multi-DynAlloca unit tests to build an IState mid-stream (a
@@ -261,7 +310,7 @@ mutable struct IState
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64},
            heap_top::Integer) =
         new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory, revmap,
-            Int64(heap_top), Int64(0))
+            Int64(heap_top), Int64(0), Int64(0))
 
     # 7-arg constructor: explicit `arena_top` (ADR 0018 §A; bead CW-A2). Used
     # ONLY by the malloc-arena unit tests to build an IState mid-stream (a
@@ -274,7 +323,17 @@ mutable struct IState
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64},
            heap_top::Integer, arena_top::Integer) =
         new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory, revmap,
-            Int64(heap_top), Int64(arena_top))
+            Int64(heap_top), Int64(arena_top), Int64(0))
+
+    # 8-arg constructor: explicit `stack_top` (CW-C3). Used ONLY by the
+    # StackAlloca / cross-frame stack unit tests to build an IState mid-stream
+    # (a non-zero call-stack cursor). Trailing + unambiguous in arity, so no
+    # existing call site's resolution changes. `Integer` coerced to `Int64`.
+    IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
+           memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64},
+           heap_top::Integer, arena_top::Integer, stack_top::Integer) =
+        new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory, revmap,
+            Int64(heap_top), Int64(arena_top), Int64(stack_top))
 end
 
 """
@@ -384,10 +443,16 @@ function Base.:(==)(a::IState, b::IState)
     a.memory == b.memory &&  # M2.11: same content-comparing pattern.
     a.revmap == b.revmap &&  # ADR 0008 Finding 3: RevMap content participates.
     a.heap_top == b.heap_top &&  # uil: the runtime bump offset MUST round-trip.
-    a.arena_top == b.arena_top   # ADR 0018 §H: the malloc-arena cursor MUST
+    a.arena_top == b.arena_top &&  # ADR 0018 §H: the malloc-arena cursor MUST
                                  # round-trip — omitting it would make a
                                  # round-trip test pass spuriously when a
                                  # malloc inverse forgot to retract the cursor.
+    a.stack_top == b.stack_top   # CW-C3: the runtime call-stack bump offset MUST
+                                 # round-trip — omitting it would make a round-trip
+                                 # test pass spuriously when a CallEnter advanced
+                                 # the cursor but the matching ReturnExit inverse
+                                 # forgot to retract it (same Rule-4 argument as
+                                 # heap_top / arena_top).
 end
 
 function Base.hash(s::IState, h::UInt)
@@ -400,5 +465,7 @@ function Base.hash(s::IState, h::UInt)
     h = hash(s.heap_top, h) # uil: hash the bump offset in lock-step with ==.
     h = hash(s.arena_top, h) # ADR 0018 §H: hash the malloc-arena cursor in
                              # lock-step with == (preserves a==b ⟹ hash(a)==hash(b)).
+    h = hash(s.stack_top, h) # CW-C3: hash the call-stack cursor in lock-step with
+                             # == (preserves a==b ⟹ hash(a)==hash(b)).
     return h
 end
