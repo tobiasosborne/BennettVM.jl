@@ -165,7 +165,7 @@ end
 
     @test is_halted(rs)
     @test rs.step_count == 3
-    @test rs.current.locals[:y] == Int64(8)   # 7 + (1 & 1) = 8.
+    @test BennettVM.active_locals(rs.current)[:y] == Int64(8)   # 7 + (1 & 1) = 8.
 
     # M7.6: exactly ONE DeltaEntry at step==2 (the post-increment
     # count when the L2 branch fired on the Arith :add). No
@@ -321,7 +321,7 @@ end
 
     @test is_halted(rs)
     @test rs.step_count == 4
-    @test rs.current.locals[:y] == Int64(11)   # +1 then -1 → 11
+    @test BennettVM.active_locals(rs.current)[:y] == Int64(11)   # +1 then -1 → 11
 
     # Trichotomy: step 2 (Arith :add, in set) → L2 push, DeltaEntry@2.
     #             step 3 (Arith :sub, NOT in set) → L3 gate: non-inj

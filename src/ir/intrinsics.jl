@@ -63,7 +63,7 @@ reversibly without any host pointer ever entering the VM.
 
 # Failure modes (Rule 1 — fail loud; ADR 0018 §E)
 
-  * `free` of an unknown pointer (not in `s.locals`, or outside the arena and
+  * `free` of an unknown pointer (not in `active_locals(s)`, or outside the arena and
     stack segments) → fail loud (defends the segment model).
   * Non-cell-divisible / negative `nbytes` → `_cell_count` fails loud (the
     `IRPtrOffset` discipline; sub-cell packing is out of scope).
@@ -184,7 +184,7 @@ Fail loud (Rule 1) if `dest` is already live — a re-exec under the same dest
 would alias (the `DynAlloca` same-dest guard; the in-loop case is bead `9v84`).
 """
 function predelta_payload(instr::_ArenaAlloc, s::IState)
-    haskey(s.locals, instr.dest) &&
+    haskey(active_locals(s), instr.dest) &&
         error(typeof(instr), ".predelta_payload: pointer :", instr.dest,
               " is already defined (re-exec under the same dest would alias ",
               "the arena region; the L2 (base, cells) inverse retracts it ",
@@ -195,7 +195,7 @@ end
 
 function forward(instr::_ArenaAlloc, s::IState)::IState
     cells = _alloc_cells(instr, s)
-    s.locals[instr.dest] = ARENA_BASE + s.arena_top   # deterministic address
+    active_locals(s)[instr.dest] = ARENA_BASE + s.arena_top   # deterministic address
     s.arena_top += cells                              # bump; region stays absent
     s.pc += 1
     return s
@@ -208,7 +208,7 @@ function inverse(instr::_ArenaAlloc, s::IState, p::NamedTuple)::IState
     for a in p.base:(p.base + p.cells - 1)
         delete!(s.memory, a)
     end
-    delete!(s.locals, instr.dest)
+    delete!(active_locals(s), instr.dest)
     s.arena_top -= p.cells
     s.pc -= 1
     return s
@@ -234,11 +234,11 @@ end
 # neither is not a pointer this VM produced). pc bumps so it has a clean
 # `pc -= 1` inverse under the L1 no-push gate.
 function forward(instr::IntrinsicFree, s::IState)::IState
-    haskey(s.locals, instr.ptr_operand) ||
+    haskey(active_locals(s), instr.ptr_operand) ||
         error("IntrinsicFree.forward: ptr :", instr.ptr_operand,
-              " is not defined in s.locals — free of an SSA value that no ",
+              " is not defined in active_locals(s) — free of an SSA value that no ",
               "malloc / alloca produced is malformed IR (Rule 1 fail-loud).")
-    a = s.locals[instr.ptr_operand]
+    a = active_locals(s)[instr.ptr_operand]
     (a >= 0 && a < ARENA_BASE) ||
         (a >= ARENA_BASE && a < ARENA_BASE + s.arena_top) ||
         error("IntrinsicFree.forward: ptr :", instr.ptr_operand, " = ", a,
@@ -275,7 +275,7 @@ struct IntrinsicRealloc <: Instruction
 end
 
 function predelta_payload(instr::IntrinsicRealloc, s::IState)
-    haskey(s.locals, instr.dest) &&
+    haskey(active_locals(s), instr.dest) &&
         error("IntrinsicRealloc.predelta_payload: dest :", instr.dest,
               " is already defined (re-exec under the same dest would alias ",
               "— deferred bead 9v84; Rule 1 fail-loud).")
@@ -292,8 +292,8 @@ end
 function forward(instr::IntrinsicRealloc, s::IState)::IState
     base = ARENA_BASE + s.arena_top
     cells = _cell_count(_resolve(instr.nbytes_operand, s))
-    old = s.locals[instr.ptr_operand]
-    s.locals[instr.dest] = base
+    old = active_locals(s)[instr.ptr_operand]
+    active_locals(s)[instr.dest] = base
     s.arena_top += cells
     # Copy min(old-window, new-window) cells from the old region. The old size
     # is unknown to realloc (C tracks it in the allocator header we don't
@@ -310,7 +310,7 @@ end
 
 function inverse(instr::IntrinsicRealloc, s::IState, p::NamedTuple)::IState
     _restore_deltas!(s, p.deltas)          # undo the copy into the new region
-    delete!(s.locals, instr.dest)          # remove the new pointer
+    delete!(active_locals(s), instr.dest)          # remove the new pointer
     s.arena_top -= p.cells                  # retract the malloc-half cursor
     s.pc -= 1
     return s

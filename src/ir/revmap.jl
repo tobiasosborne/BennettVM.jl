@@ -133,7 +133,7 @@ raising catch-all `inverse`s never touch `pc`.
 # Operand kinds
 
 `key` / `value` are `Union{Symbol,Int64}` (an SSA ref looked up in
-`s.locals`, or an `Int64` literal), resolved via the reused `_resolve`
+`active_locals(s)`, or an `Int64` literal), resolved via the reused `_resolve`
 (Law 2; `src/ir/arithmetic_assignment.jl`) — exactly the
 `MemoryStore.value` operand convention.
 
@@ -253,7 +253,7 @@ Execute `dest := revmap[key]` in-place. **Fails loud on an absent key**
 (Rule 1; ADR 0008 design call): a `Dict` `getindex` of a missing key is a
 `KeyError`, NOT zero-initialised memory, so we do not invent a `0` (which
 would diverge from the `fdict` oracle and mask malformed IR). Writes the
-value into `s.locals[dest]` (overwriting a prior `dest` value on a loop
+value into `active_locals(s)[dest]` (overwriting a prior `dest` value on a loop
 re-definition without error — recovering it is the L3 layer's job) and
 bumps `pc`.
 """
@@ -264,7 +264,7 @@ function forward(instr::IRMapGet, s::IState)::IState
               "an absent key is a KeyError, NOT zero-init memory — see ADR ",
               "0008 IRMapGet absent-key design call). dest=$(instr.dest), ",
               "pc=$(s.pc).")
-    s.locals[instr.dest] = s.revmap[k]
+    active_locals(s)[instr.dest] = s.revmap[k]
     s.pc += 1
     return s
 end

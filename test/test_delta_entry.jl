@@ -250,7 +250,7 @@ end
 # break a real downstream consumer:
 #
 #   - Change `ArithmeticAssignment`'s `make_delta` body to capture
-#     `s_pre.locals[instr.source]` (the "capture pre-target value"
+#     `BennettVM.active_locals(s_pre)[instr.source]` (the "capture pre-target value"
 #     pre-ADR thinking the bead text suggested): the empty-payload
 #     testsets below turn RED because `payload` is no longer
 #     `NamedTuple()`.

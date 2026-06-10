@@ -136,8 +136,8 @@ end
         @test is_halted(rs)
         c = rs.current
 
-        baseA = c.locals[:arrA]
-        baseB = c.locals[:arrB]
+        baseA = BennettVM.active_locals(c)[:arrA]
+        baseB = BennettVM.active_locals(c)[:arrB]
         # The two pointers DIFFER (the keystone: distinct regions).
         @test baseA == 1                 # frozen base + offset 0
         @test baseB == 4                 # frozen base + offset n1 (= 1 + 3)
@@ -157,8 +157,8 @@ end
         @test c.memory[baseB + 1] == 201 # B[1]
 
         # Read-back returns exactly what was written (no clobber across arrays).
-        @test c.locals[:rA0] == 100      # A[0] survived the B writes
-        @test c.locals[:rB0] == 200      # B[0] survived the A writes
+        @test BennettVM.active_locals(c)[:rA0] == 100      # A[0] survived the B writes
+        @test BennettVM.active_locals(c)[:rB0] == 200      # B[0] survived the A writes
         @test result(rs)[:rA0] == 100
     end
 
@@ -205,24 +205,24 @@ end
         pA = _BV.predelta_payload(A, s)
         @test pA.base == 1 && pA.n == n1          # runtime base = 1 + 0
         _BV.forward(A, s)
-        @test s.locals[:arrA] == 1
+        @test BennettVM.active_locals(s)[:arrA] == 1
         @test s.heap_top == n1                    # advanced by n1
 
         pB = _BV.predelta_payload(B, s)
         @test pB.base == 1 + n1 && pB.n == n2     # runtime base = 1 + heap_top
         _BV.forward(B, s)
-        @test s.locals[:arrB] == 1 + n1           # offset window
+        @test BennettVM.active_locals(s)[:arrB] == 1 + n1           # offset window
         @test s.heap_top == n1 + n2               # full total
 
         # Reverse the LIFO-last alloca (B) → heap_top retracts to n1.
         _BV.inverse(B, s, pB)
         @test s.heap_top == n1
-        @test !haskey(s.locals, :arrB)
+        @test !haskey(BennettVM.active_locals(s), :arrB)
 
         # Reverse A → heap_top back to 0 (round-trips 0 → … → 0).
         _BV.inverse(A, s, pA)
         @test s.heap_top == 0
-        @test !haskey(s.locals, :arrA)
+        @test !haskey(BennettVM.active_locals(s), :arrA)
     end
 
     # ------------------------------------------------------------------
@@ -257,8 +257,8 @@ end
         # The BUGGY forward: materialise at base + heap_top but DO NOT advance
         # heap_top (the exact mutation the bead asks us to prove RED).
         function _forward_no_advance!(instr::_BV.DynAlloca, s)
-            s.locals[instr.dest] = instr.base + s.heap_top
-            # (omitted on purpose) s.heap_top += s.locals[instr.n_operand]
+            BennettVM.active_locals(s)[instr.dest] = instr.base + s.heap_top
+            # (omitted on purpose) s.heap_top += BennettVM.active_locals(s)[instr.n_operand]
             s.pc += 1
             return s
         end
@@ -271,21 +271,21 @@ end
         B = _BV.DynAlloca(:arrB, :n2, Int64(1))
         _forward_no_advance!(A, sbug)
         _forward_no_advance!(B, sbug)
-        @test sbug.locals[:arrA] == sbug.locals[:arrB]   # ALIAS — same base!
+        @test BennettVM.active_locals(sbug)[:arrA] == BennettVM.active_locals(sbug)[:arrB]   # ALIAS — same base!
         # A[0] := 100 then B[0] := 200 land on the SAME cell → clobber.
-        sbug.memory[sbug.locals[:arrA]] = Int64(100)     # A[0]
-        sbug.memory[sbug.locals[:arrB]] = Int64(200)     # B[0] (== A[0] cell!)
-        @test sbug.memory[sbug.locals[:arrA]] == 200     # A[0] was CLOBBERED
+        sbug.memory[BennettVM.active_locals(sbug)[:arrA]] = Int64(100)     # A[0]
+        sbug.memory[BennettVM.active_locals(sbug)[:arrB]] = Int64(200)     # B[0] (== A[0] cell!)
+        @test sbug.memory[BennettVM.active_locals(sbug)[:arrA]] == 200     # A[0] was CLOBBERED
 
         # --- GREEN: the LIVE forward advances heap_top → disjoint bases. ---
         sok = IS(1, Dict(:n1 => n1, :n2 => n2), :running, Dict{Int64,Int64}())
         _BV.forward(A, sok)
         _BV.forward(B, sok)
-        @test sok.locals[:arrA] != sok.locals[:arrB]     # DISTINCT bases
-        sok.memory[sok.locals[:arrA]] = Int64(100)       # A[0]
-        sok.memory[sok.locals[:arrB]] = Int64(200)       # B[0] (different cell)
-        @test sok.memory[sok.locals[:arrA]] == 100       # A[0] survives — no clobber
-        @test sok.memory[sok.locals[:arrB]] == 200
+        @test BennettVM.active_locals(sok)[:arrA] != BennettVM.active_locals(sok)[:arrB]     # DISTINCT bases
+        sok.memory[BennettVM.active_locals(sok)[:arrA]] = Int64(100)       # A[0]
+        sok.memory[BennettVM.active_locals(sok)[:arrB]] = Int64(200)       # B[0] (different cell)
+        @test sok.memory[BennettVM.active_locals(sok)[:arrA]] == 100       # A[0] survives — no clobber
+        @test sok.memory[BennettVM.active_locals(sok)[:arrB]] == 200
     end
 
     # ------------------------------------------------------------------
@@ -301,10 +301,10 @@ end
         p = _BV.predelta_payload(instr, s)
         @test p.base == 7                  # == instr.base (offset 0)
         _BV.forward(instr, s)
-        @test s.locals[:arr] == 7          # base == instr.base exactly
+        @test BennettVM.active_locals(s)[:arr] == 7          # base == instr.base exactly
         @test s.heap_top == 4              # advanced (but no second alloca reads it)
         _BV.inverse(instr, s, p)
-        @test !haskey(s.locals, :arr)
+        @test !haskey(BennettVM.active_locals(s), :arr)
         @test s.heap_top == 0              # retracted
     end
 end

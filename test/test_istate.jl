@@ -39,7 +39,7 @@ using BennettVM
     # object. If they happened to be (`===`-equal), the test below
     # would be vacuous — so we assert distinctness first to make the
     # ==/hash invariants load-bearing.
-    @test s1.locals !== s2.locals
+    @test BennettVM.active_locals(s1) !== BennettVM.active_locals(s2)
     @test s1 == s2                  # structural ==.
     @test hash(s1) == hash(s2)      # hash contract: a == b ⟹ hash(a) == hash(b).
 

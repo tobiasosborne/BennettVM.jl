@@ -382,10 +382,10 @@ end
             @test rs.current.revmap == oracle.map         # {i => i*10 : i<n}
             @test result(rs)[:i_f] == oracle.idx          # terminal i == n
             if n == 0
-                @test !haskey(rs.current.locals, :cur)    # body never ran → no :cur
+                @test !haskey(BennettVM.active_locals(rs.current), :cur)    # body never ran → no :cur
             else
-                @test rs.current.locals[:cur] == oracle.cur  # last get = d[n-1]
-                @test rs.current.locals[:cur] == (n - 1) * 10
+                @test BennettVM.active_locals(rs.current)[:cur] == oracle.cur  # last get = d[n-1]
+                @test BennettVM.active_locals(rs.current)[:cur] == (n - 1) * 10
             end
 
             # The history is genuinely MIXED L2 (insert deltas) + L3

@@ -229,7 +229,7 @@ end
     @test isempty(rs.history)
     # The forward step has moved current away from pre_arith.
     @test rs.current != pre_arith
-    @test rs.current.locals[:y] == Int64(7) + 1   # n + (1 & 1) = 8
+    @test BennettVM.active_locals(rs.current)[:y] == Int64(7) + 1   # n + (1 & 1) = 8
 
     # Manually push the DeltaEntry that M7.6 will eventually push. The
     # `make_delta` factory lives in `src/ir/arithmetic_assignment.jl`
@@ -253,9 +253,9 @@ end
     @test rs.step_count == 1                # decremented by 1.
     @test rs.current == pre_arith           # inverse reconstructed pre-step.
     # The locals dict has the source variable restored.
-    @test haskey(rs.current.locals, :n)
-    @test !haskey(rs.current.locals, :y)
-    @test rs.current.locals[:n] == Int64(7)
+    @test haskey(BennettVM.active_locals(rs.current), :n)
+    @test !haskey(BennettVM.active_locals(rs.current), :y)
+    @test BennettVM.active_locals(rs.current)[:n] == Int64(7)
 end
 
 # Mutation cited: dropping the NamedTuple-vs-prev::Any dispatch would
@@ -275,7 +275,7 @@ end
 
     _step_no_push!(rs, vm, 1)   # Arith :sub
     @test rs.step_count == 2
-    @test rs.current.locals[:y] == Int64(7) - 1   # n - (1 & 1) = 6
+    @test BennettVM.active_locals(rs.current)[:y] == Int64(7) - 1   # n - (1 & 1) = 6
     @test rs.current != pre_arith
 
     arith_instr = vm.blocks[1].instructions[1]
@@ -439,7 +439,7 @@ end
     @test BennettVM._entry_step(rs.history[end]) == 1
     # current matches the step-1 state — reconstructed by replay
     # forward from s.initial.
-    @test rs.current.locals == Dict(:n => Int64(7))   # post-Begin locals unchanged.
+    @test BennettVM.active_locals(rs.current) == Dict(:n => Int64(7))   # post-Begin locals unchanged.
 end
 
 # Mutation cited: the symmetric round-trip is the per-step-inverse
@@ -635,7 +635,7 @@ end
     # restored CheckpointEntry@2 (step-2 state) and replayed 1 step
     # forward (Arith :sub) to reach step-3 state. So rs.current is
     # the post-step-3 state.
-    @test haskey(rs.current.locals, :y)   # post-Arith-sub created :y.
+    @test haskey(BennettVM.active_locals(rs.current), :y)   # post-Arith-sub created :y.
 
     # Capture pre-step-3 state for the next assertion — we need the
     # state at step 2 to compare against the next unstep!'s result.

@@ -442,7 +442,7 @@ end
     entry_aa = BennettVM.make_delta(aa, s_aa, 1)
     @test entry_aa isa BennettVM.DeltaEntry
     BennettVM.inverse(aa, s_aa, entry_aa.payload)   # NamedTuple dispatch
-    @test haskey(s_aa.locals, :x) && !haskey(s_aa.locals, :y)  # inverted
+    @test haskey(BennettVM.active_locals(s_aa), :x) && !haskey(BennettVM.active_locals(s_aa), :y)  # inverted
 
     #   (b) MemoryStore — predelta_payload path (pre-state capture).
     ms = BennettVM.MemoryStore(:p, Int64(7))

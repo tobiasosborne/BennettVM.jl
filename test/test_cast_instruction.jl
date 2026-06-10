@@ -74,13 +74,13 @@
     # sign-propagate) → stays the nonnegative 200.
     s200 = BennettVM.IState(0, Dict(:a => Int64(200)), :running)
     s2 = BennettVM.forward(instr, s200)
-    @test s2.locals[:t] == Int64(200)
+    @test BennettVM.active_locals(s2)[:t] == Int64(200)
     @test s2.pc == 1
     @test s2.status === :running
 
     # -1 as an i8 has all 8 low bits set → zext to 255 (unsigned).
     sneg = BennettVM.IState(0, Dict(:a => Int64(-1)), :running)
-    @test BennettVM.forward(instr, sneg).locals[:t] == Int64(255)
+    @test BennettVM.active_locals(BennettVM.forward(instr, sneg))[:t] == Int64(255)
 end
 
 @testset "CastInstruction forward — :sext (M_OPCODE)" begin
@@ -88,17 +88,17 @@ end
     # i8 200 == -56 signed (high bit set) → sext to Int64 -56.
     sext_8_64 = BennettVM.CastInstruction(:t, :sext, :a, 8, 64)
     s = BennettVM.IState(0, Dict(:a => Int64(200)), :running)
-    @test BennettVM.forward(sext_8_64, s).locals[:t] == Int64(-56)
+    @test BennettVM.active_locals(BennettVM.forward(sext_8_64, s))[:t] == Int64(-56)
 
     # i8 127 has no sign bit → unchanged.
     sext_8_16 = BennettVM.CastInstruction(:t, :sext, :a, 8, 16)
     s127 = BennettVM.IState(0, Dict(:a => Int64(127)), :running)
-    @test BennettVM.forward(sext_8_16, s127).locals[:t] == Int64(127)
+    @test BennettVM.active_locals(BennettVM.forward(sext_8_16, s127))[:t] == Int64(127)
 
     # i9 511 == 0x1FF == all 9 bits set == -1 signed → sext to -1.
     sext_9_16 = BennettVM.CastInstruction(:t, :sext, :a, 9, 16)
     s511 = BennettVM.IState(0, Dict(:a => Int64(511)), :running)
-    @test BennettVM.forward(sext_9_16, s511).locals[:t] == Int64(-1)
+    @test BennettVM.active_locals(BennettVM.forward(sext_9_16, s511))[:t] == Int64(-1)
 end
 
 @testset "CastInstruction forward — :trunc (M_OPCODE)" begin
@@ -107,13 +107,13 @@ end
     # 511 == 0x1FF → low 8 bits == 0xFF == 255 (the 0x100 bit is dropped).
     s511 = BennettVM.IState(0, Dict(:a => Int64(511)), :running)
     s2 = BennettVM.forward(trunc_16_8, s511)
-    @test s2.locals[:t] == Int64(255)
+    @test BennettVM.active_locals(s2)[:t] == Int64(255)
     @test s2.pc == 1
 
     # 256 == 0x100 → low 8 bits == 0 (the only set bit is dropped).
     trunc_9_8 = BennettVM.CastInstruction(:t, :trunc, :a, 9, 8)
     s256 = BennettVM.IState(0, Dict(:a => Int64(256)), :running)
-    @test BennettVM.forward(trunc_9_8, s256).locals[:t] == Int64(0)
+    @test BennettVM.active_locals(BennettVM.forward(trunc_9_8, s256))[:t] == Int64(0)
 end
 
 @testset "CastInstruction operand survives forward (M_OPCODE)" begin
@@ -123,9 +123,9 @@ end
     instr = BennettVM.CastInstruction(:t, :zext, :a, 8, 9)
     s = BennettVM.IState(0, Dict(:a => Int64(42)), :running)
     s2 = BennettVM.forward(instr, s)
-    @test s2.locals[:t] == Int64(42)       # zext(42, i8→i9)
-    @test haskey(s2.locals, :a)            # operand NOT deleted
-    @test s2.locals[:a] == Int64(42)       # ...and unchanged
+    @test BennettVM.active_locals(s2)[:t] == Int64(42)       # zext(42, i8→i9)
+    @test haskey(BennettVM.active_locals(s2), :a)            # operand NOT deleted
+    @test BennettVM.active_locals(s2)[:a] == Int64(42)       # ...and unchanged
 end
 
 @testset "CastInstruction overwrite at forward level (M_OPCODE)" begin
@@ -136,11 +136,11 @@ end
     instr = BennettVM.CastInstruction(:t, :trunc, :a, 16, 8)
     s = BennettVM.IState(0, Dict(:a => Int64(511)), :running)
     BennettVM.forward(instr, s)
-    @test s.locals[:t] == Int64(255)
+    @test BennettVM.active_locals(s)[:t] == Int64(255)
     # Re-enter the "loop body": change the operand and cast again.
-    s.locals[:a] = Int64(256)
+    BennettVM.active_locals(s)[:a] = Int64(256)
     BennettVM.forward(instr, s)
-    @test s.locals[:t] == Int64(0)         # overwritten, no error
+    @test BennettVM.active_locals(s)[:t] == Int64(0)         # overwritten, no error
     @test s.pc == 2                        # two forward steps
 end
 
@@ -149,7 +149,7 @@ end
     # == -56 signed → sext to Int64 -56.
     instr = BennettVM.CastInstruction(:t, :sext, Int64(200), 8, 64)
     s = BennettVM.IState(0, Dict{Symbol,Int64}(), :running)
-    @test BennettVM.forward(instr, s).locals[:t] == Int64(-56)
+    @test BennettVM.active_locals(BennettVM.forward(instr, s))[:t] == Int64(-56)
 end
 
 @testset "CastInstruction constructor validation (M_OPCODE)" begin

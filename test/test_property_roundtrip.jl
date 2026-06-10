@@ -307,7 +307,7 @@ end
 # raw `instr.modop` where the canonical inverse uses `dual_modop`. On a
 # `:add`/`:sub` body step this produces the WRONG recovered value, so
 # the L2 backward walk's `_assert_istate_eq` fires a step-indexed
-# `locals`-field MISMATCH (RED). This is the exact mutation M8.3 uses
+# `frames`-field MISMATCH (RED). This is the exact mutation M8.3 uses
 # for ArithmeticAssignment (`test/test_mutation_proof.jl:316`), proven
 # there to be caught on countdown(3); here we re-prove it is caught by
 # the SEEDED 100-program sweep (a broader, control-flow-rich oracle).
@@ -316,12 +316,12 @@ const _AA_MUTATION = quote
         lv = BennettVM._resolve(instr.lhs, s)
         rv = BennettVM._resolve(instr.rhs, s)
         e  = BennettVM._apply_binop(instr.op, lv, rv)
-        xval = s.locals[instr.target]
+        xval = BennettVM.active_locals(s)[instr.target]
         # BUG: canonical inverse uses dual_modop(instr.modop); this uses
         # the raw modop, so :add/:sub recover the wrong source value.
         yval = BennettVM._apply_modop(instr.modop, xval, e)
-        delete!(s.locals, instr.target)
-        s.locals[instr.source] = yval
+        delete!(BennettVM.active_locals(s), instr.target)
+        BennettVM.active_locals(s)[instr.source] = yval
         s.pc -= 1; return s
     end
 end
@@ -386,6 +386,15 @@ end
     end
     @test red == true                                  # (a) RED fired
     @test occursin("MISMATCH", msg)                    # (b) the verb
-    @test occursin("locals", msg)                      # (c) field named
+    @test occursin("frames", msg)                      # (c) field named — CW-B2
+                                                       # (ADR 0019 §1): the register file
+                                                       # moved from the removed `locals`
+                                                       # field into `frames`
+                                                       # (frames[end].locals), so
+                                                       # `_assert_istate_eq` now names the
+                                                       # diverged field `frames` (it carries
+                                                       # the corrupted register dict). Intent
+                                                       # unchanged: the diagnostic names the
+                                                       # diverged field.
     @test occursin("M8.5/MUTATION", msg)               # (d) label propagated
 end

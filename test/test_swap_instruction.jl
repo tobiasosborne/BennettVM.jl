@@ -52,19 +52,19 @@
     s_before = deepcopy(s)
 
     s2 = BennettVM.forward(instr, s)
-    @test s2.locals[:x] == 11
-    @test s2.locals[:y] == 22
-    @test !haskey(s2.locals, :z)
-    @test !haskey(s2.locals, :w)
+    @test BennettVM.active_locals(s2)[:x] == 11
+    @test BennettVM.active_locals(s2)[:y] == 22
+    @test !haskey(BennettVM.active_locals(s2), :z)
+    @test !haskey(BennettVM.active_locals(s2), :w)
     @test s2.pc == 1
 
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test s3 == s_before
     @test s3.pc == 0
-    @test s3.locals[:z] == 11
-    @test s3.locals[:w] == 22
-    @test !haskey(s3.locals, :x)
-    @test !haskey(s3.locals, :y)
+    @test BennettVM.active_locals(s3)[:z] == 11
+    @test BennettVM.active_locals(s3)[:w] == 22
+    @test !haskey(BennettVM.active_locals(s3), :x)
+    @test !haskey(BennettVM.active_locals(s3), :y)
 end
 
 @testset "SwapInstruction constructor validation (M2.7)" begin
@@ -96,10 +96,10 @@ end
             :running)
         s_before = deepcopy(s)
         s2 = BennettVM.forward(instr, s)
-        @test s2.locals[:p] == a
-        @test s2.locals[:q] == b
-        @test !haskey(s2.locals, :u)
-        @test !haskey(s2.locals, :v)
+        @test BennettVM.active_locals(s2)[:p] == a
+        @test BennettVM.active_locals(s2)[:q] == b
+        @test !haskey(BennettVM.active_locals(s2), :u)
+        @test !haskey(BennettVM.active_locals(s2), :v)
         s3 = BennettVM.inverse(instr, s2, nothing)
         @test s3 == s_before
     end

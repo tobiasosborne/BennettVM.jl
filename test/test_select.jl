@@ -62,17 +62,17 @@
     s_true = BennettVM.IState(0,
         Dict(:c => Int64(1), :a => Int64(10), :b => Int64(20)), :running)
     s2t = BennettVM.forward(instr, s_true)
-    @test s2t.locals[:t] == Int64(10)       # cond=1 → val_true
+    @test BennettVM.active_locals(s2t)[:t] == Int64(10)       # cond=1 → val_true
     @test s2t.pc == 1
     @test s2t.status === :running
 
     s_false = BennettVM.IState(0,
         Dict(:c => Int64(0), :a => Int64(10), :b => Int64(20)), :running)
-    @test BennettVM.forward(instr, s_false).locals[:t] == Int64(20)  # cond=0 → val_false
+    @test BennettVM.active_locals(BennettVM.forward(instr, s_false))[:t] == Int64(20)  # cond=0 → val_false
 
     s_nz = BennettVM.IState(0,
         Dict(:c => Int64(7), :a => Int64(10), :b => Int64(20)), :running)
-    @test BennettVM.forward(instr, s_nz).locals[:t] == Int64(10)     # cond=7 (nonzero=true) → val_true
+    @test BennettVM.active_locals(BennettVM.forward(instr, s_nz))[:t] == Int64(10)     # cond=7 (nonzero=true) → val_true
 end
 
 @testset "SelectInstruction forward — literal operand (M_UNBOUNDED)" begin
@@ -80,7 +80,7 @@ end
     # literal is selected verbatim through `_resolve`.
     instr = BennettVM.SelectInstruction(:t, :c, Int64(-1), :b)
     s = BennettVM.IState(0, Dict(:c => Int64(1), :b => Int64(99)), :running)
-    @test BennettVM.forward(instr, s).locals[:t] == Int64(-1)
+    @test BennettVM.active_locals(BennettVM.forward(instr, s))[:t] == Int64(-1)
 end
 
 @testset "SelectInstruction operands + cond survive forward (M_UNBOUNDED)" begin
@@ -92,13 +92,13 @@ end
     s = BennettVM.IState(0,
         Dict(:c => Int64(1), :a => Int64(10), :b => Int64(20)), :running)
     s2 = BennettVM.forward(instr, s)
-    @test s2.locals[:t] == Int64(10)        # 1 → val_true
-    @test haskey(s2.locals, :c)             # predicate NOT deleted
-    @test haskey(s2.locals, :a)             # val_true operand NOT deleted
-    @test haskey(s2.locals, :b)             # val_false operand NOT deleted
-    @test s2.locals[:c] == Int64(1)         # ...and unchanged
-    @test s2.locals[:a] == Int64(10)
-    @test s2.locals[:b] == Int64(20)
+    @test BennettVM.active_locals(s2)[:t] == Int64(10)        # 1 → val_true
+    @test haskey(BennettVM.active_locals(s2), :c)             # predicate NOT deleted
+    @test haskey(BennettVM.active_locals(s2), :a)             # val_true operand NOT deleted
+    @test haskey(BennettVM.active_locals(s2), :b)             # val_false operand NOT deleted
+    @test BennettVM.active_locals(s2)[:c] == Int64(1)         # ...and unchanged
+    @test BennettVM.active_locals(s2)[:a] == Int64(10)
+    @test BennettVM.active_locals(s2)[:b] == Int64(20)
 end
 
 @testset "SelectInstruction overwrite at forward level (M_UNBOUNDED)" begin
@@ -110,11 +110,11 @@ end
     s = BennettVM.IState(0,
         Dict(:c => Int64(1), :a => Int64(10), :b => Int64(20)), :running)
     BennettVM.forward(instr, s)
-    @test s.locals[:t] == Int64(10)         # cond=1 → val_true
+    @test BennettVM.active_locals(s)[:t] == Int64(10)         # cond=1 → val_true
     # Re-enter the "loop body": flip the predicate and select again.
-    s.locals[:c] = Int64(0)
+    BennettVM.active_locals(s)[:c] = Int64(0)
     BennettVM.forward(instr, s)
-    @test s.locals[:t] == Int64(20)         # overwritten with val_false, no error
+    @test BennettVM.active_locals(s)[:t] == Int64(20)         # overwritten with val_false, no error
     @test s.pc == 2                         # two forward steps
 end
 

@@ -16,7 +16,7 @@
 #     (M2.3 must not pre-empt M4/M6/M7).
 #   - `RState` wraps an `IState` by reference, not by copy — the
 #     `r.current === s` identity assertion below pins this. M3.x's
-#     `step!` will mutate `s.current.locals` through the alias.
+#     `step!` will mutate `BennettVM.active_locals(s.current)` through the alias.
 #   - `RState` is mutable: the `history` field can be reassigned
 #     (and, downstream, `push!`/`pop!`'d) in place. We can't yet
 #     `push!` a real entry — no concrete `AbstractHistoryEntry`
@@ -54,7 +54,7 @@ using BennettVM
     r = BennettVM.RState(s, BennettVM.AbstractHistoryEntry[])
 
     # `RState` aliases the underlying `IState` by reference, NOT by
-    # copy. M3.x's `step!` will mutate `s.current.locals` in place
+    # copy. M3.x's `step!` will mutate `BennettVM.active_locals(s.current)` in place
     # through this alias; an accidental defensive-copy in the
     # constructor would silently break that loop.
     @test r.current === s

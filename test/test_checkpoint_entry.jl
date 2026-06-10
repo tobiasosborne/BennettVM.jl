@@ -77,8 +77,8 @@ using BennettVM
                             Dict{Int64,Int64}(7 => Int64(70)))
     entry2 = BennettVM.CheckpointEntry(src2, 0)
     # Mutate the source locals dict.
-    src2.locals[:x] = Int64(99)
-    src2.locals[:newkey] = Int64(123)
+    BennettVM.active_locals(src2)[:x] = Int64(99)
+    BennettVM.active_locals(src2)[:newkey] = Int64(123)
     src2.pc = 999
     src2.status = :halted
     # Mutate the source memory dict — symmetric to the locals mutations
@@ -89,8 +89,8 @@ using BennettVM
     src2.memory[7] = Int64(999)         # overwrite existing key.
     src2.memory[42] = Int64(420)        # add new key.
     # The captured snapshot is undisturbed.
-    @test entry2.snapshot.locals[:x] == Int64(1)
-    @test !haskey(entry2.snapshot.locals, :newkey)
+    @test BennettVM.active_locals(entry2.snapshot)[:x] == Int64(1)
+    @test !haskey(BennettVM.active_locals(entry2.snapshot), :newkey)
     @test entry2.snapshot.pc == 0
     @test entry2.snapshot.status === :running
     @test entry2.snapshot.memory[7] == Int64(70)
@@ -100,7 +100,7 @@ using BennettVM
     # the mutations above would have been visible. (This pins the
     # *mechanism* — deepcopy did its job — independently of the
     # content checks above pinning the *outcome*.)
-    @test entry2.snapshot.locals !== src2.locals
+    @test BennettVM.active_locals(entry2.snapshot) !== BennettVM.active_locals(src2)
     @test entry2.snapshot.memory !== src2.memory
 
     # ---- Test 3: structural equality across distinct constructions ----
@@ -114,7 +114,7 @@ using BennettVM
         BennettVM.IState(1, Dict(:a => Int64(5)), :running), 10)
     b = BennettVM.CheckpointEntry(
         BennettVM.IState(1, Dict(:a => Int64(5)), :running), 10)
-    @test a.snapshot.locals !== b.snapshot.locals   # distinct Dict objects.
+    @test BennettVM.active_locals(a.snapshot) !== BennettVM.active_locals(b.snapshot)   # distinct Dict objects.
     @test a == b
     @test hash(a) == hash(b)
 

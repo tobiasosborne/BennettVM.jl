@@ -99,7 +99,7 @@ end
         rs = initial_state(vm, Dict{Symbol,Int64}())
         run!(rs, vm; checkpoint_interval = typemax(Int), must_cache_set = mcs)
         @test is_halted(rs)
-        @test rs.current.locals[:p] == _AB         # first malloc → ARENA_BASE
+        @test BennettVM.active_locals(rs.current)[:p] == _AB         # first malloc → ARENA_BASE
         @test rs.current.arena_top == 4            # 32 bytes ÷ 8 = 4 cells
         @test result(rs)[:r] == 77
 
@@ -133,8 +133,8 @@ end
         rs = initial_state(vm, Dict{Symbol,Int64}())
         run!(rs, vm; checkpoint_interval = typemax(Int), must_cache_set = mcs)
         @test is_halted(rs)
-        @test rs.current.locals[:p] == _AB
-        @test rs.current.locals[:q] == _AB + 2     # after the 2-cell malloc
+        @test BennettVM.active_locals(rs.current)[:p] == _AB
+        @test BennettVM.active_locals(rs.current)[:q] == _AB + 2     # after the 2-cell malloc
         @test rs.current.memory[_AB + 2] == 11     # copied *p
         @test rs.current.memory[_AB + 3] == 22     # copied *(p+1)
         @test result(rs)[:r] == 22
@@ -161,7 +161,7 @@ end
         rs = initial_state(vm, Dict{Symbol,Int64}())
         run!(rs, vm; checkpoint_interval = typemax(Int), must_cache_set = mcs)
         @test is_halted(rs)
-        @test rs.current.locals[:p] == _AB         # address determinism (ADR 0018 §A)
+        @test BennettVM.active_locals(rs.current)[:p] == _AB         # address determinism (ADR 0018 §A)
         @test result(rs)[:r] == 0                  # calloc zero-init via absent=0
         @test rs.current.arena_top == 3
         @test isempty(rs.current.memory)           # nothing materialised

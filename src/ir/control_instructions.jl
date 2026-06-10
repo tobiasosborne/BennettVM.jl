@@ -41,7 +41,7 @@ to swap the surrounding call frame (Begin/End).
 # Scoping: parameter / return-value transfer is NOT here
 
 In a naive "subroutine" semantics one might expect `BeginInstruction`
-to *bind* its `params` into `s.locals` on entry, and `EndInstruction`
+to *bind* its `params` into `active_locals(s)` on entry, and `EndInstruction`
 to *unbind* `returns` on exit. **BennettVM Phase-2 does not do
 that.** Per the RC3 hierarchy and PRD v4 §3.1, the actual
 parameter-to-local and return-value-to-caller transfer is the
@@ -158,7 +158,7 @@ graph-level rewrite is the right home for the Begin↔End flip.
 Subroutine-entry marker (RC3 `begin l(x,...)`; ADR 0001 §Observations
 row 7). Carries the subroutine `label` and the formal-parameter list
 `params` as metadata only — `forward` and `inverse` do not bind
-params into `s.locals`; that transfer is `CallInstruction`'s job
+params into `active_locals(s)`; that transfer is `CallInstruction`'s job
 (M2.14). See this file's top-of-module docstring for the full
 scoping rationale.
 
@@ -180,7 +180,7 @@ end
 Subroutine-exit marker (RC3 `end l(y,...)`; ADR 0001 §Observations
 row 8). Carries the subroutine `label` and the return-value list
 `returns` as metadata only — `forward` and `inverse` do not unbind
-returns from `s.locals`; that transfer is `CallInstruction`'s job
+returns from `active_locals(s)`; that transfer is `CallInstruction`'s job
 (M2.14). See this file's top-of-module docstring for the full
 scoping rationale.
 
@@ -601,14 +601,14 @@ RC3's source form; do not flip it on a hunch.
 The predicate-symbol-as-a-`Symbol` (rather than embedded in the
 target / predecessor pair) is also deliberate: the predicate is a
 *reference* into `locals`, not a structural feature of the branch.
-At dispatch (M3.x), the interpreter consults `s.locals[condition]`
+At dispatch (M3.x), the interpreter consults `active_locals(s)[condition]`
 and chooses between `target_true` / `target_false` (forward) or
 `predecessor_true` / `predecessor_false` (backward). The pair is
 positional; the symbol is by-name.
 
 # Forward / inverse semantics — pc-only at this layer
 
-The conditional branch's *dispatch* — consulting `s.locals[condition]`
+The conditional branch's *dispatch* — consulting `active_locals(s)[condition]`
 to pick the target (forward) or predecessor (backward) and relocating
 `pc` to the destination block's first instruction — is the **M3.x
 interpreter's** responsibility, using the M2.16 `LabelTable`. At the
@@ -632,7 +632,7 @@ This is intentionally the same pc-only pattern as the M2.8 / M2.9
 markers: the cross-block rewrite (Exit ↔ Entry pairing, label
 resolution, predicate-driven target selection) belongs at the IR-
 graph / interpreter layer, not at the per-instruction dispatch
-layer. A future agent tempted to bake `s.locals[condition]` lookup
+layer. A future agent tempted to bake `active_locals(s)[condition]` lookup
 into `forward` here should stop: the per-instruction layer is local;
 the graph-level dispatch is the right home for the conditional
 dance.
@@ -842,7 +842,7 @@ end
 
 Bump `pc` by 1 and return `s`. `locals` and `status` untouched —
 the conditional join's predicate-driven predecessor recovery
-(consulting `s.locals[instr.condition]` to verify which of
+(consulting `active_locals(s)[instr.condition]` to verify which of
 `predecessor_true` / `predecessor_false` the control arrived from)
 lives in M3.x's interpreter, NOT at this per-instruction layer
 (see this file's M2.10 block docstring).
@@ -859,7 +859,7 @@ end
 
 Bump `pc` by 1 and return `s`. `locals` and `status` untouched —
 the conditional split's predicate-driven target selection
-(consulting `s.locals[instr.condition]` to choose `target_true` vs
+(consulting `active_locals(s)[instr.condition]` to choose `target_true` vs
 `target_false`) is M3.x's job; this layer only advances the pc.
 """
 function forward(instr::ConditionalExit, s::IState)::IState

@@ -488,10 +488,10 @@ end
     # so :n2 is the natural pin for the corruption fixture.
     corrupted_step = 6
     snaps[corrupted_step] = deepcopy(snaps[corrupted_step])
-    @assert haskey(snaps[corrupted_step].locals, :n2) "fixture drift: " *
+    @assert haskey(BennettVM.active_locals(snaps[corrupted_step]), :n2) "fixture drift: " *
             "countdown(3) snapshot at step 6 should contain :n2; " *
             "scaffold-mismatch fixture needs updating"
-    snaps[corrupted_step].locals[:n2] = Int64(-999_999_999)
+    BennettVM.active_locals(snaps[corrupted_step])[:n2] = Int64(-999_999_999)
 
     err = try
         per_step_inverse_check(vm, inputs;
@@ -504,7 +504,17 @@ end
     end
     @test err isa ErrorException
     @test occursin("step $corrupted_step", err.msg)   # (b) step index
-    @test occursin("locals", err.msg)                  # (c) field name
+    @test occursin("frames", err.msg)                  # (c) field name — CW-B2
+                                                        # (ADR 0019 §1): the register
+                                                        # file moved from the removed
+                                                        # `locals` field into `frames`
+                                                        # (frames[end].locals), so the
+                                                        # diverged-field name reported by
+                                                        # `_assert_istate_eq` is now
+                                                        # `frames` (which contains the
+                                                        # corrupted register dict). Intent
+                                                        # unchanged: the error names the
+                                                        # diverged field.
     @test occursin("MISMATCH_FIXTURE", err.msg)        # label propagation
     @test occursin("MISMATCH", err.msg)                # the literal verb
 end

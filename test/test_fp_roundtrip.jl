@@ -76,7 +76,7 @@
 # reverse the arg order on the `soft_fsub` — makes the FORWARD oracle
 # assertion go RED (the bit-pattern no longer equals
 # `reinterpret(UInt64, x*x+3x+1)`); perturbing it to drop the result write
-# (`s.locals[dest]` unset) makes the round-trip / per-step check go RED.
+# (`BennettVM.active_locals(s)[dest]` unset) makes the round-trip / per-step check go RED.
 # Confirmed RED-then-GREEN; see the report. (The op-level guarantees are
 # additionally pinned in `test_softcall.jl`.)
 #
@@ -255,9 +255,9 @@ end
                      must_cache_set = mc)
                 @test is_halted(rs)
                 if n == 0
-                    @test !haskey(rs.current.locals, :poly)  # body never ran
+                    @test !haskey(BennettVM.active_locals(rs.current), :poly)  # body never ran
                 else
-                    @test reinterpret(UInt64, rs.current.locals[:poly]) ==
+                    @test reinterpret(UInt64, BennettVM.active_locals(rs.current)[:poly]) ==
                           fp_poly_ref(x)
                 end
                 @test rs.step_count > 0

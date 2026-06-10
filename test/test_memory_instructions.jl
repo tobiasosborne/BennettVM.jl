@@ -59,7 +59,7 @@ using BennettVM
     @test s2.pc == 1
     # SSA-vs-non-SSA: addresses are NOT consumed; the locals dict
     # is unchanged by a MemoryAssignment forward.
-    @test s2.locals == s_before.locals
+    @test BennettVM.active_locals(s2) == BennettVM.active_locals(s_before)
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test s3 == s_before
 end
@@ -186,9 +186,9 @@ end
     s_before = deepcopy(s)
 
     s2 = BennettVM.forward(instr, s)
-    @test s2.locals[:x] == 7                   # x got old M[100]
-    @test !haskey(s2.locals, :z)               # z destroyed
-    @test s2.locals[:y] == 100                 # y untouched (just read for address)
+    @test BennettVM.active_locals(s2)[:x] == 7                   # x got old M[100]
+    @test !haskey(BennettVM.active_locals(s2), :z)               # z destroyed
+    @test BennettVM.active_locals(s2)[:y] == 100                 # y untouched (just read for address)
     @test s2.memory[100] == 42                 # M[100] := z's old value
     @test s2.pc == 1
 
@@ -205,7 +205,7 @@ end
         :running)   # no memory entry at 999
     s_before = deepcopy(s)
     s2 = BennettVM.forward(instr, s)
-    @test s2.locals[:x] == 0                   # zero-init read
+    @test BennettVM.active_locals(s2)[:x] == 0                   # zero-init read
     @test s2.memory[999] == 77
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test !haskey(s3.memory, 999)              # zero-init delete on inverse
@@ -218,7 +218,7 @@ end
                           Dict{Int64,Int64}(50 => Int64(99)))
     s_before = deepcopy(s)
     s2 = BennettVM.forward(instr, s)
-    @test s2.locals[:x] == 99
+    @test BennettVM.active_locals(s2)[:x] == 99
     @test s2.memory[50] == 11
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test s3 == s_before

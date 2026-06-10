@@ -576,8 +576,8 @@ end
 @testset "M6.4 — swap-chain program (run!-then-unrun! round-trip)" begin
     # Mutation target: SwapInstruction.inverse target↔source
     # transposition at `src/ir/swap_instruction.jl:184`. Specifically
-    # if line 184 reads `s.locals[instr.source2] = v1` instead of
-    # `s.locals[instr.source1] = v1`, the unrun! result would have
+    # if line 184 reads `BennettVM.active_locals(s)[instr.source2] = v1` instead of
+    # `BennettVM.active_locals(s)[instr.source1] = v1`, the unrun! result would have
     # swapped names (initial :a's value would land at :b's slot etc.),
     # breaking the rs.current == initial_current assertion.
     for K in _K_VALUES
@@ -594,10 +594,10 @@ end
         @test isempty(rs.history)
         @test rs.current == initial_current
         @test rs.current == rs.initial
-        @test rs.current.locals[:a] == Int64(11)     # original input pinned
-        @test rs.current.locals[:b] == Int64(22)
-        @test rs.current.locals[:c] == Int64(33)
-        @test rs.current.locals[:d] == Int64(44)
+        @test BennettVM.active_locals(rs.current)[:a] == Int64(11)     # original input pinned
+        @test BennettVM.active_locals(rs.current)[:b] == Int64(22)
+        @test BennettVM.active_locals(rs.current)[:c] == Int64(33)
+        @test BennettVM.active_locals(rs.current)[:d] == Int64(44)
         @test rs.current.status === :running
     end
 end
@@ -651,7 +651,7 @@ end
         @test isempty(rs.history)
         @test rs.current == initial_current
         @test rs.current == rs.initial
-        @test rs.current.locals[:n0] == Int64(0b1100)
+        @test BennettVM.active_locals(rs.current)[:n0] == Int64(0b1100)
         @test rs.current.status === :running
     end
 end
@@ -738,7 +738,7 @@ end
         # (was absent pre-forward, gained value 0 post-forward).
         @test !haskey(rs.current.memory, Int64(100))
         @test rs.current.memory[Int64(200)] == Int64(999)
-        @test rs.current.locals[:z0] == Int64(0)
+        @test BennettVM.active_locals(rs.current)[:z0] == Int64(0)
         @test rs.current.status === :running
     end
 end
@@ -804,9 +804,9 @@ end
         end
     end
 
-    @test rs.current.locals[:a] == Int64(7)
-    @test rs.current.locals[:b] == Int64(20)
-    @test rs.current.locals[:z] == Int64(77)
+    @test BennettVM.active_locals(rs.current)[:a] == Int64(7)
+    @test BennettVM.active_locals(rs.current)[:b] == Int64(20)
+    @test BennettVM.active_locals(rs.current)[:z] == Int64(77)
     @test rs.current.memory[Int64(50)] == Int64(5)
     @test rs.current.status === :running
 end

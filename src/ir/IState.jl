@@ -16,6 +16,16 @@ fixed-point of one `step!` iteration. Phase-2 milestone M2.1 lands the
 struct only; `step!`/`unstep!` arrive later (M3.x), and `Base.==` /
 `Base.hash` overrides are added in M2.2 (`bennettvm-6b4`).
 
+CW-B2 chunk 1 (ADR 0019 §1) refactored the register file from a single
+flat `locals::Dict{Symbol,Int64}` field into a `frames::Vector{Frame}`
+call stack (see `src/ir/call_frames.jl`). The ACTIVE register file is
+`frames[end].locals`, read through the `active_locals(s)` accessor; the
+old flat `locals` dict is wrapped at construction into the bottom
+(`:__entry`) frame, so every existing constructor keeps its arity and
+argument order and single-function programs are byte-identical (the
+stack has exactly one frame). `CallEnter` / `ReturnExit` (the call/return
+transitions that push and pop frames) arrive in later CW-B2 chunks.
+
 # Field-by-field rationale
 
 - `pc::Int`. Index into the *current basic block's* instruction vector,
@@ -27,20 +37,31 @@ struct only; `step!`/`unstep!` arrive later (M3.x), and `Base.==` /
   width matches `eachindex` semantics and no realistic block exceeds
   `typemax(Int32)` anyway.
 
-- `locals::Dict{Symbol,Int64}`. The register file, keyed by the SSA
-  variable name. The `Symbol` key type matches Bennett.jl's `IRInst`
-  SSA-naming convention: every concrete `IRInst` subtype carries a
-  `dest::Symbol` field naming the SSA value it produces (see
-  `/home/tobias/Projects/Bennett.jl/src/ir_types.jl:56` for the
+- `frames::Vector{Frame}`. The call stack (ADR 0019 §1; CW-B2 chunk 1).
+  NEVER empty — `frames[1]` is the entry activation, and the ACTIVE
+  register file is `frames[end].locals`, reached via `active_locals(s)`
+  (defined just below the struct). This field REPLACES the former flat
+  `locals::Dict{Symbol,Int64}` field; the old register-file rationale
+  carries over unchanged to each frame's `locals` dict. That dict is
+  keyed by the SSA variable name: the `Symbol` key type matches
+  Bennett.jl's `IRInst` SSA-naming convention — every concrete `IRInst`
+  subtype carries a `dest::Symbol` field naming the SSA value it produces
+  (see `/home/tobias/Projects/Bennett.jl/src/ir_types.jl:56` for the
   abstract `IRInst`, and lines 58-72 / 74-87 for `IRBinOp` / `IRICmp`
-  using `dest::Symbol`). Using the same key type means register
-  lookups during lowering and during interpretation share a single
-  identity space — no symbol-table indirection. The value type is
-  `Int64` because at the spike level all registers were 64-bit
-  (see `docs/adr/0001-rc3-rvm-smoke.md` §Observations, where the
-  bit-width parametrization is flagged as future work). M2.x keeps
-  the spike's choice; arbitrary-width / `Bool` typing arrives with
-  a later milestone.
+  using `dest::Symbol`). Using the same key type means register lookups
+  during lowering and during interpretation share a single identity space
+  — no symbol-table indirection. The value type is `Int64` because at the
+  spike level all registers were 64-bit (see
+  `docs/adr/0001-rc3-rvm-smoke.md` §Observations, where the bit-width
+  parametrization is flagged as future work). M2.x keeps the spike's
+  choice; arbitrary-width / `Bool` typing arrives with a later milestone.
+  Frame isolation (each activation's SSA names live in its OWN dict) is
+  what makes recursion collision-free without name mangling (ADR 0019 §5);
+  for a single-function program the stack has exactly one frame, so
+  `active_locals(s)` IS the bottom frame's dict and behaviour is
+  byte-identical to the pre-CW-B2 flat `locals`. The wrapping happens in
+  every constructor below — the `locals::Dict` argument is the bottom
+  frame's `locals`, so every existing call site is untouched.
 
 - `status::Symbol`. One of three legal values:
   * `:running` — the interpreter loop continues; `step!` will execute
@@ -187,8 +208,8 @@ the caller's variable, defeating the in-place mutation convention the
 """
 mutable struct IState
     pc::Int
-    locals::Dict{Symbol,Int64}
-    status::Symbol
+    frames::Vector{Frame}       # call stack (ADR 0019 §1); never empty.
+    status::Symbol              #   active register file = frames[end].locals.
     memory::Dict{Int64,Int64}
     revmap::Dict{Int64,Int64}   # RevMap, the reversible-map ADT (ADR 0008).
     heap_top::Int64             # runtime bump-pointer offset (ADR 0009; uil).
@@ -199,9 +220,13 @@ mutable struct IState
     # defaults for any instruction that touches neither heap nor map.
     # `heap_top = 0` (no dynamic allocation yet) keeps a single DynAlloca
     # byte-identical (base = instr.base + 0 == instr.base; bead `bennettvm-uil`).
+    # CW-B2 (ADR 0019 §1): the `locals` argument is WRAPPED into the bottom
+    # (`:__entry`) frame — the field is now `frames`, but the constructor
+    # arity/argument-order is unchanged so every existing call site compiles
+    # and behaves identically (single frame ⇒ byte-identical register file).
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol) =
-        new(pc, locals, status, Dict{Int64,Int64}(), Dict{Int64,Int64}(),
-            Int64(0), Int64(0))
+        new(pc, [Frame(0, Symbol[], locals, :__entry)], status,
+            Dict{Int64,Int64}(), Dict{Int64,Int64}(), Int64(0), Int64(0))
 
     # 4-arg constructor: explicit memory, empty revmap. Used by M2.11+
     # tests and by any lowering pass that materializes a heap snapshot up
@@ -209,29 +234,34 @@ mutable struct IState
     # sites keep their meaning (memory explicit, revmap defaulted empty);
     # `heap_top` defaults to 0 (uil) — a pre-populated heap snapshot is taken
     # at the start, before any dynamic alloc has advanced the cursor.
+    # CW-B2: `locals` wrapped into the bottom frame (see 3-arg note).
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}) =
-        new(pc, locals, status, memory, Dict{Int64,Int64}(),
-            Int64(0), Int64(0))
+        new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory,
+            Dict{Int64,Int64}(), Int64(0), Int64(0))
 
     # 5-arg constructor: explicit memory AND revmap (ADR 0008 Decision 1).
     # Used by the `IRMap*` unit tests to build an IState with a populated
     # map. The trailing `revmap` is unambiguous — distinct in arity from
     # the 4-arg form — so adding it does not change which constructor any
     # existing 3-/4-arg call site resolves to. `heap_top` defaults to 0 (uil).
+    # CW-B2: `locals` wrapped into the bottom frame (see 3-arg note).
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64}) =
-        new(pc, locals, status, memory, revmap, Int64(0), Int64(0))
+        new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory, revmap,
+            Int64(0), Int64(0))
 
     # 6-arg constructor: explicit `heap_top` (bead `bennettvm-uil`). Used
     # ONLY by the multi-DynAlloca unit tests to build an IState mid-stream (a
     # non-zero cursor). The trailing `heap_top` is unambiguous — distinct in
     # arity from the 5-arg form — so adding it changes no existing call site's
     # resolution. `Integer` is coerced to `Int64` for caller convenience.
+    # CW-B2: `locals` wrapped into the bottom frame (see 3-arg note).
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64},
            heap_top::Integer) =
-        new(pc, locals, status, memory, revmap, Int64(heap_top), Int64(0))
+        new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory, revmap,
+            Int64(heap_top), Int64(0))
 
     # 7-arg constructor: explicit `arena_top` (ADR 0018 §A; bead CW-A2). Used
     # ONLY by the malloc-arena unit tests to build an IState mid-stream (a
@@ -239,17 +269,51 @@ mutable struct IState
     # distinct in arity from the 6-arg form — so adding it changes no existing
     # call site's resolution. `Integer` is coerced to `Int64` for caller
     # convenience, exactly as the 6-arg `heap_top` form does.
+    # CW-B2: `locals` wrapped into the bottom frame (see 3-arg note).
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64},
            heap_top::Integer, arena_top::Integer) =
-        new(pc, locals, status, memory, revmap, Int64(heap_top), Int64(arena_top))
+        new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory, revmap,
+            Int64(heap_top), Int64(arena_top))
 end
+
+"""
+    active_locals(s::IState) -> Dict{Symbol,Int64}
+
+The ACTIVE register file: `s.frames[end].locals` (ADR 0019 §1; CW-B2
+chunk 1). This is the accessor that REPLACES the removed `IState.locals`
+field — every old `s.locals` read/write migrates to `active_locals(s)`.
+Returns the LIVE `Dict` (not a copy), so the old in-place mutation
+semantics are preserved exactly: `active_locals(s)[dest] = val` mutates
+the top frame's dict precisely as `s.locals[dest] = val` mutated the flat
+dict before. For a single-function program `frames` has one element, so
+`active_locals(s)` IS the bottom (`:__entry`) frame's dict — byte-identical
+to the pre-CW-B2 `locals`.
+
+`s.frames` is never empty (every constructor seeds `frames[1]`), so
+`frames[end]` never throws here; an empty stack would be a frame-underflow
+bug the later `ReturnExit` fail-loud guard (ADR 0019 §6d) defends against,
+not a condition this accessor must tolerate.
+
+Defined here (not in `call_frames.jl`) because it dispatches on `IState`,
+which is defined in THIS file; `Frame` (referenced by the `frames` field)
+is defined earlier in `call_frames.jl`, included before this file.
+
+Ref: docs/adr/0019-reversible-calls.md §1.
+"""
+active_locals(s::IState) = s.frames[end].locals
 
 """
     Base.:(==)(a::IState, b::IState) -> Bool
 
 Structural equality on `IState`: two states are equal iff their `pc`,
-`status`, and (the *content of* their) `locals` agree.
+`status`, and (the *content of* their) `frames`, `memory`, `revmap`,
+`heap_top`, and `arena_top` agree. The register file lives inside
+`frames` (CW-B2, ADR 0019 §1) — `frames[end].locals` is the active dict,
+and the bottom frame's `locals` is the old flat register file — so
+comparing `frames` content-compares every activation's registers in one
+clause (the former `a.locals == b.locals` clause is subsumed; no
+double-count, because the register file is now ONLY in `frames`).
 
 # Why we override it
 
@@ -264,19 +328,21 @@ breaks the load-bearing round-trip invariant
 `unrun!(run!(s, prog)) == initial(s)`. M2.2 (`bennettvm-6b4`) closes
 that trap by pinning `==` to *content* equality on every field.
 
-# Why `a.locals == b.locals` is the right primitive
+# Why `a.frames == b.frames` is the right primitive
 
-Julia's stdlib defines a content-comparing `==` for `Dict` (see the
-`Base.:(==)(::AbstractDict, ::AbstractDict)` method shipped with
-`base/abstractdict.jl`): two dicts are `==` iff they have the same
-key set and each key maps to `==`-equal values, regardless of internal
-slot layout or `objectid`. So at the field level the override is
-literally "use `==` not `===`", and the *only* reason this method
-must be written out is that without it Julia would not know to apply
-the field-by-field rule we want for the `Dict` field specifically.
-(One could rely on the autogenerated method here, but writing it
-explicitly makes the intent — and the spike-Q2.1 rationale — visible
-to any reader who searches for `==`.)
+The register file is now `frames[end].locals` (CW-B2, ADR 0019 §1), and
+`frames` is a `Vector{Frame}`. `Frame` carries a content-comparing `==`
+(`src/ir/call_frames.jl`) whose `locals` clause delegates to Julia's
+stdlib content-comparing `==` for `Dict` (`Base.:(==)(::AbstractDict,
+::AbstractDict)` in `base/abstractdict.jl`): two dicts are `==` iff they
+have the same key set and each key maps to an `==`-equal value, regardless
+of internal slot layout or `objectid`. `Vector` then content-compares
+element-wise (and length-wise). So `a.frames == b.frames` carries the same
+spike-Q2.1 "use `==` not `===`" guarantee the old `a.locals == b.locals`
+clause did — now lifted over the whole call stack so a round-trip that
+fails to restore ANY suspended activation's registers FAILS (Rule 4). The
+method is written out (not autogenerated) to keep that intent visible to a
+reader who searches for `==`.
 
 # Why `status` uses `===`
 
@@ -293,10 +359,11 @@ rationale in this file's top-of-module docstring.
 that the invariant `a == b ⟹ hash(a) == hash(b)` holds. This is what
 makes `IState` safe to use as a `Dict` key or `Set` element, which
 the test suite exercises explicitly via `haskey(d, equivalent_state)`.
-Julia's `Dict` `hash` overload composes the content hashes of its
-entries (commutatively, so insertion order is irrelevant), so the
-`hash(s.locals, h)` line is the dict-side counterpart to the
-`a.locals == b.locals` line above — content in, content hashed.
+`Frame`'s `hash` composes its fields' content hashes (its `locals` clause
+uses `Dict`'s commutative content hash), and `Vector`'s `hash` composes
+its elements' hashes in order, so the `hash(s.frames, h)` line is the
+counterpart to the `a.frames == b.frames` line above — content in,
+content hashed.
 
 Ref: spike/RETROSPECTIVE.md Q2.1 (the Dict-identity trap that
      motivated this override).
@@ -311,7 +378,9 @@ Ref: docs/adr/0008-dict-reversibility.md Finding 3 — the `revmap`
 function Base.:(==)(a::IState, b::IState)
     a.pc == b.pc &&
     a.status === b.status &&
-    a.locals == b.locals &&  # Dict's overloaded ==, content-comparing.
+    a.frames == b.frames &&  # CW-B2 (ADR 0019 §1): Vector{Frame}, content-
+                             # comparing; subsumes the old `a.locals == b.locals`
+                             # (the register file is now frames[end].locals).
     a.memory == b.memory &&  # M2.11: same content-comparing pattern.
     a.revmap == b.revmap &&  # ADR 0008 Finding 3: RevMap content participates.
     a.heap_top == b.heap_top &&  # uil: the runtime bump offset MUST round-trip.
@@ -324,7 +393,8 @@ end
 function Base.hash(s::IState, h::UInt)
     h = hash(s.pc, h)
     h = hash(s.status, h)
-    h = hash(s.locals, h)   # Dict's hash respects content.
+    h = hash(s.frames, h)   # CW-B2 (ADR 0019 §1): Vector{Frame} content hash;
+                            # subsumes the old `hash(s.locals, h)`.
     h = hash(s.memory, h)   # M2.11: heap content participates in hash.
     h = hash(s.revmap, h)   # ADR 0008 Finding 3: RevMap content participates.
     h = hash(s.heap_top, h) # uil: hash the bump offset in lock-step with ==.

@@ -12,7 +12,7 @@ the binary operator `op` is drawn from `BINARY_OPERATORS` (integer
 opcodes only at this milestone), and `lhs` / `rhs` are RValues that may
 each independently be either an SSA name (`Symbol`) or a literal
 `Int64`. The instruction *destroys* `source` (`y`) and *creates*
-`target` (`x`): after `forward`, `y` is no longer in `s.locals` and
+`target` (`x`): after `forward`, `y` is no longer in `active_locals(s)` and
 `x` carries the computed value. Reverse execution swaps the two roles
 and flips the modop via `dual_modop`.
 
@@ -40,7 +40,7 @@ Phase-2 IR.
 # Operand kinds (Union{Symbol,Int64})
 
 `lhs` and `rhs` may be either SSA references (`Symbol`, looked up in
-`s.locals` at execution time) or literal `Int64` constants (used
+`active_locals(s)` at execution time) or literal `Int64` constants (used
 verbatim). Julia's `Union` is the idiomatic representation: dispatch
 on the runtime type via the `_resolve` helper, no separate `Atom` /
 `Constant` wrapper class needed. This collapses two RC3 operand
@@ -150,7 +150,7 @@ end
 
 # Resolve an RValue against the current locals. `Symbol` => lookup;
 # `Int64` => literal.
-_resolve(x::Symbol, s::IState) = s.locals[x]
+_resolve(x::Symbol, s::IState) = active_locals(s)[x]
 _resolve(x::Int64,  ::IState)  = x
 
 # Apply a binary operator to two `Int64` values at a given bit `width`,
@@ -285,7 +285,7 @@ end
 """
     forward(instr::ArithmeticAssignment, s::IState) -> IState
 
-Execute `x := y ⊕ (lhs op rhs)` in-place on `s`. Reads `s.locals` for
+Execute `x := y ⊕ (lhs op rhs)` in-place on `s`. Reads `active_locals(s)` for
 `source` and (if symbolic) `lhs` / `rhs`; deletes `source`; writes
 `target`; bumps `pc`.
 """
@@ -293,10 +293,10 @@ function forward(instr::ArithmeticAssignment, s::IState)::IState
     lv = _resolve(instr.lhs, s)
     rv = _resolve(instr.rhs, s)
     e  = _apply_binop(instr.op, lv, rv)
-    yval = s.locals[instr.source]
+    yval = active_locals(s)[instr.source]
     xval = _apply_modop(instr.modop, yval, e)
-    delete!(s.locals, instr.source)
-    s.locals[instr.target] = xval
+    delete!(active_locals(s), instr.source)
+    active_locals(s)[instr.target] = xval
     s.pc += 1
     return s
 end
@@ -310,17 +310,17 @@ arithmetic is structurally reversible — `(lhs op rhs)` is recomputable
 from the surviving locals and `dual_modop(modop)` recovers the
 destroyed `source` value from the surviving `target` value.
 
-Inverts the role of `source` and `target`: reads `s.locals[target]`,
+Inverts the role of `source` and `target`: reads `active_locals(s)[target]`,
 deletes `target`, writes `source`; decrements `pc`.
 """
 function inverse(instr::ArithmeticAssignment, s::IState, prev)::IState
     lv = _resolve(instr.lhs, s)
     rv = _resolve(instr.rhs, s)
     e  = _apply_binop(instr.op, lv, rv)
-    xval = s.locals[instr.target]
+    xval = active_locals(s)[instr.target]
     yval = _apply_modop(dual_modop(instr.modop), xval, e)
-    delete!(s.locals, instr.target)
-    s.locals[instr.source] = yval
+    delete!(active_locals(s), instr.target)
+    active_locals(s)[instr.source] = yval
     s.pc -= 1
     return s
 end
@@ -339,7 +339,7 @@ M2.6-locked set (`{:xor, :add, :sub}`).
 `inverse(::ArithmeticAssignment, s, prev)` declares `prev::Any`
 (untyped) and is empirically unused: the inverse recomputes
 `(lhs op rhs)` from the surviving locals (`_resolve` reads the
-operand symbols out of `s.locals` at the post-forward state, and the
+operand symbols out of `active_locals(s)` at the post-forward state, and the
 operands are unchanged by `forward` per the read/write table in
 ADR 0002 §Phase-2 RSSA dataflow row 1) and reconstructs the
 destroyed `source` value via `dual_modop(modop)` applied to the

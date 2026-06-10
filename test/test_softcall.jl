@@ -75,8 +75,8 @@ _b(x::Float64) = reinterpret(Int64, x)
                          Union{Symbol,Int64}[:a, :b], [64, 64], 64)
     s = _BVSC.IState(0, Dict(:a => _b(2.0), :b => _b(3.0)), :running)
     s2 = _BVSC.forward(mul, s)
-    @test s2.locals[:p] == _b(6.0)                       # bit-for-bit
-    @test reinterpret(Float64, s2.locals[:p]) == 6.0     # decoded
+    @test BennettVM.active_locals(s2)[:p] == _b(6.0)                       # bit-for-bit
+    @test reinterpret(Float64, BennettVM.active_locals(s2)[:p]) == 6.0     # decoded
     @test s2.pc == 1
     @test s2.status === :running
 
@@ -84,13 +84,13 @@ _b(x::Float64) = reinterpret(Int64, x)
     add = _BVSC.SoftCall(:p, :soft_fadd,
                          Union{Symbol,Int64}[:a, :b], [64, 64], 64)
     s = _BVSC.IState(0, Dict(:a => _b(2.0), :b => _b(3.0)), :running)
-    @test _BVSC.forward(add, s).locals[:p] == _b(5.0)
+    @test _BVSC.active_locals(_BVSC.forward(add, s))[:p] == _b(5.0)
 
     # soft_fsub(3.0, 2.0) → 1.0
     sub = _BVSC.SoftCall(:p, :soft_fsub,
                          Union{Symbol,Int64}[:a, :b], [64, 64], 64)
     s = _BVSC.IState(0, Dict(:a => _b(3.0), :b => _b(2.0)), :running)
-    @test _BVSC.forward(sub, s).locals[:p] == _b(1.0)
+    @test _BVSC.active_locals(_BVSC.forward(sub, s))[:p] == _b(1.0)
 end
 
 @testset "SoftCall forward — negative bit-pattern carrier (M_FP.2)" begin
@@ -100,9 +100,9 @@ end
                          Union{Symbol,Int64}[:a, :b], [64, 64], 64)
     @test _b(-2.5) < 0                                    # sign bit set
     s = _BVSC.IState(0, Dict(:a => _b(-2.5), :b => _b(1.0)), :running)
-    @test _BVSC.forward(add, s).locals[:p] == _b(-1.5)
-    @test reinterpret(Float64, _BVSC.forward(add,
-        _BVSC.IState(0, Dict(:a => _b(-2.5), :b => _b(1.0)), :running)).locals[:p]) == -1.5
+    @test _BVSC.active_locals(_BVSC.forward(add, s))[:p] == _b(-1.5)
+    @test reinterpret(Float64, _BVSC.active_locals(_BVSC.forward(add,
+        _BVSC.IState(0, Dict(:a => _b(-2.5), :b => _b(1.0)), :running)))[:p]) == -1.5
 end
 
 @testset "SoftCall forward — fma ternary arity (M_FP.2)" begin
@@ -112,7 +112,7 @@ end
                            Union{Symbol,Int64}[:a, :b, :c], [64, 64, 64], 64)
     s = _BVSC.IState(0, Dict(:a => _b(2.0), :b => _b(3.0), :c => _b(4.0)),
                      :running)
-    @test reinterpret(Float64, _BVSC.forward(fma_i, s).locals[:p]) ==
+    @test reinterpret(Float64, _BVSC.active_locals(_BVSC.forward(fma_i, s))[:p]) ==
           fma(2.0, 3.0, 4.0)
 end
 
@@ -121,7 +121,7 @@ end
     mul = _BVSC.SoftCall(:p, :soft_fmul,
                          Union{Symbol,Int64}[:a, _b(3.0)], [64, 64], 64)
     s = _BVSC.IState(0, Dict(:a => _b(2.0)), :running)
-    @test reinterpret(Float64, _BVSC.forward(mul, s).locals[:p]) == 6.0
+    @test reinterpret(Float64, _BVSC.active_locals(_BVSC.forward(mul, s))[:p]) == 6.0
 end
 
 @testset "SoftCall args survive forward (M_FP.2)" begin
@@ -130,8 +130,8 @@ end
                          Union{Symbol,Int64}[:a, :b], [64, 64], 64)
     s = _BVSC.IState(0, Dict(:a => _b(2.0), :b => _b(3.0)), :running)
     s2 = _BVSC.forward(mul, s)
-    @test haskey(s2.locals, :a) && s2.locals[:a] == _b(2.0)
-    @test haskey(s2.locals, :b) && s2.locals[:b] == _b(3.0)
+    @test haskey(BennettVM.active_locals(s2), :a) && BennettVM.active_locals(s2)[:a] == _b(2.0)
+    @test haskey(BennettVM.active_locals(s2), :b) && BennettVM.active_locals(s2)[:b] == _b(3.0)
 end
 
 @testset "SoftCall overwrite at forward level (M_FP.2)" begin
@@ -141,10 +141,10 @@ end
                          Union{Symbol,Int64}[:a, :b], [64, 64], 64)
     s = _BVSC.IState(0, Dict(:a => _b(2.0), :b => _b(3.0)), :running)
     _BVSC.forward(mul, s)
-    @test s.locals[:p] == _b(6.0)
-    s.locals[:a] = _b(4.0)
+    @test BennettVM.active_locals(s)[:p] == _b(6.0)
+    BennettVM.active_locals(s)[:a] = _b(4.0)
     _BVSC.forward(mul, s)
-    @test s.locals[:p] == _b(12.0)                       # overwritten, no error
+    @test BennettVM.active_locals(s)[:p] == _b(12.0)                       # overwritten, no error
     @test s.pc == 2
 end
 

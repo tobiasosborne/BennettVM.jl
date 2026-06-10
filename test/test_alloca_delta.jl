@@ -9,13 +9,13 @@
 # at lowering time — the size `n` is only known at runtime. `DynAlloca` defers
 # the reservation to `forward()`:
 #
-#   forward(DynAlloca(dest, n_operand, base), s):  s.locals[dest] = base; pc += 1
+#   forward(DynAlloca(dest, n_operand, base), s):  BennettVM.active_locals(s)[dest] = base; pc += 1
 #
 # materialising the pointer at a FROZEN compile-time `base` (the bump cursor at
 # ingest, NOT advanced — there is no runtime bump allocator state in `IState`).
 # Cells stay ABSENT (read as 0 by the floor's absent=0 convention) — forward
 # does NO zeroing. Reversal is via an L2 `(base, n)` delta captured PRE-forward
-# (`predelta_payload` resolves `n = s.locals[n_operand]`), whose inverse
+# (`predelta_payload` resolves `n = BennettVM.active_locals(s)[n_operand]`), whose inverse
 # UNCONDITIONALLY deletes the whole fresh region `base..base+n-1` and removes
 # the pointer.
 #
@@ -154,7 +154,7 @@ end
         @test p.n == 3
 
         BennettVM.forward(instr, s)
-        @test s.locals[:__arr] == 5            # pointer materialised at base
+        @test BennettVM.active_locals(s)[:__arr] == 5            # pointer materialised at base
         @test s.pc == 2                        # forward bumped pc
 
         BennettVM.inverse(instr, s, p)         # NamedTuple dispatch (L2)
@@ -162,7 +162,7 @@ end
         @test !haskey(s.memory, 6)
         @test !haskey(s.memory, 7)             # ...including the LAST cell
         @test isempty(s.memory)                # ...unconditionally
-        @test !haskey(s.locals, :__arr)        # pointer removed
+        @test !haskey(BennettVM.active_locals(s), :__arr)        # pointer removed
         @test s.pc == 1                        # pc decremented back
 
         # n=0 edge case: empty region, just undo the pointer.
@@ -171,9 +171,9 @@ end
         p0 = BennettVM.predelta_payload(instr0, s0)
         @test p0.n == 0
         BennettVM.forward(instr0, s0)
-        @test s0.locals[:__arr] == 9
+        @test BennettVM.active_locals(s0)[:__arr] == 9
         BennettVM.inverse(instr0, s0, p0)
-        @test !haskey(s0.locals, :__arr)
+        @test !haskey(BennettVM.active_locals(s0), :__arr)
         @test isempty(s0.memory)
 
         # Fail-loud: predelta_payload with an undefined n_operand.
@@ -202,7 +202,7 @@ end
         instr = BennettVM.DynAlloca(:__arr, :__n, Int64(1))
         s = IS(1, Dict(:__n => Int64(3)), :running, Dict{Int64,Int64}())
         BennettVM.forward(instr, s)              # first execution: OK
-        @test s.locals[:__arr] == 1              # pointer materialised
+        @test BennettVM.active_locals(s)[:__arr] == 1              # pointer materialised
         # Re-execution: dest already live → loud error, NOT a silent overwrite
         # (which would orphan the prior region for the unconditional-delete
         # inverse to corrupt). This is the per-step / loop hole the hostile

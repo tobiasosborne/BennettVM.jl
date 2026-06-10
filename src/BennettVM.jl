@@ -63,6 +63,16 @@ module BennettVM
 # Handoff-A contract visually auditable.
 import Bennett
 
+# CW-B2 chunk 1 (ADR 0019 §1; bead `bennettvm-416r.6`) — `Frame`, the
+# per-activation register file + return metadata, and its content
+# `==`/`hash`. MUST precede `IState.jl` because `IState`'s `frames::
+# Vector{Frame}` field references `Frame` by type. This chunk lands ONLY
+# the struct + the state refactor (flat `locals` → one-element frame
+# stack); `CallEnter` / `ReturnExit` / multi-function ingest arrive in
+# later CW-B2 chunks. The `active_locals(s::IState)` accessor that reads
+# `frames[end].locals` lives at the end of `IState.jl` (it dispatches on
+# `IState`, defined next). Not yet exported.
+include("ir/call_frames.jl")
 # M2.1 — interpreter state atom (`bennettvm-e7o`). Not yet exported;
 # the public API surface stabilises in a later bead.
 include("ir/IState.jl")

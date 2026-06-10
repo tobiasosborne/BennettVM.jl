@@ -11,10 +11,10 @@ count `n` is unknown at lowering time, so the region cannot be reserved by a
 compile-time cursor advance the way a static alloca is.
 
     DynAlloca(dest, n_operand, base)  →  forward
-        n = s.locals[n_operand]
-        s.locals[dest] = base + s.heap_top; s.heap_top += n; s.pc += 1
+        n = active_locals(s)[n_operand]
+        active_locals(s)[dest] = base + s.heap_top; s.heap_top += n; s.pc += 1
 
-A *pointer* in this model is just an `Int64` cell address living in `s.locals`
+A *pointer* in this model is just an `Int64` cell address living in `active_locals(s)`
 (the ADR 0014 §D1 model). `DynAlloca` materialises that pointer at a **frozen
 compile-time `base` PLUS the runtime bump offset `s.heap_top`** (the cells
 allocated by earlier dynamic allocas — see "Frozen base + runtime heap_top
@@ -38,7 +38,7 @@ the L2 inverse below and the missing-sentinel trap that `MemoryStore` documents.
 s.heap_top`, where `s.heap_top` (the `IState` field added by bead
 `bennettvm-uil`) is the running total of dynamic cells allocated by EARLIER
 dynamic allocas — an OFFSET starting at 0. `forward` reads `n =
-s.locals[n_operand]`, materialises `s.locals[dest] = base + s.heap_top`, and
+active_locals(s)[n_operand]`, materialises `active_locals(s)[dest] = base + s.heap_top`, and
 advances `s.heap_top += n`; the L2 `(base, n)` inverse retracts `s.heap_top -=
 n`. So `heap_top` round-trips `0 → … → 0`.
 
@@ -70,7 +70,7 @@ it is conservatively `false` (`src/history/Injective.jl`), forcing the
 M6.2/M7.6 push gate to record a history entry. Unlike `VarGEP` / `MemoryLoad`
 (L3-only, no `make_delta`), `DynAlloca` carries an L2 `(base, n)` delta captured
 PRE-`forward()` (the `predelta_payload` hook, like `MemoryStore`'s
-`(addr, old_value)`): the size `n` is read from `s.locals[n_operand]` before
+`(addr, old_value)`): the size `n` is read from `active_locals(s)[n_operand]` before
 `forward()` runs, and the inverse needs it to know how big a region to retract.
 
 # The unconditional-delete soundness lemma (the load-bearing claim)
@@ -126,7 +126,7 @@ fast-path does NOT adjust pc itself), mirroring `MemoryStore` /
 `dest` is the pointer SSA name created; `n_operand` is the SSA name holding the
 runtime element count (an `IRAlloca` with an `SSAOperand` n_elems names its size
 operand here); `base` is the frozen compile-time `Int64` base. `n_operand`
-MUST be defined in `s.locals` before the alloca — `predelta_payload` fails loud
+MUST be defined in `active_locals(s)` before the alloca — `predelta_payload` fails loud
 (Rule 1) if it is absent, since a VLA's size is computed before the allocation.
 
 # Ref
@@ -153,7 +153,7 @@ MUST be defined in `s.locals` before the alloca — `predelta_payload` fails lou
     Rule 11 (literate).
 """
 
-# --- DynAlloca: s.locals[dest] := base (runtime-sized region create) ---
+# --- DynAlloca: active_locals(s)[dest] := base (runtime-sized region create) ---
 
 struct DynAlloca <: Instruction
     dest::Symbol         # pointer SSA name created — holds the Int64 base addr
@@ -174,7 +174,7 @@ end
 """
     forward(instr::DynAlloca, s::IState) -> IState
 
-Materialise the pointer `dest := base + s.heap_top` in `s.locals` (the runtime
+Materialise the pointer `dest := base + s.heap_top` in `active_locals(s)` (the runtime
 region base = frozen compile-time base + the running bump offset), advance the
 cursor `s.heap_top += n`, and bump `pc`. The region `base … base+n-1` is NOT
 zeroed — cells stay absent and read as `0` by the floor's absent=0 convention
@@ -203,9 +203,9 @@ they cannot enforce single-execution and so cannot safely unconditional-delete.
 `DynAlloca` can, because re-execution under the same dest is caught here.)
 """
 function forward(instr::DynAlloca, s::IState)::IState
-    haskey(s.locals, instr.dest) &&
+    haskey(active_locals(s), instr.dest) &&
         error("DynAlloca.forward: pointer :", instr.dest, " is already defined ",
-              "in s.locals (= ", s.locals[instr.dest], "). A dynamic-N alloca ",
+              "in active_locals(s) (= ", active_locals(s)[instr.dest], "). A dynamic-N alloca ",
               "re-executing (a loop / back-edge reaches it under the SAME dest) ",
               "would alias its region; the L2 (base, n) inverse retracts that ",
               "region UNCONDITIONALLY, so reversing the second allocation would ",
@@ -222,10 +222,10 @@ function forward(instr::DynAlloca, s::IState)::IState
     # pre-uil). Advance the cursor by this region's runtime size `n` so the NEXT
     # dynamic alloca starts past this one — the disjointness that lets ≥2
     # dynamic arrays coexist (bead `bennettvm-uil`; ADR 0009 Decision 2a multi-
-    # array refinement). `n` is read from s.locals[n_operand] (the same value
+    # array refinement). `n` is read from active_locals(s)[n_operand] (the same value
     # `predelta_payload` captured pre-forward into the (base, n) L2 delta).
-    n = s.locals[instr.n_operand]
-    s.locals[instr.dest] = instr.base + s.heap_top
+    n = active_locals(s)[instr.n_operand]
+    active_locals(s)[instr.dest] = instr.base + s.heap_top
     s.heap_top += n
     s.pc += 1
     return s
@@ -237,7 +237,7 @@ end
 
 PRE-`forward()` capture for `DynAlloca`'s L2 delta (ADR 0009 Decision 2a).
 Called by `step!` BEFORE `forward()`. Resolves the runtime element count `n`
-from `s.locals[n_operand]` (fail loud — Rule 1 — if absent: a VLA's size is
+from `active_locals(s)[n_operand]` (fail loud — Rule 1 — if absent: a VLA's size is
 computed before the allocation, so an undefined size operand is malformed IR)
 and records `(base, n)`: the inverse needs `n` to know how large a region to
 retract, and `base` (= the RUNTIME base `instr.base + s.heap_top`, captured
@@ -248,13 +248,13 @@ pre-`uil`); a later dynamic alloca captures its own offset window's base (bead
 L2's per-allocation space win.
 """
 function predelta_payload(instr::DynAlloca, s::IState)
-    haskey(s.locals, instr.n_operand) ||
+    haskey(active_locals(s), instr.n_operand) ||
         error("DynAlloca.predelta_payload: runtime element count operand :",
-              instr.n_operand, " is not defined in s.locals (locals: ",
-              collect(keys(s.locals)), ") — a VLA / dynamic-N alloca's size ",
+              instr.n_operand, " is not defined in active_locals(s) (locals: ",
+              collect(keys(active_locals(s))), ") — a VLA / dynamic-N alloca's size ",
               "MUST be computed before the allocation (Rule 1 fail-loud). ",
               "dest=", instr.dest, ", base=", instr.base, ", pc=", s.pc, ".")
-    n = s.locals[instr.n_operand]
+    n = active_locals(s)[instr.n_operand]
     # n < 0 corrupts the bump cursor (forward `heap_top += n` would DECREASE it;
     # the inverse `heap_top -= n` would INCREASE it, leaving heap_top permanently
     # wrong on round-trip — and a negative-width window aliases below the base).
@@ -283,7 +283,7 @@ end
 L2 reverse of a `DynAlloca` using the `(base, n)` payload captured by
 `predelta_payload` BEFORE `forward()` ran. UNCONDITIONALLY deletes the whole
 fresh region `p.base … p.base + p.n - 1` from `s.memory` (`p.base` is the
-RUNTIME offset base), removes the pointer `dest` from `s.locals`, retracts the
+RUNTIME offset base), removes the pointer `dest` from `active_locals(s)`, retracts the
 runtime bump cursor `s.heap_top -= p.n` (the exact inverse of forward's
 `heap_top += n`; bead `bennettvm-uil`), then decrements `pc`. See this file's
 top-of-module "unconditional-delete soundness lemma": deleting the whole region
@@ -308,8 +308,8 @@ function inverse(instr::DynAlloca, s::IState, p::NamedTuple)::IState
     for a in p.base:(p.base + p.n - 1)
         delete!(s.memory, a)
     end
-    # Remove the pointer this alloca created (forward set s.locals[dest]).
-    delete!(s.locals, instr.dest)
+    # Remove the pointer this alloca created (forward set active_locals(s)[dest]).
+    delete!(active_locals(s), instr.dest)
     # Retract the runtime bump cursor by this region's size (the exact inverse
     # of forward's `s.heap_top += n`). LIFO history (the alloca pushed first,
     # pops last among its region's writes) means later dynamic allocas — pushed

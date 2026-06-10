@@ -99,7 +99,7 @@ mirrors the `Define` / `SelectInstruction` / `CallInstruction` pattern
 
 # Operand kind (Union{Symbol,Int64}) and constructor validation (Rule 1)
 
-`operand` may be an SSA reference (`Symbol`, looked up in `s.locals` via
+`operand` may be an SSA reference (`Symbol`, looked up in `active_locals(s)` via
 the reused `_resolve`, Law 2) or a literal `Int64` — the same convention
 `Define` / `ArithmeticAssignment` use; the matrix_tri casts are all
 `SSAOperand`, but the union keeps a constant-source cast lowerable. The
@@ -214,13 +214,13 @@ end
     forward(instr::CastInstruction, s::IState) -> IState
 
 Execute `target := cast(op, operand)` in-place on `s`. Resolves `operand`
-against `s.locals` (or uses the literal `Int64`) via the reused `_resolve`,
+against `active_locals(s)` (or uses the literal `Int64`) via the reused `_resolve`,
 applies the width cast via `_apply_cast`, writes the result into
-`s.locals[target]`, and bumps `pc`. The operand is **read, never deleted**
+`active_locals(s)[target]`, and bumps `pc`. The operand is **read, never deleted**
 — the non-destructive create property (contrast `ArithmeticAssignment.
 forward`, which `delete!`s its `source`).
 
-If `target` already exists in `s.locals` (the loop / cross-iteration
+If `target` already exists in `active_locals(s)` (the loop / cross-iteration
 case), it is **overwritten** without error — that is the intended forward
 semantics; reversibility of the overwrite (and of a `:trunc`'s discarded
 high bits) is the L3 checkpoint-replay layer's responsibility (see this
@@ -228,7 +228,7 @@ file's top-of-module docstring).
 """
 function forward(instr::CastInstruction, s::IState)::IState
     v = _resolve(instr.operand, s)
-    s.locals[instr.target] = _apply_cast(instr.op, v, instr.from_width,
+    active_locals(s)[instr.target] = _apply_cast(instr.op, v, instr.from_width,
                                          instr.to_width)
     s.pc += 1
     return s

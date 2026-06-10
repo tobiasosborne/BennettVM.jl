@@ -388,9 +388,9 @@ end
     # (because CheckpointEntry's constructor deep-copied). This pins
     # the M4.1 deepcopy contract end-to-end through the M4.2 call site.
     @test rs.history[end].snapshot !== rs.current
-    @test !haskey(rs.history[end].snapshot.locals, :n)
+    @test !haskey(BennettVM.active_locals(rs.history[end].snapshot), :n)
     # :sub with op=:and / lhs=1 / rhs=1 produces (7 - (1 & 1)) = 6.
-    @test rs.history[end].snapshot.locals[:x] == Int64(6)
+    @test BennettVM.active_locals(rs.history[end].snapshot)[:x] == Int64(6)
     @test rs.history[end].snapshot.status === :running
 
     # M6.2: step 3 is End (injective) → no push; history still length 1.
@@ -536,8 +536,8 @@ end
     captured_after_step2 = rs.history[end]
     @test captured_after_step2.step == 2
     @test captured_after_step2.snapshot.pc == 3
-    @test !haskey(captured_after_step2.snapshot.locals, :n)
-    @test captured_after_step2.snapshot.locals[:x] == Int64(6)
+    @test !haskey(BennettVM.active_locals(captured_after_step2.snapshot), :n)
+    @test BennettVM.active_locals(captured_after_step2.snapshot)[:x] == Int64(6)
     @test captured_after_step2.snapshot.status === :running
 
     # Step 3 is End (injective; no push). The forward() of End bumps
@@ -548,18 +548,18 @@ end
     @test rs.current.status === :halted
     @test captured_after_step2.snapshot.pc == 3
     @test captured_after_step2.snapshot.status === :running
-    @test captured_after_step2.snapshot.locals[:x] == Int64(6)
+    @test BennettVM.active_locals(captured_after_step2.snapshot)[:x] == Int64(6)
 
     # Hand mutation: forcibly alter rs.current — none of this can
     # reach the captured step-2 snapshot if the deepcopy contract holds.
-    rs.current.locals[:x] = Int64(-999)
+    BennettVM.active_locals(rs.current)[:x] = Int64(-999)
     rs.current.pc = 0
     rs.current.status = :error
     @test captured_after_step2.snapshot.pc == 3
-    @test captured_after_step2.snapshot.locals[:x] == Int64(6)
+    @test BennettVM.active_locals(captured_after_step2.snapshot)[:x] == Int64(6)
     @test captured_after_step2.snapshot.status === :running
-    @test !haskey(captured_after_step2.snapshot.locals, :n)
+    @test !haskey(BennettVM.active_locals(captured_after_step2.snapshot), :n)
     # And the Dict instances are distinct objects (the M4.1 mechanism
     # check, mirrored here for end-to-end coverage).
-    @test captured_after_step2.snapshot.locals !== rs.current.locals
+    @test BennettVM.active_locals(captured_after_step2.snapshot) !== BennettVM.active_locals(rs.current)
 end

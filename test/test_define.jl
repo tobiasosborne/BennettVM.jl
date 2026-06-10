@@ -55,7 +55,7 @@
     instr = BennettVM.Define(:t, :a, :mul, Int64(3))
     s = BennettVM.IState(0, Dict(:a => Int64(4)), :running)
     s2 = BennettVM.forward(instr, s)
-    @test s2.locals[:t] == Int64(12)
+    @test BennettVM.active_locals(s2)[:t] == Int64(12)
     @test s2.pc == 1
     @test s2.status === :running
 end
@@ -67,10 +67,10 @@ end
     instr = BennettVM.Define(:t, :a, :slt, Int64(2))
 
     s_true = BennettVM.IState(0, Dict(:a => Int64(1)), :running)
-    @test BennettVM.forward(instr, s_true).locals[:t] == Int64(1)
+    @test BennettVM.active_locals(BennettVM.forward(instr, s_true))[:t] == Int64(1)
 
     s_false = BennettVM.IState(0, Dict(:a => Int64(5)), :running)
-    @test BennettVM.forward(instr, s_false).locals[:t] == Int64(0)
+    @test BennettVM.active_locals(BennettVM.forward(instr, s_false))[:t] == Int64(0)
 end
 
 @testset "Define operands survive forward (M_UNBOUNDED)" begin
@@ -81,11 +81,11 @@ end
     instr = BennettVM.Define(:t, :a, :add, :b)
     s = BennettVM.IState(0, Dict(:a => Int64(7), :b => Int64(5)), :running)
     s2 = BennettVM.forward(instr, s)
-    @test s2.locals[:t] == Int64(12)       # 7 + 5
-    @test haskey(s2.locals, :a)            # operand a NOT deleted
-    @test haskey(s2.locals, :b)            # operand b NOT deleted
-    @test s2.locals[:a] == Int64(7)        # ...and unchanged
-    @test s2.locals[:b] == Int64(5)
+    @test BennettVM.active_locals(s2)[:t] == Int64(12)       # 7 + 5
+    @test haskey(BennettVM.active_locals(s2), :a)            # operand a NOT deleted
+    @test haskey(BennettVM.active_locals(s2), :b)            # operand b NOT deleted
+    @test BennettVM.active_locals(s2)[:a] == Int64(7)        # ...and unchanged
+    @test BennettVM.active_locals(s2)[:b] == Int64(5)
 end
 
 @testset "Define overwrite at forward level (M_UNBOUNDED)" begin
@@ -97,11 +97,11 @@ end
     instr = BennettVM.Define(:t, :a, :mul, Int64(3))
     s = BennettVM.IState(0, Dict(:a => Int64(4)), :running)
     BennettVM.forward(instr, s)
-    @test s.locals[:t] == Int64(12)
+    @test BennettVM.active_locals(s)[:t] == Int64(12)
     # Re-enter the "loop body": change the operand and define again.
-    s.locals[:a] = Int64(10)
+    BennettVM.active_locals(s)[:a] = Int64(10)
     BennettVM.forward(instr, s)
-    @test s.locals[:t] == Int64(30)        # overwritten, no error
+    @test BennettVM.active_locals(s)[:t] == Int64(30)        # overwritten, no error
     @test s.pc == 2                        # two forward steps
 end
 

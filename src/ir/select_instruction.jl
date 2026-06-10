@@ -69,9 +69,9 @@ reversibility corruption). This mirrors the `Define` and
 
 `cond` is always a `Symbol` — the predicate is an SSA name produced by
 an upstream `Define` with a comparison `op` (ADR 0012 §D2) and read
-directly from `s.locals`; it is never a literal. The arms `val_true` /
+directly from `active_locals(s)`; it is never a literal. The arms `val_true` /
 `val_false` may each independently be an SSA reference (`Symbol`, looked
-up in `s.locals`) or a literal `Int64` — the same `Union{Symbol,Int64}`
+up in `active_locals(s)`) or a literal `Int64` — the same `Union{Symbol,Int64}`
 convention `Define` / `ArithmeticAssignment` use, because `or.cond`'s
 true-arm is the literal `Const(-1)`. Arm resolution routes through the
 reused `_resolve` helper (Law 2; `src/ir/arithmetic_assignment.jl`). The
@@ -140,10 +140,10 @@ end
     forward(instr::SelectInstruction, s::IState) -> IState
 
 Execute `target := (cond != 0) ? val_true : val_false` in-place on `s`.
-Reads `s.locals[cond]` for the predicate (always a `Symbol`), resolves
+Reads `active_locals(s)[cond]` for the predicate (always a `Symbol`), resolves
 the selected arm via the reused `_resolve` (an unselected literal/`Symbol`
 arm is *not* evaluated — but symbolic arms are read, never deleted),
-writes the result into `s.locals[target]`, and bumps `pc`. The predicate
+writes the result into `active_locals(s)[target]`, and bumps `pc`. The predicate
 and arms are **read, never deleted** — the non-destructive create
 property (contrast `ArithmeticAssignment.forward`, which `delete!`s its
 `source`).
@@ -152,14 +152,14 @@ The predicate uses the interpreter's "nonzero = true" i1→Int64
 convention: any nonzero `cond` selects `val_true`, `0` selects
 `val_false`.
 
-If `target` already exists in `s.locals` (the loop / cross-iteration
+If `target` already exists in `active_locals(s)` (the loop / cross-iteration
 case), it is **overwritten** without error — that is the intended
 forward semantics; reversibility of the overwrite is the L3
 checkpoint-replay layer's responsibility (see this file's top-of-module
 docstring "The cross-iteration crux").
 """
 function forward(instr::SelectInstruction, s::IState)::IState
-    s.locals[instr.target] = (s.locals[instr.cond] != 0) ?
+    active_locals(s)[instr.target] = (active_locals(s)[instr.cond] != 0) ?
         _resolve(instr.val_true, s) : _resolve(instr.val_false, s)
     s.pc += 1
     return s

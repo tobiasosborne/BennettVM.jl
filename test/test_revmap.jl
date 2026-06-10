@@ -98,7 +98,7 @@ const Get = BennettVM.IRMapGet
         sg = IS(1, Dict{Symbol,Int64}(), :running,
                 Dict{Int64,Int64}(), Dict(Int64(3) => Int64(7)))
         BennettVM.forward(Get(:r, Int64(3)), sg)
-        @test sg.locals[:r] == 7        # the fdict(3,7) => 7 oracle, ADR 0008 l.633
+        @test BennettVM.active_locals(sg)[:r] == 7        # the fdict(3,7) => 7 oracle, ADR 0008 l.633
         @test sg.pc == 2
         @test sg.revmap == Dict(Int64(3) => Int64(7))   # map UNCHANGED (read)
 

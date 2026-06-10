@@ -17,7 +17,7 @@
 #      `Define(dest, base, :add, 0)` to materialise the pointer. The scalar
 #      n_elems=1 case (ADR 0014) is the N=1 special case, unchanged.
 #   2. `IRVarGEP` → `VarGEP(dest, base, index, stride)` with stride in CELLS.
-#      `VarGEP.forward` computes `s.locals[dest] = base + index*stride`, a
+#      `VarGEP.forward` computes `BennettVM.active_locals(s)[dest] = base + index*stride`, a
 #      runtime element-address create reversed via L3 (the MemoryLoad
 #      pattern; NO new delta in this unit — the L2 (addr,old) store-delta is
 #      a later bead, `bennettvm-ekc`). Dynamic-N (`SSAOperand` n_elems) is now
@@ -112,9 +112,9 @@ _istate_af(locals::Dict{Symbol,Int64}) = _IState_AF(1, locals, :running)
         # The orchestrator's pinned example: base=5, index=3, stride=1 → 8.
         s = _istate_af(Dict(:b => Int64(5), :i => Int64(3)))
         BennettVM.forward(_GEP(:d, :b, :i, Int64(1)), s)
-        @test s.locals[:d] == 8         # 5 + 3*1
-        @test s.locals[:b] == 5         # base SSA name SURVIVES (gep ≠ consume)
-        @test s.locals[:i] == 3         # index SSA name SURVIVES
+        @test BennettVM.active_locals(s)[:d] == 8         # 5 + 3*1
+        @test BennettVM.active_locals(s)[:b] == 5         # base SSA name SURVIVES (gep ≠ consume)
+        @test BennettVM.active_locals(s)[:i] == 3         # index SSA name SURVIVES
         @test s.pc == 2                 # pc bumped
 
         # stride > 1 proves the multiply is live (a byte-addressed VM would
@@ -122,23 +122,23 @@ _istate_af(locals::Dict{Symbol,Int64}) = _IState_AF(1, locals, :running)
         # cursor step, but the field is exercised at >1 to catch a dropped *).
         s2 = _istate_af(Dict(:b => Int64(10), :i => Int64(4)))
         BennettVM.forward(_GEP(:d, :b, :i, Int64(2)), s2)
-        @test s2.locals[:d] == 18       # 10 + 4*2
+        @test BennettVM.active_locals(s2)[:d] == 18       # 10 + 4*2
 
         # index = 0 → the base itself (arr[0] aliases the pointer).
         s3 = _istate_af(Dict(:b => Int64(7), :i => Int64(0)))
         BennettVM.forward(_GEP(:d, :b, :i, Int64(1)), s3)
-        @test s3.locals[:d] == 7
+        @test BennettVM.active_locals(s3)[:d] == 7
 
         # Literal index operand (LLVM `getelementptr ... i64 2`).
         s4 = _istate_af(Dict(:b => Int64(100)))
         BennettVM.forward(_GEP(:d, :b, Int64(2), Int64(1)), s4)
-        @test s4.locals[:d] == 102
+        @test BennettVM.active_locals(s4)[:d] == 102
 
         # Overwrite at the forward level (the loop / cross-iteration case):
         # a second gep overwrites `dest` without error.
         s5 = _istate_af(Dict(:b => Int64(3), :i => Int64(1), :d => Int64(999)))
         BennettVM.forward(_GEP(:d, :b, :i, Int64(1)), s5)
-        @test s5.locals[:d] == 4        # overwritten 999 → 3+1
+        @test BennettVM.active_locals(s5)[:d] == 4        # overwritten 999 → 3+1
     end
 
     # ------------------------------------------------------------------

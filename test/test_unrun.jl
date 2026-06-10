@@ -356,7 +356,7 @@ end
     # for step!), but then override initial.status to :error.
     rs = initial_state(vm, Dict(:n => Int64(7)))
     rs.initial = BennettVM.IState(rs.initial.pc,
-                                  deepcopy(rs.initial.locals),
+                                  deepcopy(BennettVM.active_locals(rs.initial)),
                                   :error)
     @test rs.initial.status === :error
     @test rs.current.status === :running    # current came from initial_state

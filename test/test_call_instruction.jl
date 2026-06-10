@@ -83,7 +83,7 @@ end
     s_before = deepcopy(s)
     s2 = BennettVM.forward(instr, s)
     @test s2.pc == 1
-    @test s2.locals == s_before.locals    # locals UNCHANGED at this layer
+    @test BennettVM.active_locals(s2) == BennettVM.active_locals(s_before)    # locals UNCHANGED at this layer
     @test s2.status === :running
     # (real arg/return transfer is M3.x — see the source docstring's
     # scoping section; this layer is pc-only.)
@@ -101,7 +101,7 @@ end
     s_before = deepcopy(s)
     s2 = BennettVM.forward(instr, s)
     @test s2.pc == 6
-    @test s2.locals == s_before.locals
+    @test BennettVM.active_locals(s2) == BennettVM.active_locals(s_before)
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test s3 == s_before
 end

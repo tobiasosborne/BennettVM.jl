@@ -326,7 +326,7 @@ function result(s::RState)
         error("result: RState is not halted (status = $(s.current.status)). ",
               "Did run! finish? Inspect the RState before calling result.")
     end
-    return copy(s.current.locals)
+    return copy(active_locals(s.current))   # CW-B2: active register file = frames[end].locals.
 end
 
 # ============================================================================
@@ -1183,7 +1183,7 @@ function _handle_cross_block_dispatch!(s::RState, prog::VMProgram,
         # Q6 note on UnaryOp :not). The CLAUDE.md "Bool-typed regs"
         # caveat: until a type system lands, "true" is "nonzero" by
         # the same convention as C / LLVM IR.
-        cond_val = s.current.locals[instr.condition]
+        cond_val = active_locals(s.current)[instr.condition]   # CW-B2: frames[end].locals.
         target = cond_val != 0 ? instr.target_true : instr.target_false
         _dispatch_to_block!(s, prog, target, instr.args)
     end
@@ -1232,10 +1232,14 @@ function _dispatch_to_block!(s::RState, prog::VMProgram, target::Symbol,
     target_block = prog.blocks[target_entry.block_index]
 
     entry_instr = target_block.entry
+    # CW-B2 (ADR 0019 §1): the active register file is `active_locals(s.current)`
+    # = `frames[end].locals`. Block-to-block dispatch renames into the CURRENT
+    # activation's dict (cross-FUNCTION call/return — which pushes/pops frames —
+    # is `CallEnter`/`ReturnExit`'s job, a later CW-B2 chunk).
     if entry_instr isa UnconditionalEntry
-        _rename_args_to_params!(s.current.locals, args, entry_instr.params)
+        _rename_args_to_params!(active_locals(s.current), args, entry_instr.params)
     elseif entry_instr isa ConditionalEntry
-        _rename_args_to_params!(s.current.locals, args, entry_instr.params)
+        _rename_args_to_params!(active_locals(s.current), args, entry_instr.params)
     elseif entry_instr isa BeginInstruction
         # Begin's params are the subroutine's formals; cross-block
         # dispatch arriving here is the main-routine call (the M2.14
@@ -1244,7 +1248,7 @@ function _dispatch_to_block!(s::RState, prog::VMProgram, target::Symbol,
         # on a Begin block — e.g., a main-rooted CFG where main was
         # encoded with a BeginInstruction rather than an
         # UnconditionalEntry — must also bind positionally).
-        _rename_args_to_params!(s.current.locals, args, entry_instr.params)
+        _rename_args_to_params!(active_locals(s.current), args, entry_instr.params)
     else
         error("_dispatch_to_block!: target block :", target,
               " has unexpected entry type ", typeof(entry_instr),

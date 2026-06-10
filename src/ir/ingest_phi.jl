@@ -155,7 +155,7 @@ _phi_ssa_dup_name(src::Symbol, name::Symbol, k::Int) =
 The synthetic per-slot SSA name for element `k` of aggregate SSA value
 `agg` (bead `bennettvm-acq`, OPCODE G2): `:_agg_<agg>_slot<k>`.
 
-`IState.locals` is a FLAT `Dict{Symbol,Int64}` — one key cannot hold the
+the active register file `active_locals(s)` is a FLAT `Dict{Symbol,Int64}` per frame — one key cannot hold the
 N scalar elements of an ArrayType aggregate (`[N x iW]`, which is the only
 aggregate shape Bennett.jl emits `IRExtractValue` / `IRInsertValue` for;
 StructType fails loud UPSTREAM in extract — `../Bennett.jl/src/extract/

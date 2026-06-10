@@ -333,11 +333,11 @@ end, :scaffold, _arith_vm),
         lv = BennettVM._resolve(instr.lhs, s)
         rv = BennettVM._resolve(instr.rhs, s)
         e  = BennettVM._apply_binop(instr.op, lv, rv)
-        xval = s.locals[instr.target]
+        xval = BennettVM.active_locals(s)[instr.target]
         # BUG: should be dual_modop(instr.modop); uses raw modop instead.
         yval = BennettVM._apply_modop(instr.modop, xval, e)
-        delete!(s.locals, instr.target)
-        s.locals[instr.source] = yval
+        delete!(BennettVM.active_locals(s), instr.target)
+        BennettVM.active_locals(s)[instr.source] = yval
         s.pc -= 1; return s
     end
 end, :scaffold, _arith_vm),
@@ -371,9 +371,9 @@ end, :direct, (_SWAP_INSTR, _SWAP_PRE)),
     function inverse(instr::SwapInstruction, s::IState, prev)::IState
         # BUG: only restores source1; target2 left in locals and
         # source2 never restored.
-        v1 = s.locals[instr.target1]
-        delete!(s.locals, instr.target1)
-        s.locals[instr.source1] = v1
+        v1 = BennettVM.active_locals(s)[instr.target1]
+        delete!(BennettVM.active_locals(s), instr.target1)
+        BennettVM.active_locals(s)[instr.source1] = v1
         s.pc -= 1; return s
     end
 end, :direct, (_SWAP_INSTR, _SWAP_PRE)),
@@ -387,10 +387,10 @@ end, :direct, (_MI_INSTR, _MI_PRE)),
 (:MemoryInterchange, "one-sided", quote
     function inverse(instr::MemoryInterchange, s::IState, prev)::IState
         a    = BennettVM._resolve(instr.addr, s)
-        xval = s.locals[instr.target]
+        xval = BennettVM.active_locals(s)[instr.target]
         xval == Int64(0) ? delete!(s.memory, a) : (s.memory[a] = xval)
         # BUG: destroys target but never restores source.
-        delete!(s.locals, instr.target)
+        delete!(BennettVM.active_locals(s), instr.target)
         s.pc -= 1; return s
     end
 end, :direct, (_MI_INSTR, _MI_PRE)),

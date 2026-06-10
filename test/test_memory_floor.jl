@@ -6,7 +6,7 @@
 # `src/ir/memory_floor.jl` defines `MemoryStore` (`M[addr] := value`, void)
 # and `MemoryLoad` (`dest := M[addr]`, a fresh-local create), the plain L3
 # heap primitives LLVM `store` / `load` lower to (ADR 0014 §D2). A pointer is
-# just an `Int64` address in `s.locals`, materialised by the ingest bump
+# just an `Int64` address in `BennettVM.active_locals(s)`, materialised by the ingest bump
 # allocator's `Define(dest, base, :add, 0)` for each scalar `IRAlloca`
 # (ADR 0014 §D1). Unlike the existing `MemoryInterchange` (a bijective
 # register↔cell EXCHANGE), these are plain, NON-injective overwrite/read ops
@@ -45,7 +45,7 @@
 #
 # # Mutation-proof (Rule 5) — performed manually, reverted, NOT in tree
 #
-# Perturbing `MemoryLoad.forward` to `s.locals[instr.dest] = Int64(0)` (return
+# Perturbing `MemoryLoad.forward` to `BennettVM.active_locals(s)[instr.dest] = Int64(0)` (return
 # 0 always, ignoring the cell) makes testset (1)/(2) and the hand-built
 # forward-oracle assertion in testset (7) go RED (store 7 then load returns 0,
 # not 7). Confirmed RED, then restored. See the orchestration report for the
@@ -91,8 +91,8 @@ _istate(locals::Dict{Symbol,Int64}, mem::Dict{Int64,Int64}) =
         s = _istate(Dict(:p => Int64(1), :v => Int64(7)))
         BennettVM.forward(_MS(:p, :v), s)
         @test s.memory[1] == 7          # the cell now holds 7
-        @test s.locals[:v] == 7         # value SSA name SURVIVES (store ≠ consume)
-        @test s.locals[:p] == 1         # pointer unchanged
+        @test BennettVM.active_locals(s)[:v] == 7         # value SSA name SURVIVES (store ≠ consume)
+        @test BennettVM.active_locals(s)[:p] == 1         # pointer unchanged
         @test s.pc == 2                 # pc bumped
 
         # Literal value: store i32 9 into M[2].
@@ -108,7 +108,7 @@ _istate(locals::Dict{Symbol,Int64}, mem::Dict{Int64,Int64}) =
         # Stored cell: M[1] = 7, ptr p → 1. Load into d.
         s = _istate(Dict(:p => Int64(1)), Dict(Int64(1) => Int64(7)))
         BennettVM.forward(_ML(:d, :p), s)
-        @test s.locals[:d] == 7         # read the written value
+        @test BennettVM.active_locals(s)[:d] == 7         # read the written value
         @test s.pc == 2
 
         # Zero-init: a load of a never-stored address returns 0 (Int64(0),
@@ -116,7 +116,7 @@ _istate(locals::Dict{Symbol,Int64}, mem::Dict{Int64,Int64}) =
         # case. ptr q → address 5, which `s.memory` does not contain.
         s2 = _istate(Dict(:q => Int64(5)))
         BennettVM.forward(_ML(:d, :q), s2)
-        @test s2.locals[:d] === Int64(0)
+        @test BennettVM.active_locals(s2)[:d] === Int64(0)
         @test !haskey(s2.memory, 5)     # the load did NOT materialise the cell
     end
 
@@ -125,7 +125,7 @@ _istate(locals::Dict{Symbol,Int64}, mem::Dict{Int64,Int64}) =
         s = _istate(Dict(:p => Int64(3), :v => Int64(42)))
         BennettVM.forward(_MS(:p, :v), s)   # M[3] := 42
         BennettVM.forward(_ML(:d, :p), s)   # d := M[3]
-        @test s.locals[:d] == 42
+        @test BennettVM.active_locals(s)[:d] == 42
     end
 
     # ------------------------------------------------------------------
@@ -142,7 +142,7 @@ _istate(locals::Dict{Symbol,Int64}, mem::Dict{Int64,Int64}) =
         s2 = _istate(Dict(:p => Int64(1), :d => Int64(99)),
                      Dict(Int64(1) => Int64(5)))
         BennettVM.forward(_ML(:d, :p), s2)
-        @test s2.locals[:d] == 5            # overwritten from 99 to 5
+        @test BennettVM.active_locals(s2)[:d] == 5            # overwritten from 99 to 5
     end
 
     # ------------------------------------------------------------------

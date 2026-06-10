@@ -56,7 +56,7 @@
     s_before = deepcopy(s)
     s2 = BennettVM.forward(begin_inst, s)
     @test s2.pc == 1
-    @test s2.locals == s_before.locals   # locals unchanged
+    @test BennettVM.active_locals(s2) == BennettVM.active_locals(s_before)   # locals unchanged
     @test s2.status === :running
     s3 = BennettVM.inverse(begin_inst, s2, nothing)
     @test s3 == s_before
@@ -68,7 +68,7 @@ end
     s_before = deepcopy(s)
     s2 = BennettVM.forward(end_inst, s)
     @test s2.pc == 6
-    @test s2.locals == s_before.locals
+    @test BennettVM.active_locals(s2) == BennettVM.active_locals(s_before)
     s3 = BennettVM.inverse(end_inst, s2, nothing)
     @test s3 == s_before
 end
@@ -127,7 +127,7 @@ end
     s_before = deepcopy(s)
     s2 = BennettVM.forward(instr, s)
     @test s2.pc == 4
-    @test s2.locals == s_before.locals
+    @test BennettVM.active_locals(s2) == BennettVM.active_locals(s_before)
     @test s2.status === :running
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test s3 == s_before
@@ -139,7 +139,7 @@ end
     s_before = deepcopy(s)
     s2 = BennettVM.forward(instr, s)
     @test s2.pc == 6
-    @test s2.locals == s_before.locals
+    @test BennettVM.active_locals(s2) == BennettVM.active_locals(s_before)
     @test s2.status === :running
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test s3 == s_before
@@ -209,7 +209,7 @@ end
     s_before = deepcopy(s)
     s2 = BennettVM.forward(instr, s)
     @test s2.pc == 1
-    @test s2.locals == s_before.locals
+    @test BennettVM.active_locals(s2) == BennettVM.active_locals(s_before)
     @test s2.status === :running
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test s3 == s_before
@@ -221,7 +221,7 @@ end
     s_before = deepcopy(s)
     s2 = BennettVM.forward(instr, s)
     @test s2.pc == 4
-    @test s2.locals == s_before.locals
+    @test BennettVM.active_locals(s2) == BennettVM.active_locals(s_before)
     @test s2.status === :running
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test s3 == s_before

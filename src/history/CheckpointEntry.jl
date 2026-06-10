@@ -80,7 +80,7 @@ state; replay forward". No nondeterminism log is needed at all.
 # Why deep-copy in the constructor (the spike Q2.2 lesson)
 
 `IState` is a `mutable struct` carrying two `Dict` fields
-(`locals::Dict{Symbol,Int64}` and `memory::Dict{Int64,Int64}`,
+(each `Frame.locals::Dict{Symbol,Int64}` and `memory::Dict{Int64,Int64}`,
 `src/ir/IState.jl:134-138`). The spike retrospective Q2.1 documents
 the load-bearing footgun: Julia's default field-by-field semantics on
 a `mutable struct` reduce to **identity** (`===`) on Dict fields, not

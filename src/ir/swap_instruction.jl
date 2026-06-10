@@ -11,7 +11,7 @@ RC3 four-field register-exchange form
 where `target1` (`x`) and `target2` (`y`) are *created* SSA names
 that receive the values previously held by `source1` (`z`) and
 `source2` (`w`) respectively, while `source1` and `source2` are
-*destroyed* (removed from `s.locals`). This is the canonical example
+*destroyed* (removed from `active_locals(s)`). This is the canonical example
 of an *injective* instruction — its inverse swaps the (target,
 source) pairs and uses no history record. `is_injective` (wired in
 M6.1) returns `true` for this type.
@@ -57,8 +57,8 @@ code-completion tooltips carry it.
 `SwapInstruction` is injective: forward execution loses no
 information, because `(z, w) → (x, y)` is a bijection — the pair
 of values is preserved, only the names change. The inverse
-reconstruction is structural: read `s.locals[target1]` and
-`s.locals[target2]`, recreate `source1` / `source2` with those
+reconstruction is structural: read `active_locals(s)[target1]` and
+`active_locals(s)[target2]`, recreate `source1` / `source2` with those
 values, delete the targets. **No `prev` argument is ever consulted,
 and `step!` (M3.x) never pushes a history entry for a
 SwapInstruction.** This is the M6.1 "no history needed" property
@@ -138,9 +138,9 @@ end
 """
     forward(instr::SwapInstruction, s::IState) -> IState
 
-Execute `x, y := z, w` in-place on `s`. Reads `s.locals[source1]`
-and `s.locals[source2]`, deletes both, writes the values into
-`s.locals[target1]` and `s.locals[target2]` respectively, and
+Execute `x, y := z, w` in-place on `s`. Reads `active_locals(s)[source1]`
+and `active_locals(s)[source2]`, deletes both, writes the values into
+`active_locals(s)[target1]` and `active_locals(s)[target2]` respectively, and
 bumps `pc`. Two reads, two deletes, two creates.
 
 The four-field form means the assignment is **positional**:
@@ -151,12 +151,12 @@ the round-trip invariant under any lowering that uses the
 non-degenerate four-field form.)
 """
 function forward(instr::SwapInstruction, s::IState)::IState
-    v1 = s.locals[instr.source1]
-    v2 = s.locals[instr.source2]
-    delete!(s.locals, instr.source1)
-    delete!(s.locals, instr.source2)
-    s.locals[instr.target1] = v1
-    s.locals[instr.target2] = v2
+    v1 = active_locals(s)[instr.source1]
+    v2 = active_locals(s)[instr.source2]
+    delete!(active_locals(s), instr.source1)
+    delete!(active_locals(s), instr.source2)
+    active_locals(s)[instr.target1] = v1
+    active_locals(s)[instr.target2] = v2
     s.pc += 1
     return s
 end
@@ -166,7 +166,7 @@ end
 
 Undo a previous `forward` on `instr`. Structurally reversible —
 the inverse swaps the (target, source) roles: read
-`s.locals[target1]` / `s.locals[target2]`, delete the targets,
+`active_locals(s)[target1]` / `active_locals(s)[target2]`, delete the targets,
 recreate `source1` / `source2` with those values, decrement `pc`.
 
 The `prev` argument is part of the dispatch signature (M2.4
@@ -177,12 +177,12 @@ to pass `nothing`. See this file's top-of-module docstring for
 the "no history needed" rationale.
 """
 function inverse(instr::SwapInstruction, s::IState, prev)::IState
-    v1 = s.locals[instr.target1]
-    v2 = s.locals[instr.target2]
-    delete!(s.locals, instr.target1)
-    delete!(s.locals, instr.target2)
-    s.locals[instr.source1] = v1
-    s.locals[instr.source2] = v2
+    v1 = active_locals(s)[instr.target1]
+    v2 = active_locals(s)[instr.target2]
+    delete!(active_locals(s), instr.target1)
+    delete!(active_locals(s), instr.target2)
+    active_locals(s)[instr.source1] = v1
+    active_locals(s)[instr.source2] = v2
     s.pc -= 1
     return s
 end

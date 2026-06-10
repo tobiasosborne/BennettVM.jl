@@ -55,19 +55,19 @@
         :running)
     s_before = deepcopy(s)
     s2 = BennettVM.forward(instr, s)
-    @test s2.locals[:x] == Int64(0xfc)
-    @test !haskey(s2.locals, :y)
+    @test BennettVM.active_locals(s2)[:x] == Int64(0xfc)
+    @test !haskey(BennettVM.active_locals(s2), :y)
     @test s2.pc == 1
     # operands a, b survive forward (they are read, not consumed)
-    @test s2.locals[:a] == Int64(0x0f)
-    @test s2.locals[:b] == Int64(0x33)
+    @test BennettVM.active_locals(s2)[:a] == Int64(0x0f)
+    @test BennettVM.active_locals(s2)[:b] == Int64(0x33)
 
     # Round-trip: inverse restores the initial state exactly.
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test s3 == s_before
     @test s3.pc == 0
-    @test haskey(s3.locals, :y)
-    @test !haskey(s3.locals, :x)
+    @test haskey(BennettVM.active_locals(s3), :y)
+    @test !haskey(BennettVM.active_locals(s3), :x)
 end
 
 @testset "ArithmeticAssignment :add and :sub (M2.6)" begin
@@ -78,8 +78,8 @@ end
         :running)
     s_before = deepcopy(s)
     s2 = BennettVM.forward(instr, s)
-    @test s2.locals[:x] == Int64(22)
-    @test !haskey(s2.locals, :y)
+    @test BennettVM.active_locals(s2)[:x] == Int64(22)
+    @test !haskey(BennettVM.active_locals(s2), :y)
     @test s2.pc == 1
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test s3 == s_before
@@ -91,8 +91,8 @@ end
         :running)
     s_before = deepcopy(s)
     s2 = BennettVM.forward(instr, s)
-    @test s2.locals[:x] == Int64(38)
-    @test !haskey(s2.locals, :y)
+    @test BennettVM.active_locals(s2)[:x] == Int64(38)
+    @test !haskey(BennettVM.active_locals(s2), :y)
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test s3 == s_before
 end
@@ -118,9 +118,9 @@ end
         :running)
     s_before = deepcopy(s)
     s2 = BennettVM.forward(instr, s)
-    @test s2.locals[:x] == Int64(7) ⊻ (Int64(2) + Int64(1))
-    @test s2.locals[:x] == Int64(4)
-    @test !haskey(s2.locals, :y)
+    @test BennettVM.active_locals(s2)[:x] == Int64(7) ⊻ (Int64(2) + Int64(1))
+    @test BennettVM.active_locals(s2)[:x] == Int64(4)
+    @test !haskey(BennettVM.active_locals(s2), :y)
     s3 = BennettVM.inverse(instr, s2, nothing)
     @test s3 == s_before
 end

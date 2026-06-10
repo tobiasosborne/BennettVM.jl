@@ -67,7 +67,7 @@ mirrors the `CallInstruction` v5-deferral pattern
 # Operand kinds (Union{Symbol,Int64}) and operator domain
 
 `lhs` / `rhs` may each independently be an SSA reference (`Symbol`,
-looked up in `s.locals`) or a literal `Int64` — the same
+looked up in `active_locals(s)`) or a literal `Int64` — the same
 `Union{Symbol,Int64}` convention `ArithmeticAssignment` uses; resolution
 routes through the reused `_resolve` helper (Law 2). The `op` domain is
 `BINARY_OPERATORS ∪ COMPARISON_OPERATORS`: `Define` is the create that
@@ -167,14 +167,14 @@ end
     forward(instr::Define, s::IState) -> IState
 
 Execute `target := lhs op rhs` in-place on `s`. Resolves `lhs` / `rhs`
-against `s.locals` (or uses the literal `Int64`), applies `op` via the
+against `active_locals(s)` (or uses the literal `Int64`), applies `op` via the
 reused `_apply_binop` **at `instr.width`** (i`width` semantics — ADR 0012
 R1; `width == 64` is a no-op), and writes the result into
-`s.locals[target]`, bumping `pc`. The operands are **read, never deleted**
+`active_locals(s)[target]`, bumping `pc`. The operands are **read, never deleted**
 — the non-destructive create property (contrast
 `ArithmeticAssignment.forward`, which `delete!`s its `source`).
 
-If `target` already exists in `s.locals` (the loop / cross-iteration
+If `target` already exists in `active_locals(s)` (the loop / cross-iteration
 case), it is **overwritten** without error — that is the intended
 forward semantics; reversibility of the overwrite is the L3
 checkpoint-replay layer's responsibility (see this file's top-of-module
@@ -186,7 +186,7 @@ function forward(instr::Define, s::IState)::IState
     # Width-aware: `_apply_binop` computes in i`width` semantics (ADR 0012
     # R1, bead bennettvm-bgc). `width == 64` (the default) is a no-op, so a
     # synthetic / hand-built Int64 Define is byte-identical to before.
-    s.locals[instr.target] = _apply_binop(instr.op, lv, rv, instr.width)
+    active_locals(s)[instr.target] = _apply_binop(instr.op, lv, rv, instr.width)
     s.pc += 1
     return s
 end

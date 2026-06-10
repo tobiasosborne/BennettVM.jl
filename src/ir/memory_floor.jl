@@ -13,13 +13,13 @@ session; see `test/test_memory_floor_cll.jl`), and these two instructions
 are what `lower_vm` was missing to run it.
 
     MemoryStore(ptr, value)  →  forward  s.memory[resolve_ptr(ptr)] = resolve(value)
-    MemoryLoad(dest, ptr)    →  forward  s.locals[dest]            = get(s.memory, resolve_ptr(ptr), 0)
+    MemoryLoad(dest, ptr)    →  forward  active_locals(s)[dest]            = get(s.memory, resolve_ptr(ptr), 0)
 
-A *pointer* in this model is just an `Int64` address living in `s.locals`,
+A *pointer* in this model is just an `Int64` address living in `active_locals(s)`,
 materialised by the bump allocator at lowering time (ADR 0014 §D1):
 `IRAlloca(dest, …)` emits a `Define(dest, base, :add, 0)` so the pointer SSA
 value `dest` holds its base address. `resolve_ptr` therefore reads that
-`Int64` out of `s.locals` (the `ptr` operand is an `SSAOperand` naming the
+`Int64` out of `active_locals(s)` (the `ptr` operand is an `SSAOperand` naming the
 alloca dest) — it is exactly `_resolve` specialised to "this operand is an
 address", reused per Law 2.
 
@@ -187,7 +187,7 @@ end
 """
     resolve_ptr(ptr::Symbol, s::IState) -> Int64
 
-Read the `Int64` address a pointer SSA name holds in `s.locals`. A pointer
+Read the `Int64` address a pointer SSA name holds in `active_locals(s)`. A pointer
 is just an `Int64` base address materialised by the bump allocator's
 `Define(ptr, base, :add, 0)` at lowering time (ADR 0014 §D1). Reuses
 `_resolve` (Law 2) and asserts the result is an `Int64` — a pointer must
@@ -202,7 +202,7 @@ resolve_ptr(ptr::Symbol, s::IState)::Int64 = _resolve(ptr, s)
 
 Execute `M[addr] := value` in-place on `s`. Resolves the pointer to its
 `Int64` address via `resolve_ptr`, resolves the value via the reused
-`_resolve` (a `Symbol` looked up in `s.locals`, or the literal `Int64`),
+`_resolve` (a `Symbol` looked up in `active_locals(s)`, or the literal `Int64`),
 writes the cell, and bumps `pc`. The value operand is **read, never
 deleted** — an LLVM `store` does not consume its value SSA name. The prior
 cell contents are **overwritten** without error; recovering them is the L3
@@ -222,14 +222,14 @@ end
 Execute `dest := M[addr]` in-place on `s`. Resolves the pointer to its
 `Int64` address via `resolve_ptr`, reads the cell with the zero-init
 convention (`get(s.memory, addr, Int64(0))` — an address never written
-reads as `0`), writes the result into `s.locals[dest]`, and bumps `pc`. If
-`dest` already exists in `s.locals` (the loop / cross-iteration case), it is
+reads as `0`), writes the result into `active_locals(s)[dest]`, and bumps `pc`. If
+`dest` already exists in `active_locals(s)` (the loop / cross-iteration case), it is
 **overwritten** without error; recovering the prior value is the L3
 checkpoint-replay layer's responsibility.
 """
 function forward(instr::MemoryLoad, s::IState)::IState
     a = resolve_ptr(instr.ptr, s)
-    s.locals[instr.dest] = get(s.memory, a, Int64(0))   # zero-init: absent = 0.
+    active_locals(s)[instr.dest] = get(s.memory, a, Int64(0))   # zero-init: absent = 0.
     s.pc += 1
     return s
 end

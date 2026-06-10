@@ -82,7 +82,7 @@ using BennettVM
     # fwd_address of the first block is 1 (the entry instruction is the
     # first instruction in the flat stream).
     @test rs.current.pc == 1
-    @test rs.current.locals[:n] == 7
+    @test BennettVM.active_locals(rs.current)[:n] == 7
     @test rs.current.status === :running
     @test isempty(rs.history)
     @test isempty(rs.current.memory)
@@ -137,8 +137,8 @@ end
     )
     # Exact match — succeeds and binds both names.
     rs = initial_state(vm, Dict(:n => Int64(1), :m => Int64(2)))
-    @test rs.current.locals[:n] == 1
-    @test rs.current.locals[:m] == 2
+    @test BennettVM.active_locals(rs.current)[:n] == 1
+    @test BennettVM.active_locals(rs.current)[:m] == 2
 end
 
 @testset "initial_state fallback when entry isn't Begin (M3.1)" begin
@@ -161,7 +161,7 @@ end
     vm = VMProgram([bb], BennettVM.LabelTable([bb]), :main, [64], [64])
 
     rs = initial_state(vm, Dict(:anything => Int64(42)))
-    @test rs.current.locals[:anything] == 42
+    @test BennettVM.active_locals(rs.current)[:anything] == 42
     @test rs.current.status === :running
 end
 
@@ -178,8 +178,8 @@ end
     vm = VMProgram([bb], BennettVM.LabelTable([bb]), :main, [64], [64])
 
     rs = initial_state(vm, Dict(:n => Int32(5)))
-    @test rs.current.locals[:n] == Int64(5)
-    @test rs.current.locals[:n] isa Int64
+    @test BennettVM.active_locals(rs.current)[:n] == Int64(5)
+    @test BennettVM.active_locals(rs.current)[:n] isa Int64
 end
 
 # ---------------------------------------------------------------------
@@ -222,7 +222,7 @@ end
     @test res == Dict(:x => Int64(42), :y => Int64(7))
     # Returned dict is a COPY — mutations don't reach the RState.
     res[:x] = Int64(999)
-    @test r.current.locals[:x] == 42   # unchanged
+    @test BennettVM.active_locals(r.current)[:x] == 42   # unchanged
 end
 
 @testset "result accessor — non-halted errors (M3.2)" begin
@@ -270,7 +270,7 @@ end
     # n XOR (n XOR 0) = 0 — chosen because the value is structurally
     # forced and the lhs/source aliasing on `:n` exercises the
     # destroy-source path explicitly (forward resolves lhs from
-    # `s.locals[:n]` BEFORE deleting `:n` per the M2.6 forward order).
+    # `BennettVM.active_locals(s)[:n]` BEFORE deleting `:n` per the M2.6 forward order).
     bb = BennettVM.BasicBlock(
         :main,
         BennettVM.BeginInstruction(:main, [:n]),
@@ -287,15 +287,15 @@ end
     # status stays :running.
     step!(rs, vm)
     @test rs.current.pc == 2
-    @test rs.current.locals[:n] == 7
+    @test BennettVM.active_locals(rs.current)[:n] == 7
     @test rs.current.status === :running
 
     # Step 2: ArithmeticAssignment at pc=2 — destroys :n, creates :x;
     # pc → 3; status stays :running.
     step!(rs, vm)
     @test rs.current.pc == 3
-    @test !haskey(rs.current.locals, :n)
-    @test rs.current.locals[:x] == 7 ⊻ (7 ⊻ 0)
+    @test !haskey(BennettVM.active_locals(rs.current), :n)
+    @test BennettVM.active_locals(rs.current)[:x] == 7 ⊻ (7 ⊻ 0)
     @test rs.current.status === :running
 
     # Step 3: EndInstruction at pc=3 — pc → 4 (past the end of the
@@ -306,11 +306,11 @@ end
 
     # Idempotency contract: step! on a halted state is a silent no-op.
     pc_before = rs.current.pc
-    locals_before = copy(rs.current.locals)
+    locals_before = copy(BennettVM.active_locals(rs.current))
     step!(rs, vm)
     @test rs.current.pc == pc_before
     @test rs.current.status === :halted
-    @test rs.current.locals == locals_before
+    @test BennettVM.active_locals(rs.current) == locals_before
 
     # `result` works on the halted RState — defensive copy of locals.
     @test result(rs)[:x] == 7 ⊻ (7 ⊻ 0)
@@ -373,7 +373,7 @@ end
     @test r.current.pc == 5         # unchanged (pc=5 is past program end;
                                     # but step! never tried to resolve it)
     @test r.current.status === :halted
-    @test r.current.locals[:x] == 1
+    @test BennettVM.active_locals(r.current)[:x] == 1
 
     # Same idempotency holds for :error status — Rule 1 / PRD v4 §3.16
     # silent-no-op-when-not-:running contract.
@@ -426,7 +426,7 @@ end
 
     run!(rs, vm)
     @test is_halted(rs)
-    @test rs.current.locals[:x] == 42 ⊻ (42 ⊻ 0)
+    @test BennettVM.active_locals(rs.current)[:x] == 42 ⊻ (42 ⊻ 0)
 end
 
 @testset "run! returns same RState for chaining (M3.4)" begin
@@ -556,10 +556,10 @@ end
     # :n was renamed to :m via the body of bb1 (xor identity), then
     # :m → :m_in across the cross-block edge, then :m_in → :r via
     # bb2's body (xor identity again). Final result preserves 99.
-    @test rs.current.locals[:r] == 99 ⊻ (99 ⊻ 0)
-    @test !haskey(rs.current.locals, :n)
-    @test !haskey(rs.current.locals, :m)
-    @test !haskey(rs.current.locals, :m_in)
+    @test BennettVM.active_locals(rs.current)[:r] == 99 ⊻ (99 ⊻ 0)
+    @test !haskey(BennettVM.active_locals(rs.current), :n)
+    @test !haskey(BennettVM.active_locals(rs.current), :m)
+    @test !haskey(BennettVM.active_locals(rs.current), :m_in)
 end
 
 @testset "cross-block ConditionalExit — true and false branches (M3.6)" begin
@@ -606,20 +606,20 @@ end
     rs_t = initial_state(vm, Dict(:n => Int64(42), :c => Int64(1)))
     run!(rs_t, vm)
     @test is_halted(rs_t)
-    @test rs_t.current.locals[:r] == 100
+    @test BennettVM.active_locals(rs_t.current)[:r] == 100
 
     # Branch :c = 0 (false) — should go to :fbr; expected r == 200.
     rs_f = initial_state(vm, Dict(:n => Int64(42), :c => Int64(0)))
     run!(rs_f, vm)
     @test is_halted(rs_f)
-    @test rs_f.current.locals[:r] == 200
+    @test BennettVM.active_locals(rs_f.current)[:r] == 200
 
     # Sanity: the predicate :c is NOT consumed by the dispatch —
     # it should still be in locals after the branch fires.
     # (Per M3.6 _handle_cross_block_dispatch! docstring: the
     # predicate remains live to preserve RSSA invertibility.)
-    @test rs_t.current.locals[:c] == 1
-    @test rs_f.current.locals[:c] == 0
+    @test BennettVM.active_locals(rs_t.current)[:c] == 1
+    @test BennettVM.active_locals(rs_f.current)[:c] == 0
 end
 
 @testset "_rename_args_to_params! identity case (M3.6)" begin

@@ -150,25 +150,25 @@ end
     # invariant: without it, subsequent step! mutations would corrupt
     # rs.initial via the Dict-aliasing path.
     @test rs.initial !== rs.current
-    @test rs.initial.locals !== rs.current.locals
+    @test BennettVM.active_locals(rs.initial) !== BennettVM.active_locals(rs.current)
 
     # The initial reflects step-0 state per PRD v4 §3.9: pc =
     # entry-block fwd_address, locals == input dict, status :running.
     @test rs.initial.pc == vm.label_table[vm.entry_label].fwd_address
-    @test rs.initial.locals == Dict(:n0 => Int64(3), :steps0 => Int64(0))
+    @test BennettVM.active_locals(rs.initial) == Dict(:n0 => Int64(3), :steps0 => Int64(0))
     @test rs.initial.status === :running
 
     # Step forward; initial MUST remain frozen at step-0 state
     # (defense-in-depth: this confirms the deepcopy in both
     # initial_state AND the RState 2-arg constructor took effect).
-    initial_locals_snapshot = copy(rs.initial.locals)
+    initial_locals_snapshot = copy(BennettVM.active_locals(rs.initial))
     initial_pc_snapshot = rs.initial.pc
     initial_status_snapshot = rs.initial.status
     for _ in 1:5
         step!(rs, vm; checkpoint_interval=64)
     end
     @test rs.initial.pc == initial_pc_snapshot
-    @test rs.initial.locals == initial_locals_snapshot
+    @test BennettVM.active_locals(rs.initial) == initial_locals_snapshot
     @test rs.initial.status === initial_status_snapshot
     # And the rs.current HAS moved.
     @test rs.current != rs.initial
@@ -463,23 +463,23 @@ end
 
     # Capture the snapshot's state BEFORE the mutation.
     snap_pc_before = rs.history[1].snapshot.pc
-    snap_locals_before = copy(rs.history[1].snapshot.locals)
+    snap_locals_before = copy(BennettVM.active_locals(rs.history[1].snapshot))
     snap_status_before = rs.history[1].snapshot.status
 
     # Forcibly mutate rs.current. None of these MAY reach the
     # checkpoint snapshot.
     rs.current.pc = -42
     rs.current.status = :error
-    for k in collect(keys(rs.current.locals))
-        rs.current.locals[k] = Int64(-999)
+    for k in collect(keys(BennettVM.active_locals(rs.current)))
+        BennettVM.active_locals(rs.current)[k] = Int64(-999)
     end
 
     # Snapshot unchanged.
     @test rs.history[1].snapshot.pc == snap_pc_before
-    @test rs.history[1].snapshot.locals == snap_locals_before
+    @test BennettVM.active_locals(rs.history[1].snapshot) == snap_locals_before
     @test rs.history[1].snapshot.status === snap_status_before
     # And they are distinct Dict instances.
-    @test rs.history[1].snapshot.locals !== rs.current.locals
+    @test BennettVM.active_locals(rs.history[1].snapshot) !== BennettVM.active_locals(rs.current)
 end
 
 @testset "Restore-side deepcopy invariant — initial fallback case (M4.3)" begin
@@ -497,18 +497,18 @@ end
     @test rs.current == rs.initial
 
     initial_pc_before = rs.initial.pc
-    initial_locals_before = copy(rs.initial.locals)
+    initial_locals_before = copy(BennettVM.active_locals(rs.initial))
     initial_status_before = rs.initial.status
 
     # Mutate s.current. The initial anchor MUST remain untouched.
     rs.current.pc = -1
-    rs.current.locals[:junk] = Int64(123)
+    BennettVM.active_locals(rs.current)[:junk] = Int64(123)
     rs.current.status = :error
 
     @test rs.initial.pc == initial_pc_before
-    @test rs.initial.locals == initial_locals_before
+    @test BennettVM.active_locals(rs.initial) == initial_locals_before
     @test rs.initial.status === initial_status_before
-    @test rs.initial.locals !== rs.current.locals
+    @test BennettVM.active_locals(rs.initial) !== BennettVM.active_locals(rs.current)
 end
 
 @testset "No-spurious-push during replay (M4.3 / M6.2)" begin

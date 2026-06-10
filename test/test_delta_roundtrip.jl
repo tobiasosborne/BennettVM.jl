@@ -392,8 +392,8 @@ end
     @test rs.current == initial_current
     @test rs.current == rs.initial
     @test rs.current.status === :running          # NOT :halted post-unrun!
-    @test rs.current.locals[:n0] == Int64(5)
-    @test rs.current.locals[:steps0] == Int64(0)
+    @test BennettVM.active_locals(rs.current)[:n0] == Int64(5)
+    @test BennettVM.active_locals(rs.current)[:steps0] == Int64(0)
 end
 
 @testset "M7.7 — per-step inverse on countdown(3) with delta history (PRD §3.13)" begin

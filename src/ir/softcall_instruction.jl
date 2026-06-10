@@ -69,7 +69,7 @@ an `Int64` is `4611686018427387904` (positive here, but a bit-pattern
 with the sign bit set — any negative double — would be a *negative*
 `Int64`). `forward` therefore:
 
-  1. Resolves each arg from `s.locals` (or a literal `Int64`).
+  1. Resolves each arg from `active_locals(s)` (or a literal `Int64`).
   2. **Reinterprets** the stored `Int64` to the unsigned type of the
      arg's `arg_widths[i]` (32 → `UInt32`, 64 → `UInt64`) via a
      mask-then-`%`-unsigned, so a sign-extended-on-arrival `Int64`
@@ -79,7 +79,7 @@ with the sign bit set — any negative double — would be a *negative*
   4. **Reinterprets the unsigned result back to `Int64`**, masked to
      `ret_width` (32 → low-32-bit zero-extended into the `Int64` slot;
      64 → the full bit-pattern reinterpreted), and stores it in
-     `s.locals[dest]`.
+     `active_locals(s)[dest]`.
 
 The mask-and-reinterpret is the one place width matters (the same
 `_low_mask` discipline `CastInstruction` uses): the rest of the VM
@@ -318,15 +318,15 @@ end
     forward(instr::SoftCall, s::IState) -> IState
 
 Execute `dest := callee_name(args...)` in-place on `s`. Resolves each
-arg against `s.locals` (or uses the literal `Int64`) via the reused
+arg against `active_locals(s)` (or uses the literal `Int64`) via the reused
 `_resolve`, reinterprets each to its `arg_widths[i]` unsigned bit-
 pattern, calls the registered `soft_f*` host function, reinterprets the
 unsigned result back to `Int64` masked to `ret_width`, writes it into
-`s.locals[dest]`, and bumps `pc`. The args are **read, never deleted**
+`active_locals(s)[dest]`, and bumps `pc`. The args are **read, never deleted**
 — the non-destructive create property (contrast `ArithmeticAssignment.
 forward`, which `delete!`s its `source`).
 
-If `dest` already exists in `s.locals` (the loop / cross-iteration
+If `dest` already exists in `active_locals(s)` (the loop / cross-iteration
 case), it is **overwritten** without error — reversibility of the
 overwrite (and of the lossy FP op) is the L3 checkpoint-replay layer's
 responsibility (see this file's top-of-module docstring). The `callee_
@@ -345,7 +345,7 @@ function forward(instr::SoftCall, s::IState)::IState
                                   instr.arg_widths[i])
                 for i in eachindex(instr.args)]
     u = f(uargs...)
-    s.locals[instr.dest] = _from_soft_unsigned(u, instr.ret_width)
+    active_locals(s)[instr.dest] = _from_soft_unsigned(u, instr.ret_width)
     s.pc += 1
     return s
 end

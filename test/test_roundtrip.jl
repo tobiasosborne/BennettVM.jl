@@ -129,7 +129,7 @@
 #
 #   - Replace s.initial fallback with default IState() inside
 #     unstep!:
-#       → test 2 RED (current.pc != initial.pc; current.locals
+#       → test 2 RED (current.pc != initial.pc; BennettVM.active_locals(current)
 #         missing :n0 / :steps0 inputs).
 #
 #   - K=1 degenerate (every step pushes):
@@ -205,7 +205,7 @@ end
     # correctness without history pushes (K never matters because
     # M3.8 predates M4.2); M4.5 must re-pin it specifically WITH the
     # checkpoint pushes firing during the run, because a buggy push
-    # path (e.g., one that accidentally mutates s.current.locals via
+    # path (e.g., one that accidentally mutates BennettVM.active_locals(s.current) via
     # CheckpointEntry's snapshot field due to a dropped deepcopy)
     # could corrupt the forward computation silently.
     vm = countdown_program(5)
@@ -248,8 +248,8 @@ end
     # initial-step locals, the content equality above would catch it
     # but this explicit pin makes the failure message readable.
     @test rs.current.pc == initial_current.pc
-    @test rs.current.locals[:n0] == Int64(5)
-    @test rs.current.locals[:steps0] == Int64(0)
+    @test BennettVM.active_locals(rs.current)[:n0] == Int64(5)
+    @test BennettVM.active_locals(rs.current)[:steps0] == Int64(0)
 end
 
 @testset "M4.5 — per-step forward snapshot capture (countdown(5), K=4)" begin
@@ -463,7 +463,7 @@ end
     @test rs.current == initial_current
     @test rs.current == rs.initial
     @test rs.current.status === :running
-    @test rs.current.locals[:n] == Int64(7)   # original input preserved
+    @test BennettVM.active_locals(rs.current)[:n] == Int64(7)   # original input preserved
 end
 
 @testset "M4.5 — history contains exactly the expected entries during run (K=4)" begin

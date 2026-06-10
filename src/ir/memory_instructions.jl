@@ -8,7 +8,7 @@ RC3 in-place memory-update form
 
     M[addr] ⊕= (lhs op rhs)
 
-where `addr` is an address — either a `Symbol` looked up in `s.locals`
+where `addr` is an address — either a `Symbol` looked up in `active_locals(s)`
 or a literal `Int64` — and `M[addr]` is read from / written to
 `s.memory` (the `Int64 → Int64` sparse heap added in this same
 milestone, see `src/ir/IState.jl`). The modification operator `⊕` is
@@ -138,7 +138,7 @@ end
 """
     forward(instr::MemoryAssignment, s::IState) -> IState
 
-Execute `M[addr] ⊕= (lhs op rhs)` in-place on `s`. Reads `s.locals`
+Execute `M[addr] ⊕= (lhs op rhs)` in-place on `s`. Reads `active_locals(s)`
 for any `Symbol`-typed operand; reads `s.memory[addr]` (defaulting to
 `Int64(0)` if absent — the zero-init convention) for the old cell
 value; writes the new cell value back. Bumps `pc`.
@@ -274,7 +274,7 @@ end
 M7.4 NamedTuple specialisation per ADR 0002 §Design Decision 4
 (bd `bennettvm-bk5`). Per ADR 0002 §DeltaEntry payload schema row 2,
 the payload is `NamedTuple()` — `MemoryAssignment`'s inverse uses
-current state alone (the surviving operands in `s.locals` and the
+current state alone (the surviving operands in `active_locals(s)` and the
 post-forward cell at `s.memory[a]`, with `dual_modop` recovering the
 old cell value; the delete-on-zero rule re-establishes the zero-init
 absent-key state at `:189-195` above).
@@ -329,7 +329,7 @@ Implements the RC3 / Mogensen-RSSA register-memory exchange form
 where `target` (`x`) is a *created* SSA name that receives the OLD
 memory cell at address `y`, while `source` (`z`) is a *destroyed* SSA
 name whose value moves into `M[y]`. The address operand `y` is either
-an SSA name (read from `s.locals`) or a literal `Int64`. The exchange
+an SSA name (read from `active_locals(s)`) or a literal `Int64`. The exchange
 is **atomic**: the read of the old memory value and the write of
 `z`'s value happen as a single bijective step on the (register, cell)
 pair.
@@ -475,11 +475,11 @@ Execute `x := M[y] := z` atomically on `s`:
 
   1. Resolve `a := y` (locals lookup for a `Symbol`, identity for an
      `Int64`).
-  2. Read `zval := s.locals[source]` and `old := get(s.memory, a, 0)`
+  2. Read `zval := active_locals(s)[source]` and `old := get(s.memory, a, 0)`
      (the zero-init convention: an unset address reads as `0`).
   3. Write `s.memory[a] := zval` (M[a] receives z's old value).
-  4. Delete `s.locals[source]` (z is destroyed).
-  5. Insert `s.locals[target] := old` (x is created with the old
+  4. Delete `active_locals(s)[source]` (z is destroyed).
+  5. Insert `active_locals(s)[target] := old` (x is created with the old
      M[a]).
   6. Bump `pc`.
 
@@ -491,11 +491,11 @@ single-cell exchange is well-defined.
 """
 function forward(instr::MemoryInterchange, s::IState)::IState
     a    = _resolve(instr.addr, s)
-    zval = s.locals[instr.source]
+    zval = active_locals(s)[instr.source]
     old  = get(s.memory, a, Int64(0))      # zero-init: absent key reads as 0.
     s.memory[a] = zval                     # M[a] receives z's old value.
-    delete!(s.locals, instr.source)        # destroy z.
-    s.locals[instr.target] = old           # create x with the old M[a].
+    delete!(active_locals(s), instr.source)        # destroy z.
+    active_locals(s)[instr.target] = old           # create x with the old M[a].
     s.pc += 1
     return s
 end
@@ -513,15 +513,15 @@ ever pushed for it, and the caller may pass `nothing`.
 # Steps
 
   1. Resolve `a := y`.
-  2. Read `xval := s.locals[target]` (this equals the pre-forward
+  2. Read `xval := active_locals(s)[target]` (this equals the pre-forward
      `M[a]`).
   3. Read `cur := s.memory[a]` (this equals the pre-forward
-     `s.locals[source]`).
+     `active_locals(s)[source]`).
   4. If `xval == 0`, delete `s.memory[a]` (zero-init delete rule
      — restores the absent-key state when `M[a]` was unset before
      forward); otherwise write `s.memory[a] := xval`.
-  5. Delete `s.locals[target]` (x is destroyed).
-  6. Insert `s.locals[source] := cur` (z is restored).
+  5. Delete `active_locals(s)[target]` (x is destroyed).
+  6. Insert `active_locals(s)[source] := cur` (z is restored).
   7. Decrement `pc`.
 
 # The delete-on-zero rule (load-bearing, symmetric with M2.11)
@@ -538,8 +538,8 @@ zero-init address" testset.
 """
 function inverse(instr::MemoryInterchange, s::IState, prev)::IState
     a    = _resolve(instr.addr, s)
-    xval = s.locals[instr.target]          # = pre-forward M[a].
-    cur  = s.memory[a]                     # = pre-forward s.locals[source];
+    xval = active_locals(s)[instr.target]          # = pre-forward M[a].
+    cur  = s.memory[a]                     # = pre-forward active_locals(s)[source];
                                            # must exist post-forward (KeyError
                                            # surfaces a Rule-1 bug if not).
     if xval == Int64(0)
@@ -548,8 +548,8 @@ function inverse(instr::MemoryInterchange, s::IState, prev)::IState
     else
         s.memory[a] = xval
     end
-    delete!(s.locals, instr.target)        # destroy x.
-    s.locals[instr.source] = cur           # restore z.
+    delete!(active_locals(s), instr.target)        # destroy x.
+    active_locals(s)[instr.source] = cur           # restore z.
     s.pc -= 1
     return s
 end
@@ -565,7 +565,7 @@ the memory↔memory exchange form
     M[addr1] <-> M[addr2]
 
 where both addresses are either SSA names (`Symbol`, looked up in
-`s.locals`) or literal `Int64` constants. The two memory cells
+`active_locals(s)`) or literal `Int64` constants. The two memory cells
 exchange values atomically; no register state is read or written.
 
 # Why this is in the injective class (self-inverse)

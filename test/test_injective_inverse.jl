@@ -104,8 +104,8 @@
 #     unused (line 172-177).
 #
 # Mutation that would turn this testset RED: swap the (target ↔ source)
-# pairing in the inverse — e.g., change `s.locals[instr.source1] = v1`
-# to `s.locals[instr.source2] = v1` at line 184. The round-trip
+# pairing in the inverse — e.g., change `BennettVM.active_locals(s)[instr.source1] = v1`
+# to `BennettVM.active_locals(s)[instr.source2] = v1` at line 184. The round-trip
 # assertion would fail at `s3 == s_before` because the values would
 # come back transposed.
 @testset "SwapInstruction inverse(_, _, nothing) — M6.3" begin
@@ -117,21 +117,21 @@
 
     s_post = BennettVM.forward(instr, deepcopy(s_pre))
     @test s_post.pc == 4
-    @test s_post.locals[:p] == -7
-    @test s_post.locals[:q] == 99
-    @test s_post.locals[:other] == 42        # untouched local preserved
-    @test !haskey(s_post.locals, :u)
-    @test !haskey(s_post.locals, :v)
+    @test BennettVM.active_locals(s_post)[:p] == -7
+    @test BennettVM.active_locals(s_post)[:q] == 99
+    @test BennettVM.active_locals(s_post)[:other] == 42        # untouched local preserved
+    @test !haskey(BennettVM.active_locals(s_post), :u)
+    @test !haskey(BennettVM.active_locals(s_post), :v)
 
     # The load-bearing M6.3 call: `prev === nothing`.
     s_recovered = BennettVM.inverse(instr, deepcopy(s_post), nothing)
     @test s_recovered == s_before
     @test s_recovered.pc == 3
-    @test s_recovered.locals[:u] == -7
-    @test s_recovered.locals[:v] == 99
-    @test s_recovered.locals[:other] == 42
-    @test !haskey(s_recovered.locals, :p)
-    @test !haskey(s_recovered.locals, :q)
+    @test BennettVM.active_locals(s_recovered)[:u] == -7
+    @test BennettVM.active_locals(s_recovered)[:v] == 99
+    @test BennettVM.active_locals(s_recovered)[:other] == 42
+    @test !haskey(BennettVM.active_locals(s_recovered), :p)
+    @test !haskey(BennettVM.active_locals(s_recovered), :q)
 end
 
 # -----------------------------------------------------------------------------
@@ -162,7 +162,7 @@ end
 
     s_post = BennettVM.forward(instr, deepcopy(s_pre))
     @test s_post.pc == s_pre.pc + 1                 # 8
-    @test s_post.locals == s_before.locals          # untouched
+    @test BennettVM.active_locals(s_post) == BennettVM.active_locals(s_before)          # untouched
     @test s_post.status === :running
 
     s_recovered = BennettVM.inverse(instr, deepcopy(s_post), nothing)
@@ -189,7 +189,7 @@ end
 
     s_post = BennettVM.forward(instr, deepcopy(s_pre))
     @test s_post.pc == s_pre.pc + 1                 # 13
-    @test s_post.locals == s_before.locals
+    @test BennettVM.active_locals(s_post) == BennettVM.active_locals(s_before)
 
     s_recovered = BennettVM.inverse(instr, deepcopy(s_post), nothing)
     @test s_recovered == s_before
@@ -220,7 +220,7 @@ end
 
     s_post = BennettVM.forward(instr, deepcopy(s_pre))
     @test s_post.pc == s_pre.pc + 1                 # 1
-    @test s_post.locals == s_before.locals
+    @test BennettVM.active_locals(s_post) == BennettVM.active_locals(s_before)
 
     s_recovered = BennettVM.inverse(instr, deepcopy(s_post), nothing)
     @test s_recovered == s_before
@@ -246,7 +246,7 @@ end
 
     s_post = BennettVM.forward(instr, deepcopy(s_pre))
     @test s_post.pc == s_pre.pc + 1                 # 5
-    @test s_post.locals == s_before.locals
+    @test BennettVM.active_locals(s_post) == BennettVM.active_locals(s_before)
 
     s_recovered = BennettVM.inverse(instr, deepcopy(s_post), nothing)
     @test s_recovered == s_before
@@ -266,9 +266,9 @@ end
 #     trip (the trait's "predicate in locals" guarantee).
 #
 # Mutation: at `control_instructions.jl:883`, accidentally `delete!`
-# `s.locals[instr.condition]` (a tempting "undo the predicate read"
-# bug) → s_recovered.locals would lose the `:c` key, assert at
-# `s_recovered == s_before` AND `s_recovered.locals[:c] == 1` go RED.
+# `BennettVM.active_locals(s)[instr.condition]` (a tempting "undo the predicate read"
+# bug) → BennettVM.active_locals(s_recovered) would lose the `:c` key, assert at
+# `s_recovered == s_before` AND `BennettVM.active_locals(s_recovered)[:c] == 1` go RED.
 @testset "ConditionalEntry inverse(_, _, nothing) — M6.3" begin
     instr = BennettVM.ConditionalEntry(:join_blk, [:p],
                                        :true_pred, :false_pred, :c)
@@ -279,13 +279,13 @@ end
 
     s_post = BennettVM.forward(instr, deepcopy(s_pre))
     @test s_post.pc == s_pre.pc + 1                 # 3
-    @test s_post.locals == s_before.locals
-    @test s_post.locals[:c] == 1                    # predicate lives in locals
+    @test BennettVM.active_locals(s_post) == BennettVM.active_locals(s_before)
+    @test BennettVM.active_locals(s_post)[:c] == 1                    # predicate lives in locals
 
     s_recovered = BennettVM.inverse(instr, deepcopy(s_post), nothing)
     @test s_recovered == s_before
     @test s_recovered.pc == s_pre.pc                # 2
-    @test s_recovered.locals[:c] == 1               # predicate preserved
+    @test BennettVM.active_locals(s_recovered)[:c] == 1               # predicate preserved
 end
 
 # -----------------------------------------------------------------------------
@@ -308,13 +308,13 @@ end
 
     s_post = BennettVM.forward(instr, deepcopy(s_pre))
     @test s_post.pc == s_pre.pc + 1                 # 6
-    @test s_post.locals == s_before.locals
-    @test s_post.locals[:c] == 0                    # predicate (false branch)
+    @test BennettVM.active_locals(s_post) == BennettVM.active_locals(s_before)
+    @test BennettVM.active_locals(s_post)[:c] == 0                    # predicate (false branch)
 
     s_recovered = BennettVM.inverse(instr, deepcopy(s_post), nothing)
     @test s_recovered == s_before
     @test s_recovered.pc == s_pre.pc                # 5
-    @test s_recovered.locals[:c] == 0
+    @test BennettVM.active_locals(s_recovered)[:c] == 0
 end
 
 # -----------------------------------------------------------------------------
@@ -353,14 +353,14 @@ end
 
     s_post_a = BennettVM.forward(instr_a, deepcopy(s_pre_a))
     @test s_post_a.pc == 2
-    @test s_post_a.locals[:x] == 13            # old M[100]
-    @test s_post_a.locals[:other] == 7
-    @test !haskey(s_post_a.locals, :z)
+    @test BennettVM.active_locals(s_post_a)[:x] == 13            # old M[100]
+    @test BennettVM.active_locals(s_post_a)[:other] == 7
+    @test !haskey(BennettVM.active_locals(s_post_a), :z)
     @test s_post_a.memory[Int64(100)] == 42    # M[100] := old z
 
     s_rec_a = BennettVM.inverse(instr_a, deepcopy(s_post_a), nothing)
     @test s_rec_a == s_before_a
-    @test s_rec_a.locals[:z] == 42
+    @test BennettVM.active_locals(s_rec_a)[:z] == 42
     @test s_rec_a.memory[Int64(100)] == 13
     @test s_rec_a.memory[Int64(200)] == -1     # untouched cell preserved
 
@@ -375,7 +375,7 @@ end
     s_before_b = deepcopy(s_pre_b)
 
     s_post_b = BennettVM.forward(instr_b, deepcopy(s_pre_b))
-    @test s_post_b.locals[:x] == 0             # old M[300] read as 0
+    @test BennettVM.active_locals(s_post_b)[:x] == 0             # old M[300] read as 0
     # M[300] now present (= old z = 0)? per forward line 377, M[a] := zval
     # unconditionally, so YES the key is present here:
     @test haskey(s_post_b.memory, Int64(300))
@@ -384,8 +384,8 @@ end
     s_rec_b = BennettVM.inverse(instr_b, deepcopy(s_post_b), nothing)
     @test s_rec_b == s_before_b
     @test !haskey(s_rec_b.memory, Int64(300))  # delete-on-zero fired
-    @test s_rec_b.locals[:z] == 0
-    @test !haskey(s_rec_b.locals, :x)
+    @test BennettVM.active_locals(s_rec_b)[:z] == 0
+    @test !haskey(BennettVM.active_locals(s_rec_b), :x)
 end
 
 # -----------------------------------------------------------------------------
@@ -424,7 +424,7 @@ end
     @test s_rec_a == s_before_a
     @test s_rec_a.memory[Int64(10)] == 111
     @test s_rec_a.memory[Int64(20)] == 222
-    @test s_rec_a.locals[:l] == -3
+    @test BennettVM.active_locals(s_rec_a)[:l] == -3
 
     # Case B: one side zero-init (M[40] absent pre-forward).
     instr_b = BennettVM.MemorySwap(Int64(40), Int64(50))
@@ -471,9 +471,9 @@ end
 # self-inverse so dual is redundant" simplification, valid ONLY for
 # :xor) — for :xor specifically THIS WOULD STILL PASS. The
 # discriminating mutation for THIS testset is therefore at line 227:
-# change `s.locals[instr.source] = yval` to `s.locals[instr.source] =
-# xval` → s_recovered.locals[:y] would carry the wrong value,
-# assert at `s_recovered == s_before` AND `s_recovered.locals[:y] == 5`
+# change `BennettVM.active_locals(s)[instr.source] = yval` to `BennettVM.active_locals(s)[instr.source] =
+# xval` → BennettVM.active_locals(s_recovered)[:y] would carry the wrong value,
+# assert at `s_recovered == s_before` AND `BennettVM.active_locals(s_recovered)[:y] == 5`
 # go RED.
 @testset "ArithmeticAssignment(modop=:xor) inverse(_, _, nothing) — M6.3" begin
     instr = BennettVM.ArithmeticAssignment(:x, :y, :xor, :a, :and, :b)
@@ -486,15 +486,15 @@ end
     s_post = BennettVM.forward(instr, deepcopy(s_pre))
     @test s_post.pc == 1
     # forward computes e = 0b1100 & 0b1010 = 0b1000 = 8; x := 5 ⊻ 8 = 13.
-    @test s_post.locals[:x] == 13
-    @test s_post.locals[:keep] == 99            # untouched
-    @test !haskey(s_post.locals, :y)
-    @test haskey(s_post.locals, :a) && haskey(s_post.locals, :b)
+    @test BennettVM.active_locals(s_post)[:x] == 13
+    @test BennettVM.active_locals(s_post)[:keep] == 99            # untouched
+    @test !haskey(BennettVM.active_locals(s_post), :y)
+    @test haskey(BennettVM.active_locals(s_post), :a) && haskey(BennettVM.active_locals(s_post), :b)
 
     s_recovered = BennettVM.inverse(instr, deepcopy(s_post), nothing)
     @test s_recovered == s_before
     @test s_recovered.pc == 0
-    @test s_recovered.locals[:y] == 5
-    @test s_recovered.locals[:keep] == 99
-    @test !haskey(s_recovered.locals, :x)
+    @test BennettVM.active_locals(s_recovered)[:y] == 5
+    @test BennettVM.active_locals(s_recovered)[:keep] == 99
+    @test !haskey(BennettVM.active_locals(s_recovered), :x)
 end

@@ -8,10 +8,10 @@ the BennettVM lowering of Bennett.jl's `IRVarGEP` (the LLVM `getelementptr`
 shape, `../Bennett.jl/src/ir_types.jl:150`) for SC9 Case A Unit 1.
 
     VarGEP(dest, base, index, stride)  →  forward
-        s.locals[dest] = _resolve(base, s) + _resolve(index, s) * stride
+        active_locals(s)[dest] = _resolve(base, s) + _resolve(index, s) * stride
 
 A *pointer* in this model is just an `Int64` cell address living in
-`s.locals` (the ADR 0014 §D1 model — the bump allocator materialises an
+`active_locals(s)` (the ADR 0014 §D1 model — the bump allocator materialises an
 alloca dest via `Define(dest, base, :add, 0)`). `VarGEP` computes a NEW
 pointer `dest` pointing at element `index` of the array whose first cell is
 `base`. The result flows unchanged into a downstream `MemoryStore` /
@@ -136,9 +136,9 @@ end
     forward(instr::VarGEP, s::IState) -> IState
 
 Execute `dest := base + index*stride` in-place on `s`. Resolves the base
-pointer (an `Int64` cell address in `s.locals`) and the index (an SSA value
+pointer (an `Int64` cell address in `active_locals(s)`) and the index (an SSA value
 or a literal) via the reused `_resolve` (Law 2), computes the element cell
-address with the cell stride, writes it into `s.locals[dest]`, and bumps
+address with the cell stride, writes it into `active_locals(s)[dest]`, and bumps
 `pc`. Both `base` and `index` are **read, never deleted** — a `getelementptr`
 does not consume its operands. If `dest` already exists (the loop /
 cross-iteration case) it is **overwritten** without error; recovering the
@@ -148,7 +148,7 @@ top-of-module docstring "is_injective = false").
 function forward(instr::VarGEP, s::IState)::IState
     base = _resolve(instr.base, s)
     idx = _resolve(instr.index, s)
-    s.locals[instr.dest] = base + idx * instr.stride
+    active_locals(s)[instr.dest] = base + idx * instr.stride
     s.pc += 1
     return s
 end
