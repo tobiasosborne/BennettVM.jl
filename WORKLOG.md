@@ -7,6 +7,49 @@
 
 ---
 
+## Session — 2026-06-14 — CW-D1a landed (transitive_callees walker) + ADR-0021 Decision-1 corrected
+
+**Agents:** Opus 4.8 (1M) orchestrator, foreground, autonomous directive ("keep
+working; Opus coders, Sonnet summarization; what would a senior expert demand?").
+3+1 design pass (fresh ground-truth → 2 blind Opus proposers → synthesis) → Opus
+implementer → +1 + hostile review. Serial Julia (Rule 7).
+
+**Landed:** **CW-D1a** (`bennettvm-416r.11` chunk a) — the `transitive_callees`
+typed call-graph walker, in **Bennett.jl** front-end (`src/extract/callgraph.jl`,
+commit `0c2a7f87`; additive, Rule-14 crossing under standing approval). Returns the
+transitive `:invoke` callee closure (root excluded) toward per-callee body
+extraction (D1b) + BVM linkage (D1c). `test_d1a_transitive_callees.jl` 15/15.
+
+**MATERIAL finding (Law 1, the design pass earned its keep):** ADR-0021 Decision 1
+said edges come from the "same O0 inference run." **FALSE on Julia 1.12.5** — at
+`optimize=false` there are ZERO `:invoke`s; edges materialize only at
+`optimize=true`. Walker harvests **edges@optimize=true**, bodies@optimize=false
+(D1b). ADR-0021 **Amendment A** records the correction; Gate 5 is a permanent
+O0-regression tripwire. Closure for `fdict` = {setindex!, ht_keyindex2_shorthash!
+(self-rec), rehash!, AssertionError}; the Case-B length witness IS in `rehash!`
+(`jl_alloc_genericmemory_unchecked`, i64 length arg) — the 2026-06-08 blocker
+dissolves one level down the callgraph, as ADR predicted.
+
+**Closed-world boundary (hostile-review S1):** walker is `:invoke`-only;
+`:foreigncall`/dynamic-`:call`/Builtin intentionally dropped — a typed-callgraph
+closure, NOT a complete leaf inventory. Runtime-intrinsic COMPLETENESS is CW-D2's
+job, fail-loud at D1b/D2 set-assembly (ADR-0021 Decision 2). Documented as a
+contract in `_invoke_callees` so D1b can't silently miss alloc/`_growat!` helpers.
+
+**Gates (orchestrator-run, fresh subprocess):** test_d1a 15/15; `using Bennett`
+clean precompile; Bennett.jl gate-count regression 39/39. Full `Pkg.test` deferred
+to pre-push (additive + caller-less). **Pin:** repin deferred to D1c (BVM doesn't
+consume the walker yet — don't bump the tested-against SHA before testing against
+it). Full ground-truth record in Bennett.jl worklog 081.
+
+**Next:** CW-D1b — per-callee O0 extraction + `extract_parsed_ir_set_from_julia` →
+`Vector{Pair{Symbol,ParsedIR}}` (mirror the ADR-0020 `extract_parsed_ir_set_from_ll`
+producer). D1b risk: `_extract_parsed_ir_cached`'s key is `f::Function`-typed; the
+`Type{AssertionError}` constructor callee needs the untyped `extract_parsed_ir` path
+or a cache-key widening.
+
+---
+
 ## Session — 2026-06-08 — opcode-coverage: acq + b5x/xv0u landed; Case B ground-truth blocker surfaced (lead decision pending)
 
 **Agents:** Opus 4.8 (1M) orchestrator, foreground. Directive: Opus coders, Sonnet

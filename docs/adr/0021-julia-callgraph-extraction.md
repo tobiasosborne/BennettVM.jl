@@ -30,8 +30,11 @@ For `fdict(a,b) = (d=Dict{Int8,Int8}(); d[a]=b; d[a])` at `optimize=false`:
    mangled `j_<name>_NNN` suffix drifts per compilation — REJECTED
    (Rule 5/8). Version shim required: 1.12's `:invoke` arg-1 is a
    `CodeInstance` (`.def → MethodInstance`); ≤1.10 a bare
-   `MethodInstance` — `mi_of(x)` helper, pinned by test. Callgraph edges
-   are resolved from the SAME O0 inference run that produced the body.
+   `MethodInstance` — `mi_of(x)` helper, pinned by test. ~~Callgraph edges
+   are resolved from the SAME O0 inference run that produced the body.~~
+   **CORRECTED — see Amendment A (2026-06-14): edges come from
+   `optimize=true`, bodies from `optimize=false`. At O0 there are ZERO
+   `:invoke`s.**
 2. **Output shape = the CW-C shape.** New
    `extract_parsed_ir_set_from_julia(f, argtypes; ...)` →
    `Vector{Pair{Symbol,ParsedIR}}`, consumed unchanged by BVM
@@ -82,3 +85,33 @@ points (ADR 0018 §C); the registry pattern of `register_callee!` fed by
 callgraph walker (no published reversible-computing prior art applies —
 this is Julia-compiler plumbing in service of ADR 0017's closed-world
 acquisition).
+
+## Amendment A — edges@optimize=true, bodies@optimize=false (2026-06-14, CW-D1a)
+
+> **Status: ACCEPTED.** Probe-grounded (Julia 1.12.5) during CW-D1a
+> implementation. Corrects the last sentence of Decision 1.
+
+The original Decision 1 claim — *"Callgraph edges are resolved from the SAME
+O0 inference run that produced the body"* — is **materially wrong on Julia
+1.12.5** (Law 1; the same class of error CLAUDE.md Rule 5/9 warns about). Fresh
+probe of `fdict(a,b)=(d=Dict{Int8,Int8}();d[a]=b;d[a])`:
+
+- `code_typed(fdict, Tuple{Int8,Int8}; optimize=false)` has **ZERO `:invoke`
+  statements** — calls are dynamic `:call` Exprs, no `CodeInstance`/
+  `MethodInstance` present. `mi_of` has nothing to run against at O0.
+- The `:invoke` edges (with a `Core.CodeInstance` arg-1) materialize **only at
+  `optimize=true`**.
+
+**Corrected mechanism (as implemented in CW-D1a):** the walker
+(`transitive_callees`) sources callgraph **edges at `optimize=true`** via
+`Base.code_typed_by_type(specTypes; optimize=true)`; callee **bodies** are still
+extracted at **`optimize=false`** — but that is D1b's concern, not the edge
+walk. The Bennett.jl test carries a permanent **O0-regression tripwire** (Gate
+5: `!isempty(transitive_callees(fdict, …))`) so a future "fix-to-ADR-letter"
+regression to O0 fails loud. Decisions 2–4 and the chunk sequencing are
+unaffected.
+
+Implemented: Bennett.jl `src/extract/callgraph.jl` (commit `0c2a7f87`), test
+`test_d1a_transitive_callees.jl` 15/15. Bennett.jl worklog 081 carries the full
+ground-truth record (closure = {setindex!, ht_keyindex2_shorthash! [self-rec],
+rehash!, AssertionError}; length witness confirmed in `rehash!`).
