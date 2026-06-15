@@ -7,6 +7,50 @@
 
 ---
 
+## Session — 2026-06-15 — CW-D1b landed (closed-world producer) + Case-B path re-confirmed SETTLED
+
+**Agents:** Opus 4.8 (1M) orchestrator, autonomous. 3+1 design pass → Opus implementer
+→ +1 + hostile review. Serial Julia (Rule 7).
+
+**Course-correction first (the lead caught it):** mid-D1b I surfaced a closed-world-vs-RevMap
+"fork" as if open. It is NOT — the worklog/ADR record settles it: **ADR-0017 (lead, 2026-06-10)
+chose CLOSED-WORLD execution OVER RevMap**, knowing RevMap was the easier "tractable floor";
+RevMap is demoted to quantum-tier (`o1y`). DO NOT RELITIGATE. Recorded as bd memory
+`case-b-closed-world-settled`. The U14/dv1z extractor walls are the **accepted closed-world
+runway**, not a pivot trigger.
+
+**Landed: CW-D1b** (`bennettvm-416r.11` chunk b) — `extract_parsed_ir_set_from_julia` in
+**Bennett.jl** (`src/extract/julia_set.jl`, commit `06c1ed91`; additive). Drives D1a's
+`transitive_callees`, extracts root + helper bodies, keys by drift-free canonical
+`<barename>#<digest>` Symbols, and `_closed_world_check!` fails loud on any IRCall escaping
+the closed world (the completeness `transitive_callees` defers). `test_d1b` 30 Pass / 1 Broken.
+
+**Ground truth (the blocker, honestly handled):** 0/4 `fdict` callee bodies extract today —
+`setindex!`/`rehash!` hit the **U81** ptr-width wall, `ht_keyindex2_shorthash!` the **dv1z**
+heterogeneous-sret wall. ADR-0021 confirmed the IR is *recoverable* (`code_llvm`); D1b found
+that *lowering it through `extract_parsed_ir`* walls. So D1b ships the producer machinery
+proven on a synthetic extractable root, with `fdict` as an HONEST `@test_throws` (`:fail_loud`)
++ `@test_broken` (`:skip ≥4`) tripwire that auto-flips when CW-D2 clears the walls.
+
+**Hardening + hostile-review fixes (pre-commit):** the producer `register_callee!`s live
+callees to clear the U15 guard, but was permanently polluting the process-global
+`_known_callees` — a real interlock with `test_bd5f_heap_m4` (pins Dict-rejection, runs later
+in `runtests`, needs `setindex!` UNregistered). Fixed: SNAPSHOT + SCOPED restore in a `finally`
+(race-tolerant — only touches keys this call added; Gate G guards it). Plus S1 (closure-`#`
+barename `rsplit`), S3 (Gate E asserts a real wall), N2 (within-process digest determinism).
+Hostile review: no BLOCKER; the bd5f interlock independently verified.
+
+**Gates (orchestrator-run, fresh subprocess):** test_d1b 30 Pass/1 Broken; `using Bennett`
+clean; Bennett.jl gate-count 39/39. Full `Pkg.test` deferred to the CW-D1 pre-push. **Pin:**
+repin still deferred to D1c (BVM doesn't consume the producer yet).
+
+**Follow-ups:** `bennettvm-2k1k` (P3, unify benign-intrinsic const). **Next (the runway to a
+real `fdict`):** the extractor extensions — ptr_cells-for-Julia (ADR-0021 D2) + U14 atomic-load
+collapse + dv1z heterogeneous-sret — each a core 3+1; then D1c (hand-stitched set ok first) →
+CW-D2 whitelist → CW-D3 globals → `7xa`. Full ground-truth in Bennett.jl worklog 082.
+
+---
+
 ## Session — 2026-06-14 — CW-D1a landed (transitive_callees walker) + ADR-0021 Decision-1 corrected
 
 **Agents:** Opus 4.8 (1M) orchestrator, foreground, autonomous directive ("keep
