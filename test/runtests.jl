@@ -481,6 +481,16 @@ using BennettVM
     # (the multi-key return is the follow-on bead). Same hand-built ParsedIR +
     # `per_step_inverse_check` idiom; depends only on already-loaded symbols.
     include("test_aggregate_extract_insert.jl")
+    # Bennett-6bu3 — StructType aggregate IRInsertValue / IRExtractValue ingest
+    # (the `{ptr,ptr}` GenericMemoryRef-body shape and fixed-width-integer
+    # tuples). Bennett.jl's 6bu3 adds an additive `field_widths::Vector{Int}` so
+    # a StructType aggregate lowers via per-field layout; BVM's index-keyed,
+    # WIDTH-AGNOSTIC slot loop (`n_elems == length(field_widths)`) handles it with
+    # NO code change. A hand-built {ptr,ptr} build/read chain (oracle
+    # `f(data,mem)=data`) lowers, runs bit-exact on cell-sized inputs, round-trips
+    # to empty history (P0.6), and per-step-inverts at K ∈ {1,4}. Same hand-built
+    # ParsedIR + `per_step_inverse_check` idiom; depends only on loaded symbols.
+    include("test_6bu3_struct_agg_ingest.jl")
     # M_FP.5 — Float32-rejection enforcement at the ingest boundary
     # (`bennettvm-h0t`; ADR 0011 §D2, Bennett-3rph). The witness half proves
     # the SC10 pure-Float64 lowering contains ZERO f32-touching SoftCalls; the

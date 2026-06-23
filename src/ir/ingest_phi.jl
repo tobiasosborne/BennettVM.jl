@@ -156,11 +156,15 @@ The synthetic per-slot SSA name for element `k` of aggregate SSA value
 `agg` (bead `bennettvm-acq`, OPCODE G2): `:_agg_<agg>_slot<k>`.
 
 the active register file `active_locals(s)` is a FLAT `Dict{Symbol,Int64}` per frame — one key cannot hold the
-N scalar elements of an ArrayType aggregate (`[N x iW]`, which is the only
-aggregate shape Bennett.jl emits `IRExtractValue` / `IRInsertValue` for;
-StructType fails loud UPSTREAM in extract — `../Bennett.jl/src/extract/
-instructions.jl:1954-1957,1971-1974`). So an aggregate is modelled as a
-FAMILY of N synthetic per-slot keys, one per element, reusing the scalar
+N scalar elements of an aggregate. Bennett.jl emits `IRExtractValue` /
+`IRInsertValue` for homogeneous ArrayType `[N x iW]` AND (Bennett-6bu3)
+ptr_cells StructType `{ptr,ptr}` / fixed-width-integer tuples (per-field layout
+via the additive `field_widths::Vector{Int}`); i1 (`{i64,i1}`) and float/
+nested fields still fail loud UPSTREAM in extract (`_struct_field_widths`). In
+BOTH the array and struct cases `n_elems` is the well-defined element count
+(`== length(field_widths)` for structs), so the slot model below is sound. An
+aggregate is modelled as a FAMILY of N synthetic per-slot keys, one per element,
+reusing the scalar
 `Define`-copy machinery — NO change to the IState type (hence no
 equality/hash/checkpoint ripple). `extractvalue agg, k` reads slot `k`;
 `insertvalue agg, v, k` rebuilds the family (slot `k` := `v`, the rest

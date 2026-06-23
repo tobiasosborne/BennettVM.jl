@@ -7,6 +7,47 @@
 
 ---
 
+## Session — 2026-06-23 — Bennett-6bu3 (consumer side): StructType {ptr,ptr} aggregate ingest + IRInsertBits pin reconciliation
+
+**Cross-repo 3+1 driven from Bennett.jl** (bead `Bennett-6bu3`); this is the
+BennettVM CONSUMER half. Bennett.jl's extractor now supports StructType
+`insertvalue`/`extractvalue` (Julia's `{ptr,ptr}` GenericMemoryRef body) via an
+additive `field_widths::Vector{Int}` on `IRInsertValue`/`IRExtractValue`
+(Option 1 — chosen over a new IR node precisely BECAUSE BVM's slot model already
+handles it).
+
+**BVM change is essentially nil — by design.** The insertvalue/extractvalue
+ingest (`src/ir/ingest.jl`) decomposes an aggregate into a FAMILY of per-slot
+`Define`s keyed by field INDEX (`_agg_<dest>_slotK`), each an Int64 cell —
+**index-keyed and width-agnostic**. Because the extractor sets
+`n_elems == length(field_widths)`, the existing slot loop + bounds guards handle
+`{ptr,ptr}` (two 64-bit cells) UNCHANGED. So `ingest.jl`/`ingest_phi.jl` got
+COMMENT-ONLY updates (the stale "StructType fails loud upstream" claim is now
+false). This is the payoff of Option 1 over Option 2 (a new `IRExtractBits` would
+have needed a brand-new bit-offset→slot ingest arm here).
+
+**Pre-existing drift reconciled.** `test/test_opcode_coverage.jl:171` pinned
+`length(filter(isconcretetype, subtypes(Bennett.IRInst))) == 19`, but Bennett.jl
+has had **20** concrete subtypes since `Bennett-dv1z` added `IRInsertBits` — so
+this testset (0) was **silently RED** (84 pass / 1 FAIL) against the live tree,
+unnoticed since dv1z. Bumped the pin 19→20 and added `Bennett.IRInsertBits` to
+the canonical list + a `coverage-matrix.md` row marking it **N/A** (it is
+synthesised only by Bennett.jl's sret bits-chain and never reaches BVM — sret
+aggregate returns are rejected upstream). The pin now moves in lockstep with
+Bennett.jl's `test_q04a` (==20).
+
+**New test:** `test/test_6bu3_struct_agg_ingest.jl` (28/28) — hand-built
+`{ptr,ptr}`-shaped ParsedIR (`IRInsertValue`/`IRExtractValue` with
+`field_widths=[64,64]`) → `lower_vm` → `run!` matches oracle → `unrun!` to EMPTY
+history (P0.6) → per-step inverse check; slot-family Defines present.
+
+**Verified.** BVM full `Pkg.test()`: green (test_opcode_coverage now 86/86 at
+count 20; test_aggregate_extract_insert 50/50 unchanged). Bennett.jl full suite
+also green (689198 pass / 0 fail / 3 broken). The fdict root (Bennett.jl side)
+advances past the insertvalue wall to the `ptrtoint ptr %memory_data… (iwo9 /
+CW-D3 Lever 1)` GenericMemory data-pointer wall → next is the GenericMemory
+recognizer (`Bennett-jfw6` / `bennettvm-m9i`), NOT a standalone iwo9 extension.
+
 ## Session — 2026-06-23 — CW-D3 Lever 3: gc_alloc_obj → IntrinsicGCAlloc arena ingest
 
 **Agent:** Opus 4.8 (1M) implementer (Lever-3 half of the gc_alloc_obj capability,

@@ -475,10 +475,15 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
                 # IRRet fails loud (the decomposed family must not dangle into a
                 # single-symbol End).
                 #
-                # Bennett.jl emits `IRInsertValue` ONLY for homogeneous ArrayType
-                # `[N x iW]` (StructType fails loud upstream — `../Bennett.jl/src/
-                # extract/instructions.jl:1971-1974`), so `n_elems` slots is the
-                # full, well-defined element count.
+                # Bennett.jl emits `IRInsertValue` for homogeneous ArrayType
+                # `[N x iW]` AND (Bennett-6bu3) ptr_cells StructType `{ptr,ptr}`
+                # / fixed-width-integer tuples. In BOTH cases `n_elems` is the
+                # full, well-defined element count (for the struct case it equals
+                # `length(field_widths)`), and this index-keyed slot loop is
+                # width-AGNOSTIC — it never reads `elem_width`/`field_widths`, so
+                # the `{ptr,ptr}` shape ingests UNCHANGED. (i1 `{i64,i1}` overflow
+                # structs and float/nested fields still fail loud upstream in the
+                # Bennett.jl extractor `_struct_field_widths`.)
                 n = inst.n_elems
                 # SILENT-MISCOMPILE guard (bead `bennettvm-acq`, Rule 2). The
                 # slot loop is `for j in 0:(n-1)`; if `index ∉ [0, n_elems)` the
@@ -558,9 +563,11 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
                 #
                 # `agg` MUST be an `SSAOperand` (an extractvalue of a bare
                 # zeroinitializer is constant-folded upstream and never reaches
-                # ingest). Bennett.jl emits this ONLY for homogeneous ArrayType
-                # `[N x iW]` (StructType fails loud upstream — `../Bennett.jl/src/
-                # extract/instructions.jl:1954-1957`), so the slot model is sound.
+                # ingest). Bennett.jl emits this for homogeneous ArrayType
+                # `[N x iW]` AND (Bennett-6bu3) ptr_cells StructType `{ptr,ptr}`
+                # / fixed-width-integer tuples; this index-keyed slot COPY is
+                # width-agnostic (`n_elems == length(field_widths)` for the struct
+                # case), so the slot model is sound for both.
                 inst.agg isa Bennett.SSAOperand ||
                     error("lower_vm: IRExtractValue agg is ", typeof(inst.agg),
                           " (dest=", inst.dest, ") — the aggregate slot model ",

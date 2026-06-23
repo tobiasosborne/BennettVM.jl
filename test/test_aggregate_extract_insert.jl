@@ -4,12 +4,13 @@
 #
 # # What this file pins
 #
-# Bennett.jl emits `IRExtractValue` / `IRInsertValue` ONLY for homogeneous
-# scalar-element ArrayType aggregates (`[N x iW]`); StructType aggregates fail
-# loud UPSTREAM in extract, so they never reach BennettVM (deferred to the
-# Bennett.jl BG4 fill, U10 / Bennett-tu6i — see
-# `../Bennett.jl/src/extract/instructions.jl:1948-1978`). This bead lowers the
-# ArrayType case.
+# Bennett.jl emits `IRExtractValue` / `IRInsertValue` for homogeneous
+# scalar-element ArrayType aggregates (`[N x iW]`) — the case THIS bead lowers —
+# AND (Bennett-6bu3, a later fill) for ptr_cells StructType `{ptr,ptr}` /
+# fixed-width-integer tuples via the additive `field_widths`; the struct ingest
+# round-trip lives in `test_6bu3_struct_agg_ingest.jl`. The still-rejected
+# StructType shapes (i1 `{i64,i1}`, float/nested fields) fail loud UPSTREAM in
+# Bennett.jl extract (`_struct_field_widths`), so they never reach BennettVM.
 #
 # An aggregate SSA value `agg` has N scalar elements but `IState.locals` is a
 # FLAT `Dict{Symbol,Int64}` — one key cannot hold N elements. So an aggregate

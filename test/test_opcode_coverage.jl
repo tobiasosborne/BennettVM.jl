@@ -152,23 +152,31 @@ end
 @testset "IRInst opcode coverage (bennettvm-d7t; mirrors docs/coverage-matrix.md)" begin
 
     # =================================================================
-    # (0) The taxonomy itself: 19 concrete IRInst subtypes, 17/1/1
-    #     (DONE/GAP/N-A) as of bead `bennettvm-acq` (was 15/3/1 — the
-    #     aggregate pair IRInsertValue/IRExtractValue moved GAP → DONE).
-    #     coverage-matrix.md "The taxonomy" + Tally. We assert the COUNT
-    #     (19, unchanged by the GAP→DONE move) against the LIVE Bennett.jl
-    #     type tree so a Bennett.jl pin bump that adds / removes a subtype
-    #     trips here (and forces a matrix re-audit).
+    # (0) The taxonomy itself: 20 concrete IRInst subtypes, 18/0/2
+    #     (DONE/GAP/N-A) as of bead `bennettvm-acq` + Bennett-6bu3 (the
+    #     aggregate pair IRInsertValue/IRExtractValue moved GAP → DONE at
+    #     `acq`; IRInsertBits — the 20th subtype, Bennett-dv1z — is N/A like
+    #     IRSwitch, never reaching BVM). coverage-matrix.md "The taxonomy" +
+    #     Tally. We assert the COUNT (20) against the LIVE Bennett.jl type tree
+    #     so a Bennett.jl pin bump that adds / removes a subtype trips here (and
+    #     forces a matrix re-audit). The count moved 19→20 with Bennett-6bu3
+    #     reconciling the pre-existing dv1z IRInsertBits drift.
     # =================================================================
-    @testset "(0) 19 concrete IRInst subtypes (matrix taxonomy)" begin
+    @testset "(0) 20 concrete IRInst subtypes (matrix taxonomy)" begin
         concrete = filter(isconcretetype,
                           subtypes(Bennett.IRInst))
         # 16 base IR opcodes + the 3 language-neutral reversible-map ops
-        # (IRMapInsert/IRMapGet/IRMapDelete, SC9 Case B; ADR 0008 / 0013 §D-3).
-        # These ingest 1:1 to the VM-side IRMap* ops (src/ir/revmap.jl); see
-        # the DONE rows below. The pin moves 16→19 in lockstep with Bennett.jl's
-        # test_q04a subtype pin.
-        @test length(concrete) == 19
+        # (IRMapInsert/IRMapGet/IRMapDelete, SC9 Case B; ADR 0008 / 0013 §D-3)
+        # + IRInsertBits (Bennett-dv1z heterogeneous bits-struct sret). The map
+        # ops moved the pin 16→19; IRInsertBits moves it 19→20 (reconciling the
+        # pre-existing dv1z drift that made this testset RED). These ingest 1:1
+        # to the VM-side IRMap* ops (src/ir/revmap.jl); see the DONE rows below.
+        # IRInsertBits is SYNTHESISED by Bennett.jl's sret path
+        # (_synthesize_sret_bits) and NEVER reaches BennettVM (sret aggregate
+        # returns are rejected upstream of BVM), so it adds a concrete subtype
+        # but no lower_vm coverage row — N/A, like IRSwitch. The pin moves in
+        # lockstep with Bennett.jl's test_q04a subtype pin (also 20).
+        @test length(concrete) == 20
         # Every subtype this file references must be one of them (no typo'd
         # phantom type slips through as `Bennett.IRWhatever <: Any`).
         for T in (Bennett.IRBinOp, Bennett.IRICmp, Bennett.IRSelect,
@@ -177,7 +185,8 @@ end
                   Bennett.IRStore, Bennett.IRAlloca, Bennett.IRExtractValue,
                   Bennett.IRCall, Bennett.IRBranch, Bennett.IRSwitch,
                   Bennett.IRPhi,
-                  Bennett.IRMapInsert, Bennett.IRMapGet, Bennett.IRMapDelete)
+                  Bennett.IRMapInsert, Bennett.IRMapGet, Bennett.IRMapDelete,
+                  Bennett.IRInsertBits)
             @test T <: Bennett.IRInst && isconcretetype(T)
         end
     end

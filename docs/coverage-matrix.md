@@ -1,18 +1,20 @@
 # BennettVM IRInst coverage matrix
 
 > Mirrors PRD v4 §3.6.1 (maximum-LLVM-opcode-coverage north-star).
-> Verified 2026-06-04 against Bennett.jl `ir_types.jl` (all 19 `IRInst`
-> subtypes read by hand) and BennettVM `src/ir/ingest.jl` (every dispatch
-> arm and fail-loud site read by hand). Sources: `Bennett.jl/src/ir_types.jl`
-> and `BennettVM.jl/src/ir/ingest.jl`.
+> Verified 2026-06-04 (count refreshed 2026-06 for Bennett-6bu3) against
+> Bennett.jl `ir_types.jl` (all 20 `IRInst` subtypes read by hand) and
+> BennettVM `src/ir/ingest.jl` (every dispatch arm and fail-loud site read by
+> hand). Sources: `Bennett.jl/src/ir_types.jl` and `BennettVM.jl/src/ir/ingest.jl`.
 
 ## The taxonomy
 
-Bennett.jl defines **19** concrete `IRInst` subtypes (verified by reading
+Bennett.jl defines **20** concrete `IRInst` subtypes (verified by reading
 `Bennett.jl/src/ir_types.jl` from the `abstract type IRInst` declaration
 through all `struct … <: IRInst` definitions): 16 base opcodes plus the 3
 language-neutral reversible-map ops (`IRMapInsert`/`IRMapGet`/`IRMapDelete`)
-added in M_DICT (SC9 Case B, ADR 0008/0013).
+added in M_DICT (SC9 Case B, ADR 0008/0013), plus `IRInsertBits` (Bennett-dv1z
+heterogeneous bits-struct sret — synthesised by Bennett.jl's sret path, N/A to
+BVM like `IRSwitch`).
 
 BennettVM's ingest (`src/ir/ingest.jl`) dispatches on these subtypes in
 three places:
@@ -34,14 +36,14 @@ GAP fail-loud site for all unhandled non-terminator subtypes. It interpolates
 | 2 | `IRICmp` (:74) | `Define` w/ comparison predicate | `_lower_body_inst` ingest.jl:231 | **COVERED** | test_opcode_coverage.jl, test_define.jl |
 | 3 | `IRSelect` (:89) | `SelectInstruction` (2-to-1 MUX) | `_lower_body_inst` ingest.jl:234 | **COVERED** | test_opcode_coverage.jl, test_select.jl |
 | 4 | `IRRet` (:105) | `EndInstruction(routine, [retval])` | exit-marker in `_lower_parsed_ir` ingest.jl:822 | **COVERED** | test_opcode_coverage.jl + 12 other test files |
-| 5 | `IRInsertValue` (:115) | N × `Define` per-slot family (`_agg_<dest>_slot<k>`) | body-loop special case in `_lower_parsed_ir` (ArrayType `[N x iW]` only) | **COVERED** | test_opcode_coverage.jl, test_aggregate_extract_insert.jl |
+| 5 | `IRInsertValue` (:115) | N × `Define` per-slot family (`_agg_<dest>_slot<k>`) | body-loop special case in `_lower_parsed_ir` (ArrayType `[N x iW]` AND ptr_cells StructType `{ptr,ptr}` / fixed-width-int tuples — Bennett-6bu3; the slot loop is index-keyed + width-agnostic so the struct shape ingests unchanged) | **COVERED** | test_opcode_coverage.jl, test_aggregate_extract_insert.jl, test_6bu3_struct_agg_ingest.jl |
 | 6 | `IRCast` (:126) | `CastInstruction` (sext/zext/trunc) | `_lower_body_inst` ingest.jl:248 | **COVERED** | test_opcode_coverage.jl, test_cast_instruction.jl, test_matrix_tri_roundtrip.jl |
 | 7 | `IRPtrOffset` (:144) | `Define(dest, base, :add, element_index)` where `element_index = offset_bytes ÷ (elem_width÷8)` (cell-addressed static GEP; constant-offset analogue of IRVarGEP) | `_lower_body_inst` IRPtrOffset arm | **COVERED** | test_opcode_coverage.jl, test_ptroffset.jl |
 | 8 | `IRVarGEP` (:150) | `VarGEP(dest, base, index, stride=1)` | `_lower_body_inst` ingest.jl:283 | **COVERED** | test_opcode_coverage.jl, test_array_floor.jl, test_alloca_delta.jl, test_vec_vm_roundtrip.jl + 4 more |
 | 9 | `IRLoad` (:157) | `MemoryLoad(dest, ptr_name)` | `_lower_body_inst` ingest.jl:271 | **COVERED** | test_opcode_coverage.jl, test_array_floor.jl, test_memory_floor.jl, test_memory_floor_cll.jl + 5 more |
 | 10 | `IRStore` (:172) | `MemoryStore(ptr_name, val)` | `_lower_body_inst` ingest.jl:257 | **COVERED** | test_opcode_coverage.jl, test_array_floor.jl, test_memory_floor.jl, test_memory_floor_cll.jl + 5 more |
 | 11 | `IRAlloca` (:262) | `Define(dest, base, :add, 0)` (static-N) or `DynAlloca(dest, n, base)` (dynamic-N) | `_lower_alloca!` ingest.jl:423; dispatched in body loop at ingest.jl:789 | **COVERED** | test_opcode_coverage.jl, test_array_floor.jl, test_alloca_delta.jl, test_memory_floor.jl + 6 more |
-| 12 | `IRExtractValue` (:273) | `Define(dest, _agg_<agg>_slot<index>, :add, 0)` (slot copy) | `_lower_body_inst` IRExtractValue arm (ArrayType `[N x iW]` only) | **COVERED** | test_opcode_coverage.jl, test_aggregate_extract_insert.jl |
+| 12 | `IRExtractValue` (:273) | `Define(dest, _agg_<agg>_slot<index>, :add, 0)` (slot copy) | `_lower_body_inst` IRExtractValue arm (ArrayType `[N x iW]` AND ptr_cells StructType `{ptr,ptr}` / fixed-width-int tuples — Bennett-6bu3; index-keyed + width-agnostic) | **COVERED** | test_opcode_coverage.jl, test_aggregate_extract_insert.jl, test_6bu3_struct_agg_ingest.jl |
 | 13 | `IRCall` (:281) | `SoftCall(dest, callee_name, args, arg_widths, ret_width)` for `soft_f*` callee; non-soft callee raises via `SoftCall` allowlist | `_lower_body_inst` ingest.jl:309 | **COVERED** (soft_f* only) | test_opcode_coverage.jl, test_fp_roundtrip.jl, test_softcall.jl, test_operators.jl |
 | 14 | `IRBranch` (:314) | `ConditionalExit` / `UnconditionalExit` + critical-edge trampoline block | `_successors` ingest.jl:503; exit marker in `_lower_parsed_ir` ingest.jl:829 | **COVERED** | test_opcode_coverage.jl |
 | 15 | `IRSwitch` (:320) | *(pre-expanded by frontend)* | `_successors` else-arm ingest.jl:512 (fail-loud if it ever arrives) | **N/A** | runtests.jl (doc note), test_opcode_coverage.jl (fail-loud belt-and-suspenders) |
@@ -49,10 +51,17 @@ GAP fail-loud site for all unhandled non-terminator subtypes. It interpolates
 | 17 | `IRMapInsert` (:214) | `BennettVM.IRMapInsert(key, value)` — reversible-map insert; L2 `(key,prior)` delta | `_lower_body_inst` ingest.jl:340 | **COVERED** | test_opcode_coverage.jl, test_dict_roundtrip.jl, test_revmap_roundtrip.jl, test_revmap.jl |
 | 18 | `IRMapGet` (:231) | `BennettVM.IRMapGet(dest, key)` — reversible-map read; L3 baseline | `_lower_body_inst` ingest.jl:356 | **COVERED** | test_opcode_coverage.jl, test_dict_roundtrip.jl, test_revmap_roundtrip.jl, test_revmap.jl |
 | 19 | `IRMapDelete` (:248) | `BennettVM.IRMapDelete(key)` — reversible-map delete; L2 `(key,old)` delta | `_lower_body_inst` ingest.jl:363 | **COVERED** | test_opcode_coverage.jl, test_dict_roundtrip.jl, test_revmap.jl |
+| 20 | `IRInsertBits` | *(never reaches BVM)* | — | **N/A** | test_opcode_coverage.jl (taxonomy count) |
+
+`IRInsertBits` (Bennett-dv1z heterogeneous bits-struct sret) is SYNTHESISED by
+Bennett.jl's sret path (`_synthesize_sret_bits`) and consumed circuit-side; sret
+aggregate RETURNS are rejected upstream of BVM (the `ret_elem_widths` multi-key
+return is a deferred follow-on), so `IRInsertBits` never appears in a `ParsedIR`
+that BVM ingests. N/A like `IRSwitch` — only the taxonomy COUNT pins it.
 
 ## Tally
 
-**18 COVERED / 0 GAP / 1 N/A** (total 19).
+**18 COVERED / 0 GAP / 2 N/A** (total 20).
 
 COVERED: `IRBinOp`, `IRICmp`, `IRSelect`, `IRRet`, `IRCast`, `IRPtrOffset`
 (cell-addressed static GEP → `Define(dest, base, :add, element_index)`;
@@ -69,20 +78,28 @@ against an unhandled subtype.
 
 N/A: `IRSwitch` (pre-expanded by `_expand_switches` in Bennett.jl
 `extract/module_walk.jl` before `ParsedIR` is returned; never reaches
-BennettVM; fail-loud if it somehow arrives as a terminator).
+BennettVM; fail-loud if it somehow arrives as a terminator); `IRInsertBits`
+(Bennett-dv1z; synthesised by the sret path and consumed circuit-side, never
+in a BVM-ingested `ParsedIR`).
 
-## Aggregate coverage scope (rows 5 / 12 — bead `bennettvm-acq`)
+## Aggregate coverage scope (rows 5 / 12 — beads `bennettvm-acq` + Bennett-6bu3)
 
-`IRInsertValue` / `IRExtractValue` are emitted by Bennett.jl ONLY for
-homogeneous scalar-element **ArrayType** `[N x iW]` aggregates; StructType
-aggregates fail loud UPSTREAM in Bennett.jl extract (U10 / Bennett-tu6i), so
-they never reach BennettVM. BennettVM models an aggregate SSA value as a
-FAMILY of N synthetic per-slot keys (`_agg_<name>_slot<k>`), since
-`IState.locals` is a flat `Dict{Symbol,Int64}`. `insertvalue` rebuilds the
-family via N non-destructive `Define`s; `extractvalue` reads one slot. This
-scopes **scalar-consumed** aggregates — a RETURNED `[N x iW]` aggregate is
-DEFERRED: the IRRet aggregate-return guard fails loud (the multi-key return
-keyed off `ret_elem_widths` is the follow-on bead).
+`IRInsertValue` / `IRExtractValue` are emitted by Bennett.jl for homogeneous
+scalar-element **ArrayType** `[N x iW]` aggregates AND (Bennett-6bu3) **ptr_cells
+StructType** `{ptr, ptr}` / fixed-width-integer tuples (per-field layout via the
+additive `field_widths::Vector{Int}` discriminator). The still-rejected
+StructType shapes — i1 fields (`{i64,i1}` `*.with.overflow` / `cmpxchg`),
+float / nested-struct / vector / array / packed / empty — fail loud UPSTREAM in
+Bennett.jl extract (`_struct_field_widths`), so they never reach BennettVM.
+BennettVM models an aggregate SSA value as a FAMILY of N synthetic per-slot keys
+(`_agg_<name>_slot<k>`), since `IState.locals` is a flat `Dict{Symbol,Int64}`.
+`insertvalue` rebuilds the family via N non-destructive `Define`s; `extractvalue`
+reads one slot. The slot loop is **index-keyed and width-agnostic** (it never
+reads `elem_width`/`field_widths`, only `n_elems == length(field_widths)`), so
+the `{ptr,ptr}` struct shape ingests with NO code change. This scopes
+**scalar-consumed** aggregates — a RETURNED aggregate is DEFERRED: the IRRet
+aggregate-return guard fails loud (the multi-key return keyed off
+`ret_elem_widths` is the follow-on bead).
 
 ## Fail-loud sites (GAP / deferred rows)
 
@@ -125,7 +142,7 @@ a block terminator.
 
 ## Refs
 
-- `Bennett.jl/src/ir_types.jl` — all 19 `IRInst` subtypes (lines cited per row)
+- `Bennett.jl/src/ir_types.jl` — all 20 `IRInst` subtypes (lines cited per row)
 - `src/ir/ingest.jl` — `_lower_body_inst` (line 217), `_lower_alloca!`
   (line 423), `_successors` (line 503), shared GAP `else` (line 370)
 - `src/lower_vm.jl` — `lower_vm` entry point delegating to `_lower_parsed_ir`
