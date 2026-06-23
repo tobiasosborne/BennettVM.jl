@@ -165,14 +165,37 @@ struct IntrinsicCalloc <: Instruction
     size_operand::Union{Symbol,Int64}     # element SIZE in bytes
 end
 
+# gc_alloc_obj(size, tag): the Julia typed-GC allocation cluster the closed-world
+# VM ingests under CW-D3 (Bennett-iwo9 consensus decision 5; ADR 0021 D3 floor).
+# Semantically IDENTICAL to `IntrinsicMalloc` — a deterministic arena bump alloc
+# of `nbytes_operand` bytes returning `ARENA_BASE + arena_top` — EXCEPT it also
+# carries the Julia type tag as METADATA ONLY. `type_tag` is STRUCTURALLY UNREAD
+# by every state transition: it is never consulted by `_alloc_cells`,
+# `predelta_payload`, `forward`, or `inverse` (which read only `dest` /
+# `nbytes_operand`). The ADR 0021 D3 floor: a type tag must never influence VM
+# state, so no nondeterministic JIT type-tag address can leak into a reversible
+# computation. Membership in the `_ArenaAlloc` union below inherits the malloc
+# arena machinery verbatim; the third field is the only structural difference and
+# it is inert by construction. (CW-D3 Lever 3, bead `bennettvm-416r.12`.)
+struct IntrinsicGCAlloc <: Instruction
+    dest::Symbol                          # pointer SSA name created — Int64 arena addr
+    nbytes_operand::Union{Symbol,Int64}   # allocation size in BYTES
+    type_tag::Union{Symbol,Int64}         # ADR 0021 D3: METADATA ONLY — never
+                                          # read by forward/inverse/_alloc_cells.
+end
+
 # Resolve a malloc/calloc allocation to its cell count (the shared bytes→cells
 # step). `IntrinsicCalloc`'s byte size is `n * sz` (the C contract).
 _alloc_cells(instr::IntrinsicMalloc, s::IState)::Int64 =
     _cell_count(_resolve(instr.nbytes_operand, s))
 _alloc_cells(instr::IntrinsicCalloc, s::IState)::Int64 =
     _cell_count(_resolve(instr.n_operand, s) * _resolve(instr.size_operand, s))
+# IntrinsicGCAlloc resolves to its cell count from `nbytes_operand` ALONE — the
+# `type_tag` field is NOT referenced here (ADR 0021 D3 floor: tag is metadata).
+_alloc_cells(instr::IntrinsicGCAlloc, s::IState)::Int64 =
+    _cell_count(_resolve(instr.nbytes_operand, s))
 
-const _ArenaAlloc = Union{IntrinsicMalloc,IntrinsicCalloc}
+const _ArenaAlloc = Union{IntrinsicMalloc,IntrinsicCalloc,IntrinsicGCAlloc}
 
 """
     predelta_payload(instr::_ArenaAlloc, s::IState) -> @NamedTuple{base, cells}

@@ -323,6 +323,15 @@ using BennettVM
     # e2e it sits beside; reuses the same hand-built-VMProgram + M8.2
     # `per_step_inverse_check` idiom as test_multi_dynalloca.jl.
     include("test_arena_roundtrip.jl")
+    # CW-D3 Lever 3 (Bennett-iwo9 decision 5; ADR 0021 D3; bead
+    # `bennettvm-416r.12` gc_alloc_obj PART). Ingests Bennett.jl's
+    # `IRCall(:gc_alloc_obj, [size, tag])` as an arena bump-alloc mirroring
+    # `IntrinsicMalloc`, with the Julia type TAG carried as metadata but
+    # STRUCTURALLY UNREAD by any state transition (no JIT type-tag address can
+    # leak into VM state). Pins ingest shape, forward/inverse arena round-trip,
+    # and the tag-invariance soundness witness (vary tag → bit-identical IState).
+    # Sits right after the arena floor it mirrors.
+    include("test_gc_alloc_obj_ingest.jl")
     # SC9 Case A — THE Julia-`Vector` round-trip gate (bead `Bennett-jfw6`, ADR
     # 0016). Drives a REAL Julia `Vector{T}(undef,n)` write/read/reduce loop
     # (`fvec` Int64 + `vsum` Int8) from SOURCE through Bennett.jl's `mem=:vm`

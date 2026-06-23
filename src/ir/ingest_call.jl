@@ -53,6 +53,14 @@ function _lower_intrinsic_call(inst::Bennett.IRCall, callee::Symbol)::Instructio
               " — malformed IR (Rule 1 fail-loud).")
     if callee === :malloc
         _need(1); return IntrinsicMalloc(inst.dest, _lower_operand(a[1]))
+    elseif callee === :gc_alloc_obj
+        # Julia typed-GC allocation (CW-D3 Lever 3; Bennett-iwo9 decision 5; ADR
+        # 0021 D3 floor). Bennett.jl emits `[size, tag]` (the `task` arg is
+        # dropped upstream). Both lower via `_lower_operand` (size: a value used
+        # by `_alloc_cells`; tag: METADATA carried but STRUCTURALLY UNREAD by any
+        # state transition — the tag never influences VM state).
+        _need(2)
+        return IntrinsicGCAlloc(inst.dest, _lower_operand(a[1]), _lower_operand(a[2]))
     elseif callee === :calloc
         _need(2)
         return IntrinsicCalloc(inst.dest, _lower_operand(a[1]), _lower_operand(a[2]))
@@ -136,4 +144,6 @@ const _NONDETERMINISTIC_CALLEES = Set{Symbol}((
 const _HEAP_DISPATCH = Set{Symbol}((
     :malloc, :calloc, :realloc, :free,              # allocation / reclamation
     :memset, :memcpy, :memmove,                     # bulk memory
+    :gc_alloc_obj,                                  # Julia typed-GC alloc (CW-D3
+                                                    # Lever 3; tag IGNORED, ADR 0021 D3)
 ))

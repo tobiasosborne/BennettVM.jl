@@ -7,6 +7,55 @@
 
 ---
 
+## Session — 2026-06-23 — CW-D3 Lever 3: gc_alloc_obj → IntrinsicGCAlloc arena ingest
+
+**Agent:** Opus 4.8 (1M) implementer (Lever-3 half of the gc_alloc_obj capability,
+bead `bennettvm-416r.12` gc_alloc_obj PART only). Cross-repo design pre-decided in
+`../Bennett.jl/docs/design/Bennett-iwo9-CW-D3-typetag-consensus.md` decision 5. Serial Julia
+(Rule 7). Red-green TDD (Rule 5 spec-from-scratch shape).
+
+**What landed.** BennettVM now ingests Bennett.jl's (Lever-2) `IRCall(:obj, :gc_alloc_obj,
+[size_op, tag_op], [64,64], 64)` as a deterministic arena bump-allocation, mirroring
+`IntrinsicMalloc` verbatim, with the Julia type tag IGNORED (ADR 0021 D3 floor).
+
+- `src/ir/intrinsics.jl`: new `struct IntrinsicGCAlloc <: Instruction` with fields
+  `dest`, `nbytes_operand`, `type_tag`. Added to the `_ArenaAlloc` union so it inherits
+  `predelta_payload` / `forward` / `inverse` / L3-raise verbatim — ZERO new state-transition
+  code. New `_alloc_cells(::IntrinsicGCAlloc, s)` resolves cell count from `nbytes_operand`
+  alone.
+- `src/history/Injective.jl`: `is_injective(::Type{IntrinsicGCAlloc}) = false` (same shape
+  as IntrinsicMalloc — materialises a pointer + opens a region).
+- `src/history/delta.jl`: `is_l2_capable(::Type{IntrinsicGCAlloc}) = true` (inherits the
+  `(base, cells)` L2 path via the union). VERIFIED (per consensus R6) that BOTH traits
+  dispatch per-CONCRETE-type, not on the union — that's why the two one-liners are needed
+  even though forward/inverse come free from the union membership.
+- `src/ir/ingest_call.jl`: `:gc_alloc_obj` added to `_HEAP_DISPATCH`; new
+  `_lower_intrinsic_call` arm (`_need(2)` → size, tag; both via `_lower_operand`).
+
+**The tag-ignored-by-construction guarantee.** The `type_tag` field is STRUCTURALLY UNREAD:
+the ONLY methods that touch the field at all are the constructor and the ingest arm that
+stores it. `_alloc_cells` / `predelta_payload` / `forward` / `inverse` read only `dest` and
+`nbytes_operand`. The tag-invariance test is the soundness witness: the same alloc with tags
+0/1/99 (and an SSA-bound tag whose locals value is junk `123456789`) yields a bit-identical
+post-forward IState (asserted via BennettVM's `IState` ==/hash override over
+pc/locals/memory/arena_top). No JIT type-tag address can reach the VM.
+
+**Red→green.** RED: `UndefVarError: IntrinsicGCAlloc not defined` + the ingest arm absent
+(gc_alloc_obj fell through to the `else` memmove `_need(3)` → "expects 3 args, got 2").
+GREEN after the four edits: `test/test_gc_alloc_obj_ingest.jl` 23/23.
+
+**Regression.** `test_arena_roundtrip.jl` 54/54, `test_symbol_callee_ingest.jl` 8/8 — no
+regression. (Full suite NOT run per instruction — long; targeted files only, one julia at a
+time.)
+
+**LOC.** `intrinsics.jl` code-only LOC (excl blank/comment/docstring) ~135 after the add —
+comfortably under the ~200 Rule-10 cap; no split needed.
+
+**Scope discipline.** Did ONLY the gc_alloc_obj ingest. The other `416r.12` whitelist parts
+(jl_alloc_genericmemory, throw→halt, write_barrier audit) stay OPEN. No Bennett.jl mutation.
+
+---
+
 ## Session — 2026-06-15 — CW-D1b landed (closed-world producer) + Case-B path re-confirmed SETTLED
 
 **Agents:** Opus 4.8 (1M) orchestrator, autonomous. 3+1 design pass → Opus implementer

@@ -601,6 +601,11 @@ is_l2_capable(::Type{IntrinsicRealloc})::Bool = true
 is_l2_capable(::Type{IntrinsicMemset})::Bool  = true
 is_l2_capable(::Type{IntrinsicMemcpy})::Bool  = true
 is_l2_capable(::Type{IntrinsicMemmove})::Bool = true
+# `IntrinsicGCAlloc` (CW-D3 Lever 3; Bennett-iwo9 decision 5) inherits the arena
+# L2 path verbatim via the `_ArenaAlloc` union: NO `make_delta`, a non-`nothing`
+# `predelta_payload` returning `(base, cells)`, + the union `inverse(::T, s,
+# ::NamedTuple)` (`src/ir/intrinsics.jl`). L2 path verified (Rule 3).
+is_l2_capable(::Type{IntrinsicGCAlloc})::Bool = true
 
 # CW-B2 (ADR 0019 §4 + hostile-review C2) — `ReturnExit`, the reversible
 # return transition. Same shape as `IntrinsicMalloc`: NO `make_delta` (the

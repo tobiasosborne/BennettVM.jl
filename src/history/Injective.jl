@@ -561,6 +561,11 @@ is_injective(::Type{IntrinsicRealloc})::Bool = false
 is_injective(::Type{IntrinsicMemset})::Bool  = false
 is_injective(::Type{IntrinsicMemcpy})::Bool  = false
 is_injective(::Type{IntrinsicMemmove})::Bool = false
+# `IntrinsicGCAlloc` (CW-D3 Lever 3; Bennett-iwo9 decision 5) is the same shape
+# as `IntrinsicMalloc` — it materialises a pointer (a loop re-def overwrites a
+# prior `dest`) AND opens a region; non-injective, reversed by its L2 (base,
+# cells) delta. The type tag is metadata only and plays no part in injectivity.
+is_injective(::Type{IntrinsicGCAlloc})::Bool = false
 
 """
     is_injective(x::ArithmeticAssignment) -> Bool
