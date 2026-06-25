@@ -152,6 +152,12 @@ using BennettVM
     # pulls in the oracle + `collatz_vm` factory via
     # `test/reference/collatz.jl` (re-include-guarded).
     include("test_collatz_roundtrip.jl")
+    # M13.4 / `bennettvm-vw8` — the user-approved capstone: the public-API
+    # one-liner `Bennett.reversible_compile(collatz, Int64; target=:reversible_vm)`
+    # routed through the registration hook (ADR 0003 / a5j), run forward to the
+    # oracle and reversed (P0.6). The integration proof end-to-end, no hand-built
+    # ParsedIR. Sits after test_collatz_roundtrip.jl (shares the Case D shape).
+    include("test_e2e_collatz.jl")
     # ADR 0012 R1 RESOLVED — width-aware `_apply_binop` (`bennettvm-bgc`).
     # The collatz slice (and the general ingest) now threads the source
     # `IRBinOp.width` / `IRICmp.width` into the `Define` it builds, and
