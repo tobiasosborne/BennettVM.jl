@@ -7,6 +7,38 @@
 
 ---
 
+## Session — 2026-06-25 — M13 COMPLETE: vw8 e2e collatz capstone (target=:reversible_vm one-liner)
+
+**bennettvm-vw8 landed; M13.1–M13.4 closed.** Added `test/test_e2e_collatz.jl`
+(59/59 green; full suite 6889/6889) proving the user-approved capstone — the
+public Bennett.jl one-liner
+
+    Bennett.reversible_compile(collatz_steps, Int64; target = :reversible_vm)
+
+— compiles, runs forward to the irreversible Int64 collatz oracle (capped-at-20
+golden master), and `unrun!`s to the P0.6 exit invariant across 9 inputs (incl.
+x=27→20). Routed via the **a5j load-time registration hook** (`__init__` sets
+`Bennett._REVERSIBLE_VM_BACKEND[] = lower_vm`); arg/ret keys derived from the
+Begin/End markers (robust to extraction renames, à la `test_fp_roundtrip.jl`).
+
+**Bead-bookkeeping correction (recon-driven):** zg5/fu5/kl3 (M13.1–3) described a
+STALE design — a `driver.jl` validator edit + a Project.toml extension dep — that
+was **superseded by a5j's registration hook** (no `lower()` edit, no extension,
+no circular dep; the dispatch arm in `reversible_compile` intercepts
+`:reversible_vm` BEFORE `lower()` is reached). All three closed as superseded;
+vw8 `--force`-closed (it was blocked by kl3 + the 7xa Dict / xkl Vector cases,
+but scalar collatz is Case D — independent of those). The user had ALREADY
+approved emitting `target=:reversible_vm`; the "REQUIRES USER APPROVAL" flags
+were stale. **M13 is functionally complete** — the VM backend is reachable from
+Bennett.jl's public API end-to-end.
+
+NB cross-repo: this session also landed two Bennett.jl CW-D extraction walls
+(Bennett-59zi sret call→memcpy; Bennett-qmv7 setindex! gc_loaded heap-store) that
+feed the fdict path; see Bennett.jl worklog/090. Downstream BVM beads filed:
+`Bennett-igr3` (ingest `julia.gc_loaded` IRCall — the next BVM-side fdict step).
+
+---
+
 ## Session — 2026-06-23 — Bennett-6bu3 (consumer side): StructType {ptr,ptr} aggregate ingest + IRInsertBits pin reconciliation
 
 **Cross-repo 3+1 driven from Bennett.jl** (bead `Bennett-6bu3`); this is the
