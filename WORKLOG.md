@@ -7,6 +7,47 @@
 
 ---
 
+## Session — 2026-06-26 — Bennett-igr3: ingest julia.gc_loaded data-ptr launder (Small-tier)
+
+**Bennett-igr3 landed** (the BVM ingest half; downstream of Bennett.jl `qmv7`). Bennett.jl's
+qmv7 extraction emits the heap-Memory base of a `setindex!` value-store as
+`IRCall(:d, Symbol("julia.gc_loaded"), [mem, data], [64,64], 64)` — Julia's GC-rooting
+launder, which RETURNS the data pointer (args[2]); `mem` (args[1]) only keeps the Memory
+GC-rooted and is STRUCTURALLY UNREAD. Before this arm, the IRCall fell through to the
+SoftCall allowlist and failed loud ("unknown callee_name :julia.gc_loaded").
+
+Added one arm in `src/ir/ingest_body.jl` (`_lower_body_inst`), right after the
+`_HEAP_DISPATCH` check and before the Float32 guard / SoftCall constructor: it aliases
+`dest := data` via the established pointer-identity create `Define(dest, data, :add, 0)`
+(the cell-addressed VM treats the laundered data ptr AS the Memory virtual base — the base
+qmv7's IRVarGEP/IRLoad/IRStore re-root onto). Reversed by L3 checkpoint-replay (`Define` is
+non-injective, ADR 0012 §D1). Arg-count≠2 fails loud (Rule 1). `data` lowered via
+`_lower_ptr_operand` (SSA-ptr discipline, matching IRStore/IRLoad/IRVarGEP).
+
+Test `test/test_igr3_gc_loaded_ingest.jl` (8 @tests, registered beside its `gc_alloc_obj`
+sibling): ingest shape `Define(:d,:data,:add,0)`, forward binding `:d==data`, the
+mem-invariance soundness witness (vary `:mem` → bit-identical `:d`, mirroring gc_alloc
+tag-invariance), and the fail-loud arity guard. Full suite **6897/6897**.
+
+**Process** (BVM Rule 6 Small-tier: one file, ≤30 LOC, existing `Define`): TDD red→green
+(Rule 5) + a hostile reviewer subagent → APPROVE_WITH_NITS (operand order + reversibility +
+dispatch ordering all confirmed correct against ground truth; nit applied: use
+`_lower_ptr_operand` not `_lower_operand` for the ptr arg). No full `run!`/`unrun!`
+round-trip needed — gc_loaded emits a bog-standard `Define`, whose reversal is already
+covered by the generic Define round-trip tests; it adds no new reversal mechanism.
+
+**Symbol gotcha:** Bennett.jl emits the UN-canonicalised LLVM name `Symbol("julia.gc_loaded")`
+(via the generic call path `Symbol(cname)`), NOT a canonical `:gc_loaded` — contrast
+`:gc_alloc_obj`, which Bennett.jl DOES canonicalise (`instructions.jl:2636`). Verified
+empirically against the qmv7 `GCL_I8` fixture (operand order `[mem, data]` per
+`test/reference/fdict_O0.ll`).
+
+**Next:** pairs with `Bennett-jfw6` (closed today, Bennett.jl side) toward the full fdict
+e2e (`bennettvm-7xa`). The downstream BVM cell-index bug `Bennett-eln6` (i8 GEP byte-offset
+mapped directly as cell-index) is the next CW-D item.
+
+---
+
 ## Session — 2026-06-25 — M13 COMPLETE: vw8 e2e collatz capstone (target=:reversible_vm one-liner)
 
 **bennettvm-vw8 landed; M13.1–M13.4 closed.** Added `test/test_e2e_collatz.jl`

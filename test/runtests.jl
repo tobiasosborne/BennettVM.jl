@@ -338,6 +338,15 @@ using BennettVM
     # and the tag-invariance soundness witness (vary tag → bit-identical IState).
     # Sits right after the arena floor it mirrors.
     include("test_gc_alloc_obj_ingest.jl")
+    # Bennett-igr3 — julia.gc_loaded data-ptr launder ingest (downstream of
+    # Bennett-qmv7). Ingests Bennett.jl's `IRCall(Symbol("julia.gc_loaded"),
+    # [mem, data])` — the GC-rooting launder that returns the data pointer — as
+    # the pointer-identity create `Define(dest, data, :add, 0)` (the laundered
+    # data ptr IS the cell-addressed heap-Memory virtual base; `mem` is
+    # STRUCTURALLY UNREAD). Pins ingest shape, the forward binding, the
+    # mem-invariance soundness witness, and the fail-loud arity guard. Sits
+    # beside its gc_alloc_obj sibling.
+    include("test_igr3_gc_loaded_ingest.jl")
     # SC9 Case A — THE Julia-`Vector` round-trip gate (bead `Bennett-jfw6`, ADR
     # 0016). Drives a REAL Julia `Vector{T}(undef,n)` write/read/reduce loop
     # (`fvec` Int64 + `vsum` Int8) from SOURCE through Bennett.jl's `mem=:vm`
