@@ -7,6 +7,40 @@
 
 ---
 
+## Session — 2026-06-30 — Documentation round: production README rewrite + new docs/src site
+
+**What.** Replaced the README (which was frozen at the Phase-1→2 transition — it called
+the project "Phase 2 gated / M0", `bennettvm_prd.md` "PRD v3", and `src/`/`test/` "empty",
+and spent ~90% of its body on the archived spike) with a public-facing front door for the
+**production** VM: the `run!`/`unrun!` round-trip, the three-layer history model, the
+instruction set, the registration-hook integration, and the four motivating cases (A–D).
+Added a Diátaxis `docs/src` site from scratch — `index.md`, `getting_started/quickstart`,
+`explanation/{what_is_bennettvm, instruction_set, reversibility_model, integration}`,
+`reference/api` — plus `docs/make.jl` and `docs/Project.toml`.
+
+**Method.** A mapping workflow (6 subagents) produced subsystem maps + a doc-staleness
+audit; a write-then-adversarially-verify workflow authored the pages grounded in a
+verified-facts block + source. The verify pass **empirically confirmed** facts by reading
+source and compiling: e.g. the collatz entry-parameter key is `Symbol("n::Int64")` (not
+`:n`) — the quickstart and README now use the correct key.
+
+**Facts pinned in the new docs (from source).** Public API = exactly the 10 exports
+(`VMProgram, lower_vm, n_instructions, initial_state, is_halted, result, step!, run!,
+unstep!, unrun!`). `initial_state(prog, input::AbstractDict)` takes **two** args. IState
+has **no flat `locals` field** — the active register file is `active_locals(s) =
+frames[end].locals`. History is L1 injective / L2 `DeltaEntry` min-cut / L3 `CheckpointEntry`
+(K=64) + replay; injective L1-skipped steps reverse via the **L3 replay fall-through**, not
+a per-instruction inverse. Heap is **cell-addressed** `Int64`. There is no `:circuit`
+symbol in Bennett.jl (the circuit target is `:gate_count`/`:depth`).
+
+**Gotchas / follow-ups (unfiled — ran no `bd` to keep the jsonl export clean).**
+- `BENNETT_JL_PIN.md`, `src/lower_vm.jl`, and `bennettvm_prd.md` §3.7 cite four divergent
+  Bennett.jl SHAs — reconcile to one canonical pin.
+- `src/BennettVM.jl` "Status" docstring is frozen at "M0.1 package skeleton only"; several
+  PRD §3.x signatures (`initial_state(prog)`, the immutable-IState `step!` ordering, the
+  `locals` field) describe abandoned designs. All catalogued in the session's subsystem maps.
+- `docs/make.jl` uses `doctest=false` (the VM examples are plain ```julia blocks).
+
 ## Session — 2026-06-26 — Bennett-igr3: ingest julia.gc_loaded data-ptr launder (Small-tier)
 
 **Bennett-igr3 landed** (the BVM ingest half; downstream of Bennett.jl `qmv7`). Bennett.jl's

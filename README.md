@@ -1,216 +1,213 @@
 # BennettVM.jl
 
-> A reversible-VM backend for [Bennett.jl][bennett], built on 50 years of
-> reversible-computing literature. **Phase 1: the throwaway spike has shipped
-> its retrospective. Phase 2 (production) is gated on PRD v4.**
+[![License](https://img.shields.io/badge/License-MIT-7aa2f7.svg?style=flat-square)](LICENSE)
+[![Julia](https://img.shields.io/badge/Julia-1.10%2B-9558B2.svg?style=flat-square)](https://julialang.org/)
+[![Upstream](https://img.shields.io/badge/frontend-Bennett.jl-f24f4f.svg?style=flat-square)](../Bennett.jl)
+[![Phase](https://img.shields.io/badge/phase-2_·_production-2ea043.svg?style=flat-square)](PHASE.md)
 
-[bennett]: ../Bennett.jl
+**The reversible-VM backend for [Bennett.jl](../Bennett.jl) — it runs a terminating
+computation forward, then *un-runs* it step by step back to the start, with no
+information lost.**
 
-## What this is
-
-[Bennett.jl][bennett] compiles plain Julia functions to *fixed reversible
-circuits* — the right artifact for a quantum oracle, but it cannot represent
-unbounded loops or runtime-sized memory. BennettVM is the second lowering
-target (`target = :reversible_vm`) that closes that gap: a reversible
-interpreter for terminating computations of statically-unknown length.
+[Bennett.jl](../Bennett.jl) compiles a Julia function to a *fixed reversible circuit* —
+the right artifact for a quantum oracle, but a circuit is a fixed permutation: it has no
+program counter and no runtime-sized memory, so every loop must be statically bounded.
+A `while` loop whose length the *input* decides — a Collatz orbit, a search to a
+data-dependent fixpoint — cannot be a fixed circuit at all. **BennettVM is the second
+lowering target that closes the gap:** a reversible *interpreter* that executes the
+lowered program and can walk it backward to the initial state, carrying a three-layer
+**history tape** instead of a fixed gate sequence.
 
 ```
-                 ┌──────────── target=:circuit ──────►  fixed permutation circuit
-Julia source ──► │ Bennett.jl frontend (LLVM IR, lowering, gates)
-                 └──────────── target=:reversible_vm ─►  BennettVM  ◄── you are here
+                 ┌──────── target = :gate_count / :depth ──►  fixed permutation circuit
+Julia source ──► │ Bennett.jl frontend (LLVM IR → lowering)
+                 └──────── target = :reversible_vm ─────────►  BennettVM   ◄── this repo
 ```
 
-The two backends are semantically distinct (see [`bennettvm_prd.md`][prd] §3.7).
+The two backends are semantically distinct — not a fork, not a replacement. They share
+Bennett.jl's LLVM-IR frontend and diverge at the lowering target.
 
-[prd]: ./bennettvm_prd.md
+## How it plugs into Bennett.jl
 
-## Project status
-
-| Phase | State | Artifact |
-|---|---|---|
-| Pre-Phase-0 | ✅ Done | `references/` (47+ paper PDFs incl. Bennett 1973 + 5 source clones), `CLAUDE.md`, `PHASE.md`, `references/manifest/SOURCES.md` |
-| Phase 0 (throwaway spike) | ✅ Done | `spike/` (789/789 tests, tagged `spike-0-archived`, chmod -w) |
-| Phase 0 retrospective | ✅ Done | `spike/RETROSPECTIVE.md` (264 LOC, 9 questions answered) |
-| Phase 1 (PRD v4 authoring) | ✅ Done 2026-05-25 | `bennettvm_prd.md` (v4, 1223 LOC); v3 archived at `docs/prd/bennettvm_prd_v3.md` |
-| Phase 2 (production) | 🟢 Open | First milestone M0 + gating M5 (RC3 `rvm` pre-read); see v4 §Part IX |
-
-See [`PHASE.md`](./PHASE.md) for the current phase and gates.
-
-## The two-phase methodology
-
-Per [`bennettvm_prd.md`][prd] (PRD v3):
-
-- **Phase 0** — *Deliberately throwaway* spike. One Claude Code session,
-  Bennett-1973 trace VM, eight bytecodes, `Int64` only, countdown program,
-  full-state history. Goal: surface concrete decisions the PRD cannot
-  anticipate.
-- **Phase 1** — Archive the spike. Write [`spike/RETROSPECTIVE.md`][retro].
-  Author PRD v4 from the retrospective.
-- **Phase 2** — Production VM. RSSA-style IR (Mogensen 2016),
-  Pendulum/BobISA-style ISA, Enzyme-style min-cut history selection,
-  Bennett-1989 pebble-game lowering for quantum oracle synthesis, optional
-  Unqomp/Reqomp/Qurts integration. Lean 4 formalization of *abstract VM
-  semantics only*.
-
-[retro]: ./spike/RETROSPECTIVE.md
-
-## Read order (for new agents and humans)
-
-1. [`bennettvm_prd.md`][prd] — PRD v3, the controlling document.
-2. [`CLAUDE.md`](./CLAUDE.md) — Laws, Rules, Phase-0 gating, hallucination
-   callouts.
-3. [`PHASE.md`](./PHASE.md) — current phase and what's blocked.
-4. [`spike/RETROSPECTIVE.md`][retro] — the actual Phase-0 deliverable.
-5. [`references/manifest/SOURCES.md`](./references/manifest/SOURCES.md) —
-   what literature is on disk + acquisition status.
-6. [`WORKLOG.md`](./WORKLOG.md) and [`HANDOFF.md`](./HANDOFF.md) — session
-   history + next-agent brief.
-
-## What the spike actually does
-
-The spike implements the Bennett-1973 three-tape reversible TM construction
-(Stage 1 only), narrowed to:
-
-- `Int64` and `Bool` scalars, no fixed-point, no FP.
-- Eight bytecodes: `Const`, `Move`, `UnaryOp`, `BinaryOp`, `Jump`, `JumpIf`,
-  `Return`, `Halt`.
-- Full-state snapshot history (the deliberately-wasteful Phase-0 mechanism).
-- `step!` / `unstep!` / `run!` / `unrun!`.
-
-Smoke demonstration — countdown(3) forward, then `unrun!` to initial state:
+The integration is a load-time registration hook, not a package dependency cycle: when you
+`using BennettVM`, its `__init__` registers `lower_vm` into `Bennett._REVERSIBLE_VM_BACKEND`.
+After that, a `:reversible_vm` compile dispatches to the VM and returns a `VMProgram`
+instead of a `ReversibleCircuit`:
 
 ```julia
-using BennettVMSpike
+using Bennett, BennettVM
 
-prog = Program([
-    Const(:n, 3),                            # locals[:n] = 3
-    Const(:zero, 0),
-    BinaryOp(:gt, :cond, :n, :zero),         # cond = (n > 0)
-    JumpIf(:cond, 6),                        # if cond, jump to loop body
-    Halt(),                                  # else terminate
-    Const(:one, 1),
-    BinaryOp(:sub, :n, :n, :one),            # n -= 1
-    Jump(3),                                 # back to test
-])
-
-s = initial_state(prog)
-s0 = deepcopy(s.current)
-
-run!(s, prog; max_steps=100)
-@assert is_halted(s)
-@assert result(s)[:n] == 0
-
-unrun!(s, prog)
-@assert s.current == s0
-@assert isempty(s.history)
+prog = reversible_compile(collatz_steps, Int64; target = :reversible_vm)   # → VMProgram
 ```
 
-### Is it Turing-complete?
+Until `using BennettVM` runs, a `:reversible_vm` compile raises a clear "requires
+`using BennettVM`" error — never a silent fallback to a circuit. End-to-end Collatz
+round-trips through the VM today (milestone **M13**).
 
-**No** — each program has a finite register namespace and finite-precision
-`Int64` cells, so the per-program state space is bounded. Control flow IS
-Turing-equivalent (`Jump` + `JumpIf` + arithmetic), but state is not.
+## Run a round-trip
 
-That's intentional and scoped: PRD §5.2 explicitly excludes RAM, arrays, and
-arbitrary-precision arithmetic from Phase 0. Phase 2 adds them via Pendulum-
-style memory-as-exchange primitives and gets actual Turing completeness.
+A `VMProgram` is executed (and reversed) through the interpreter's four primitives —
+`run!` / `unrun!` forward and backward, with `step!` / `unstep!` underneath:
 
-## File map
+```julia
+using Bennett, BennettVM
 
-```
-bennettvm_prd.md          # PRD v3 — controlling document
-CLAUDE.md / AGENTS.md     # rules of engagement for agents
-PHASE.md                  # current phase + gates
-README.md                 # this file
-WORKLOG.md                # session-by-session log
-HANDOFF.md                # what next agent needs
-BENNETT_JL_PIN.md         # Bennett.jl SHA pin (5731cec)
+prog = reversible_compile(collatz_steps, Int64; target = :reversible_vm)
 
-references/               # 43 paper PDFs + 5 source clones — untracked by git
-  manifest/SOURCES.md     #   canonical inventory with SHA256s
-  foundational/           #   Bennett 1989, Knill 1995, BTV 2001, …
-  reversible-languages/   #   Yokoyama-Glück 2007, Janus, RFUN, …
-  reversible-ir/          #   Mogensen RSSA 2016, Deworetzki 2021–2024, …
-  reversible-isa/         #   Vieri 1995/1999, BobISA 2012, Frank 1999, …
-  quantum-uncomputation/  #   Unqomp, Reqomp, Qurts, Meuli, Spooky, …
-  reverse-debugging/      #   rr (Mozilla) papers
-  ad-and-checkpointing/   #   Enzyme 2020, Enzyme-GPU 2021
-  implementations/        #   RC3, TOPPS-janus, jana, janus-vesta, evincaro/Janus
+s = initial_state(prog, Dict(Symbol("n::Int64") => 27))   # keyed by the lowered argument name
+run!(s, prog)                             # forward to halt, building the history tape
+answer = result(s)                        # the register file at halt
 
-spike/                    # THROWAWAY, tagged spike-0-archived, chmod -w
-  Project.toml            #   BennettVMSpike, private=true
-  src/                    #   Types.jl, Interpreter.jl, Instructions.jl, BennettVMSpike.jl
-  test/                   #   789/789 tests, mutation-proof verified
-  RETROSPECTIVE.md        #   THE Phase-0 deliverable
-
-scripts/spike-templates/  # the 4 sequential sub-agent prompts (interpreter/
-                          # instructions/tests/reviewer) + RETROSPECTIVE.md skeleton
-
-.beads/                   # beads issue tracker (Dolt-backed)
-src/, test/               # Phase-2 trees — empty until PRD v4 lands
+unrun!(s, prog)                           # reverse every step back to the start
+@assert s.current == s.initial            # exact round-trip …
+@assert isempty(s.history)                # … and the tape is empty again
 ```
 
-## Notable findings from the spike
+`run!` then `unrun!` returns the machine to its *exact* initial state — that round-trip is
+the load-bearing correctness invariant, checked across the test suite. Both drivers
+fail loud on their step guards (`max_steps` / `max_unsteps`) and leave the machine
+mid-flight for inspection; never a silent partial result.
 
-1. **Julia's default `==` does identity-compare on `Dict` fields.** `Base.==` and
-   `Base.hash` overrides on `IState` are MANDATORY — without them round-trip
-   equality silently never holds. Real footgun.
-2. **`step!` must call `forward()` BEFORE pushing the history snapshot**, not
-   after. Original ordering corrupted history on `forward()` exception.
-3. **The aggregate round-trip test is not mutation-proof for middle-instruction
-   inverses** — the leading `Const` inverse restores `s.current` regardless of
-   corruption left by mid-stream inverses. A per-step inverse test pattern
-   (snapshot every pre-step `IState`, then `unstep!` and assert per-step
-   equality) catches this; the spike's test suite includes it. Phase 2 must
-   keep this pattern.
-4. **PRD v3 errata logged** (`references/manifest/SOURCES.md §Citation-errata`):
-   the BobISA citation should be **Thomsen-Axelsen-Glück 2012** (RC 2012), not
-   "Axelsen-Yokoyama 2011 LATA". The Mogensen RIL "paper" is a ghost — RIL is
-   introduced inside Mogensen 2015 LNCS 9138.
-5. **Law 2 cross-check**: none of RC3, TOPPS-janus, jana, janus-vesta, or
-   evincarofautumn-janus has a history-tape + round-trip property test in the
-   BennettVM sense. RC3 does compiler-level RSSA reversal (no runtime trace);
-   TOPPS-janus does syntactic `invertStmt` (the Yokoyama-Glück 2007 "no history
-   for reversible source" lesson). BennettVM IS distinct, not a rebuild.
+## What's inside
 
-Full retrospective: [`spike/RETROSPECTIVE.md`][retro].
+The production VM is a small, auditable core:
 
-## Issue tracking
+| Piece | Role |
+|-------|------|
+| **`IState`** | one execution snapshot: `pc`, a `frames` call stack (the active register file is `frames[end].locals`), `status`, a cell-addressed `Int64` heap, a reversible-map register, and bump cursors for the dynamic / arena / stack segments |
+| **`RState`** | the trajectory: `current` `IState`, the `history` tape, `step_count`, and the `initial` anchor |
+| **History tape** | three layers (below) — the reversible record that lets `unstep!`/`unrun!` reconstruct any prior state |
+| **Instruction set** | ~34 RSSA-derived `Instruction` subtypes (6 control-flow markers) covering 18 of Bennett.jl's 20 `IRInst` types |
+| **`lower_vm`** | the ingest pass: `Bennett.ParsedIR` → `VMProgram` (φ-nodes → block params, critical-edge-split trampolines, a bump/arena/stack memory model, closed-world reversible calls) |
 
-Beads (`bd`) with Dolt backend, embedded in `.beads/`. Open issues:
+**Public API** (the 10 exported symbols): `VMProgram`, `lower_vm`, `n_instructions`,
+`initial_state`, `is_halted`, `result`, `step!`, `run!`, `unstep!`, `unrun!`.
 
-```bash
-bd ready
+## The reversibility model
+
+How does a non-injective step (a `Define` that overwrites a register, a store that clobbers
+a cell) get reversed? With a **three-layer history tape** (PRD v4 §3.3), tried in order of
+preference so the tape stays minimal:
+
+1. **L1 — no log.** Injective instructions (swaps, the control markers, an `xor`-modop
+   assignment, …) are bijections on the state they touch; reversing them needs *nothing*
+   recorded. The `is_injective` trait gates the push.
+2. **L2 — delta min-cut.** A non-injective instruction with a cheap inverse records only
+   the *minimal* value its forward step is about to destroy — an Enzyme-style min-cut
+   `DeltaEntry`. `unstep!` pops it and applies the per-instruction inverse directly.
+3. **L3 — checkpoint + replay.** Everything else is reversed the robust way (rr-style):
+   take a full snapshot every K=64 steps; to go backward, restore the nearest snapshot
+   at-or-before the target and deterministically replay forward. The `initial` state is
+   the step-0 anchor.
+
+This is BennettVM's realisation of Bennett's 1973 compute → copy → retrace, generalised
+to an interpreter: most instructions cost no history, the expensive ones are bounded by the
+checkpoint interval, and correctness never depends on a hand-written inverse for every
+opcode.
+
+## The four motivating computations
+
+BennettVM is driven by four cases a fixed circuit cannot handle (PRD v4 §3.6.2):
+
+| Case | Shape | Status |
+|------|-------|--------|
+| **D — `collatz_steps`** | unbounded `while` to a data-dependent fixpoint | ✅ end-to-end (M13) |
+| **C — `matrix_sum`** | nested loops | ingest landed |
+| **B — `frtN`** | dynamic-size loop | ingest landed |
+| **A — `fdict`** | a `Dict` as a reversible map | in progress (closed-world `fdict` workstream) |
+
+Case D — the load-bearing gate — round-trips scalar Collatz end-to-end via the public
+`reversible_compile(…; target = :reversible_vm)` API. The active 2026-mid workstream is
+**closed-world extraction** (ADR 0017): acquiring the *internals* of Julia's `Dict` so a
+bare `fdict` round-trips from source — knocking down Bennett.jl-side extraction walls
+(pointer-cell width, heterogeneous sret) wall by wall.
+
+## Status
+
+**Phase 2 (production), in active development.** PRD v4 is the controlling spec
+(ratified 2026-05-25). The source tree holds the full VM — ingest, interpreter, three-layer
+history, a cell-addressed heap with reversible calls and bounded intrinsics — across ~38
+`src/*.jl` files, with ~67 test files. Milestone M13 (the Collatz capstone) is complete;
+the current frontier is the closed-world `fdict` epic. [`PHASE.md`](PHASE.md) is the
+authoritative status; [`WORKLOG.md`](WORKLOG.md) is the session-by-session log.
+
+> **A note on the spike.** Phase 0 was a *deliberately throwaway* Bennett-1973 trace VM
+> (eight bytecodes, `Int64` only), archived read-only as `spike-0-archived` under
+> `spike/`. None of it was promoted — Phase 2 started from an empty tree built on PRD v4.
+> Three lessons from it are load-bearing in production and worth knowing:
+>
+> 1. **`Base.==`/`Base.hash` on the state must content-compare.** Julia's default `==`
+>    identity-compares `Dict` fields, so without the overrides the round-trip invariant
+>    silently never holds. (Encoded in `IState`'s equality.)
+> 2. **Forward before push.** `step!` runs `forward()` and only *then* records history —
+>    the reverse ordering corrupts the tape on a throwing step.
+> 3. **Test the per-step inverse, not just the aggregate.** A leading instruction's inverse
+>    can mask corruption left by a mid-stream one; snapshot every pre-step state and assert
+>    per-step on the way back.
+
+## Architecture
+
+```
+Bennett.jl ParsedIR
+        │  lower_vm  (src/ir/ingest.jl)
+        ▼
+   VMProgram ── blocks · LabelTable · FunctionEntry table
+        │  initial_state(prog, input)
+        ▼
+   RState{ current::IState, history, step_count, initial }
+        │  run! / step!  ──►  forward + 3-layer history push
+        │  unrun! / unstep!  ◄──  L2 delta fast-path | L3 checkpoint-restore + replay
+        ▼
+   result(s)              (forward answer; unrun! returns to s.initial)
 ```
 
-The current open issue is `bennettvm-pb2` — PRD v4 epic.
+| Path | What |
+|------|------|
+| `src/ir/` | the instruction set, the `IState`/`RState` state model, `VMProgram`, and the ingest pass (`ingest.jl`, `ingest_body.jl`, `ingest_call.jl`, `ingest_phi.jl`, …) |
+| `src/history/` | the three-layer tape: `Injective.jl` (L1), `delta.jl` (L2), `CheckpointEntry.jl` (L3), `Replay.jl` (`unstep!`/`unrun!`) |
+| `src/interpreter/` | the forward engine (`step!`/`run!`) and cross-block / call dispatch |
+| `src/analysis/` | the min-cut liveness pass that selects L2 slots |
+| `src/lower_vm.jl` | the registered backend entry point |
+| `docs/adr/` | the architecture decision records (the real design rationale) |
+| `bennettvm_prd.md` | PRD v4 — the controlling specification |
 
-## Reproducing the spike
+The in-source docstrings, the ADR set, and `docs/coverage-matrix.md` (which tracks the
+`IRInst` → instruction coverage) are the authoritative design record.
 
-```bash
-cd spike
-julia --project=. -e 'using Pkg; Pkg.test()'      # 789/789 should pass
-```
+## Documentation
 
-If `chmod -w` on `spike/` is in your way (e.g., to re-run a probe), restore
-write permissions with `chmod -R u+w spike/`. Do NOT modify the spike;
-`spike-0-archived` is the canonical artifact.
+A [Diátaxis](https://diataxis.fr)-structured site under [`docs/src/`](docs/src/) — build
+with `julia --project=docs docs/make.jl`, or read the Markdown directly:
+
+- **Learn** — [quick start](docs/src/getting_started/quickstart.md)
+- **Understand** — [what BennettVM is](docs/src/explanation/what_is_bennettvm.md) ·
+  [the instruction set & state model](docs/src/explanation/instruction_set.md) ·
+  [the reversibility model](docs/src/explanation/reversibility_model.md) ·
+  [integration with Bennett.jl](docs/src/explanation/integration.md)
+- **Look up** — [API reference](docs/src/reference/api.md)
+
+## Reading order
+
+1. [`bennettvm_prd.md`](bennettvm_prd.md) — PRD v4, the controlling document.
+2. [`CLAUDE.md`](CLAUDE.md) (= `AGENTS.md`) — the Laws, the Rules, phase discipline.
+3. [`PHASE.md`](PHASE.md) — current phase and gates.
+4. [`../Bennett.jl/README.md`](../Bennett.jl) — the upstream frontend.
+5. [`docs/adr/`](docs/adr/) — the decision records for whatever subsystem you touch.
+6. [`WORKLOG.md`](WORKLOG.md) — session history and the next-agent brief.
+
+The Bennett.jl version this repo builds against is recorded in
+[`BENNETT_JL_PIN.md`](BENNETT_JL_PIN.md) (the single source of truth for the pin).
 
 ## Acknowledgements
 
-Builds on five decades of reversible-computing literature — see
-[`bennettvm_prd.md`][prd] Part II for the full reading list. The closest
-existing analogue to this project is [RC3 (THM)][rc3] (Janus toolchain),
-which BennettVM does not rebuild but learns from.
-
-[rc3]: https://git.thm.de/thm-rc3/release
-
-Phase 0 orchestrated by Claude Code (Opus 4.7 for code, Sonnet for review).
-Eleven sequential sub-agent passes; the throughline is captured in
-[`WORKLOG.md`](./WORKLOG.md).
+Builds on five decades of reversible-computing literature — Bennett (1973, 1989), Knill
+(1995) on the pebble game, Mogensen's RSSA, the Pendulum / BobISA reversible ISA, Enzyme's
+min-cut history selection (Moses & Churavy 2020), and rr-style record-and-replay
+(O'Callahan 2017). See `bennettvm_prd.md` Part II for the full reading list. The closest
+existing analogue is the [RC3](https://git.thm.de/thm-rc3/release) Janus toolchain, which
+BennettVM learns from rather than rebuilds (RC3 does compile-time RSSA reversal; BennettVM
+keeps a runtime history tape).
 
 ## License
 
-MIT (see [`LICENSE`](./LICENSE) — to be added). Inherits dependency licenses
-from referenced literature and tools (Bennett.jl, Enzyme, RC3, the cited
-papers).
+[MIT](LICENSE).

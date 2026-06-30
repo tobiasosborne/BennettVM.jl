@@ -1,0 +1,6 @@
+[deps]
+BennettVM = "97720cdd-394e-4c54-9ae1-cb2223a2d5bf"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+
+[compat]
+Documenter = "1"
