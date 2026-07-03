@@ -7,6 +7,55 @@
 
 ---
 
+## Session — 2026-07-03 — Side quest: run an emulator (NES/6502) on the VM, reversibly — feasibility PROVEN + MVP
+
+**What.** Investigated "decompile Super Mario Bros → LLVM → run on BennettVM,
+log side effects to a tape." Split into two ideas: (1) *lift the ROM's 6502 to
+LLVM* — dead end (undecidable statically: indirect jumps, self-modifying code,
+mappers; jamulator abandoned); (2) *compile an emulator to LLVM, ROM as data,
+side effects to a tape* — the right architecture, and it fits the VM. Built a
+working MVP of (2), wrote `docs/design/emulator-on-bennettvm.md` + reproducible
+`docs/design/emulator-mvp/`, filed epic `bennettvm-v5eb` (+ E0/E1/E2/InputRef).
+
+**MVP (E0, `bennettvm-33bf`, CLOSED).** A genuine 8-opcode 6502 fetch-decode-
+execute core in C (`docs/design/emulator-mvp/mos6502.c`) running hand-assembled
+guest machine code (a BNE-driven loop computing 5·n), through the **C path**
+(clang -O0 .ll → `extract_parsed_ir_set_from_ll(ptr_cells=true)` →
+`lower_vm(entry=:mos6502)` → 406 VM instrs). Forward == native-C golden AND
+`unrun!` to exact initial state, every input. GREEN + reproducible from the repo.
+
+**Surprises / gotchas worth knowing (not in any diff):**
+- **RAM was the easy part.** Dynamic array read/write at a *runtime index*
+  round-trips today — better than the capability audit implied. Requirements
+  1–3 (unbounded loop, runtime-index RAM, opcode dispatch) are all green NOW.
+- **The Julia path can't back a real emulator yet.** `zeros(Int64,64)` +
+  runtime-indexed loop → Julia heap-allocs via the GC, emitting `call ptr asm
+  "movq %fs:0"` (thread-ptr for GC state) → rejected (Bennett-5oyt/U15). A
+  *small* array (`zeros(Int64,8)`) is SROA'd away so it slips through — which
+  is why a naive Julia smoke test misleads. **Use the C path** (this is exactly
+  why the frontier e2e is a C hashtable, not Julia). Julia array path =
+  `bennettvm-m9i` + the fdict/gc-alloc CW-D workstream.
+- **C stack arrays are rejected; heap arrays pass.** `uint8_t mem[64]` emits a
+  two-index GEP `[64 x i8], ptr, 0, %idx` → rejected (Bennett-qal5/U16, already
+  bead `bennettvm-dzd`). Fix: `calloc`'d pointer RAM → single-index `i8, ptr,
+  %idx` GEP, the shape the hashtable path handles. The MVP does this.
+- **Dense if/elseif over small opcodes {0,1,2} → LLVM switch.table lookup GEP →
+  rejected.** But *sparse real 6502 opcodes* (0xA9/0xE8/…), binary-tree, and
+  control-divergent dispatch all pass. Real 6502 decode is sparse, so this is a
+  non-issue in practice (verified: `smoke_dispatch.jl` D1/D2/D3).
+- **Perf is the wall, as expected.** Reverse ≈ 570 guest-opcodes/s at K=32
+  (L3-replay-bound); forward ~50×. Projected: forward ~0.5 s/NES-frame (~1–2 fps
+  slideshow), reverse ~20–25 s/frame. Not a correctness blocker; `bennettvm-uom`
+  (L1/L2 memory-delta lowering) is the lever. Cross-ref `bennettvm-w0a0`.
+
+**Validation.** The spike independently rediscovered the exact known frontier —
+every obstacle already had a bead (dzd, m6c/6ox/rlx/agm, 416r.4, m9i, uom, w0a0).
+The one genuine gap with no bead: *recording* nondeterministic input (controller
+reads) — filed `bennettvm-6dko` (InputRef, a TAS-movie input tape dual to
+OutputRef). Trophy target: `nestest.nes` headless CPU conformance, reversible.
+
+---
+
 ## Session — 2026-06-30 — Documentation round: production README rewrite + new docs/src site
 
 **What.** Replaced the README (which was frozen at the Phase-1→2 transition — it called
