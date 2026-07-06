@@ -1,11 +1,12 @@
 # Design note — Running an emulator (NES / 6502) on BennettVM, reversibly
 
-> **Status: EXPLORATORY / feasibility proven.** 2026-07-03. Not an accepted
-> architecture decision — a scoped feasibility study with a working MVP. The
-> north-star workstream is tracked by epic `bennettvm-v5eb` (see §8). Every
-> technical obstacle named here already has a bead (§6); this note ties them to
-> a concrete, motivating target and adds the one genuinely missing piece (an
-> input tape, §5).
+> **Status: EXPLORATORY / feasibility proven; strategy set.** MVP 2026-07-03;
+> framerate strategy 2026-07-06. Not an accepted architecture decision — a scoped
+> feasibility study with a working MVP (§3) and a two-track plan to the raised
+> north star: **Super Mario Bros at actual NES framerate, loading speedrun
+> scripts.** Track A (correct reversible SMB, epic `bennettvm-v5eb`) is the
+> priority; Track B (faster reversible execution via a C VM port, epic
+> `bennettvm-1is3`) is the framerate arc. Full strategy + bead DAG in §9.
 
 ## 0. TL;DR
 
@@ -201,16 +202,108 @@ Beads filed 2026-07-03: epic **`bennettvm-v5eb`**; **E0** `bennettvm-33bf`
 `bennettvm-6dko`. Deps wired (E2→E1→E0, E2→`416r.4`). E3/E4/E5 reference existing
 beads and are filed as the work approaches (avoid speculative backlog).
 
-## 9. Recommendation
+## 9. Strategy — SMB at NES framerate (north star, 2026-07-06)
 
-**Pursue the emulator path; drop ROM-lifting entirely.** The CPU core is green
-today; the remaining work is (i) breadth (all opcodes — mechanical), (ii) the
-already-specced globals/output beads, and (iii) one new small primitive (the
-input tape). The `nestest.nes` trophy — *"a real NES CPU-conformance ROM executed
-on a reversible VM, then run backwards bit-for-bit to boot state"* — is a
-legitimately publishable curiosity that dodges every genuinely hard NES problem
-(graphics, audio, timing, mappers). Recommended next concrete step: **E1**, grow
-the MVP to a complete 6502 core, opcode-by-opcode against a golden reference.
+The north star was raised from "nestest headless" to **play Super Mario Bros at
+actual NES framerate (60.0988 Hz), loading speedrun scripts.** That is a
+*qualitatively* different target, and it forces one hard truth up front.
+
+### 9.1 Framerate is unreachable on the current interpreter — and reversibility is *not* why
+
+SMB runs the guest CPU through **two** interpreter layers: Julia tree-walks the
+`VMProgram`, and the `VMProgram` *is* the emulator interpreting 6502 opcodes. One
+guest 6502 instruction ≈ 20–80 VM `step!` calls. Budget for NTSC SMB: CPU 1.79
+MHz → ~500 k 6502-instr/s (~8,500/frame); a cycle-accurate PPU runs at 3× →
+~5.4 M dot-updates/s (the dominant cost). The E0 MVP measured **~28,500
+guest-opcodes/s forward** on a *toy* core with no PPU. So:
+
+| Mode | vs. 60 FPS SMB |
+|---|---|
+| Forward, interpreter, no reversibility, CPU-only | ~4–20× too slow |
+| Forward + cycle-accurate PPU | ~50–500× too slow |
+| Reversible (L3 replay, ~28× on top, §7) | ~1,000–10,000× too slow |
+
+**The gap is the tree-walking interpreter, not reversibility.** `rr` does
+*native* reversible execution at ~1.2–2× forward overhead — proof that reversible
++ framerate is compatible. Therefore the framerate north star ⇒ **get off the
+Julia interpreter.** Two ways: port the interpreter to C (lower risk, the chosen
+lead), or native-codegen the `VMProgram` (stretch).
+
+### 9.2 The two-track strategy (correctness first)
+
+- **Track A — Correct reversible SMB (epic `bennettvm-v5eb`), the priority.**
+  Full emulator runs reversibly *on the VM*, plays SMB **correctly** but
+  sub-realtime (slideshow), TAS-replayable, free rewind. This is the on-mission,
+  publishable artifact and it *validates the emulator* (PPU golden vs FCEUX)
+  before any speed work. **Land this first.**
+- **Track B — Faster reversible execution (epic `bennettvm-1is3`), the north
+  star.** Lead approach (user-directed): **port the BennettVM interpreter to C**
+  — a tight C `run!`/`unrun!` reimplementing L1/L2/L3 (arrays not dicts, no GC),
+  ~10–50× over the Julia tree-walker; reversibility semantics port directly.
+  Native codegen (`VMProgram`→LLVM + rr-style delta instrumentation) is the
+  stretch alternative. A **forward-only fast mode** (drop the tape) lands first
+  to benchmark raw speed and decouple "plays at speed" from "is reversible."
+
+### 9.3 SMB specifics — some luck, some not
+
+- ✅ **Mapper 0 / NROM** (32K PRG + 8K CHR, *no bank switching*) — the simplest
+  cartridge; mapper complexity is a non-issue for SMB (unlike SMB3's MMC3).
+- ✅ SMB is documented to use **only official opcodes** — no illegal-opcode work.
+- ⚠️ Needs a real **PPU with sprite-0 hit** (SMB splits the HUD from the
+  scrolling playfield via sprite 0 — load-bearing), **NMI/vblank-driven timing**,
+  and scanline-accurate scroll. Get these wrong → hang or glitch.
+- ⚠️ **APU** is separable (needed for faithful, optional for "playing").
+
+### 9.4 TAS is a two-for-one
+
+An FCEUX **`.fm2`** movie (text, one line/frame, button bitmask) is *both* the
+speedrun-script feature (feeds the `bennettvm-6dko` InputRef tape, one latch per
+NMI) *and* the **PPU validation oracle**: run the same `.fm2` on FCEUX, hash the
+framebuffer per frame, and that is the golden master (Rule 4). "Record
+nondeterminism, replay determinism" — the movie *is* the recorded nondeterminism.
+
+### 9.5 Bead DAG (filed 2026-07-06)
+
+**Track A — full reversible NES (under `bennettvm-v5eb`), P2 correctness-first:**
+
+| Bead | Deliverable | Deps |
+|---|---|---|
+| `hahl` A1 | iNES/NROM ROM loader (PRG/CHR, ROM→VM memory) | `zbeg`, `416r.4` |
+| `6sma` A2 | PPU background (nametable/pattern/palette, scanline) | A1 |
+| `tsjq` A3 | PPU sprites + sprite-0 hit + OAM/OAMDMA | A2 |
+| `pldf` A4 | PPU scroll + NMI/vblank + CPU↔PPU interleave | A2 |
+| `jm77` A5 | Controller port `$4016/$4017` → InputRef | `zbeg`, `6dko` |
+| `87sk` A6 | APU (audio) → OutputRef | A4, `m6c` |
+| `ztz7` A7 | **SMB integration**: boot→1-1 under TAS, framebuffer golden | A1,A3,A4,T1,T2 |
+| `nxpa` T1 | `.fm2` movie parser → InputRef adapter | A5, `6dko` |
+| `ikow` T2 | Per-frame framebuffer-hash golden vs FCEUX | A2 |
+
+**Track B — faster reversible execution (epic `bennettvm-1is3`), P2–P4:**
+
+| Bead | Deliverable | Deps |
+|---|---|---|
+| `zr7x` B1 | Forward-only fast mode (no history) + benchmark baseline | — |
+| `9xla` B2 | Interpreter hot-loop profiling + Julia opt (dict→array) | B1 |
+| `eqz5` B3 | **Port the VM interpreter to C** (lead speed approach) | B1 |
+| `vspu` B4 | Bounded rewind horizon / sliding-window eviction | B1 |
+| `3b70` B5 | Real-time 60.0988 Hz frame scheduler + display/audio sink | B3, A4 |
+| `3h9u` B6 | *(stretch)* native codegen + rr-style delta instrumentation | B3 |
+
+Superseded from the 2026-07-03 plan: the old E3/E4/E5 rows are absorbed into the
+Track-A beads above (E3→`jm77`/`nxpa`, E5→A2–A7). E1 `zbeg` (bumped to P2) and E2
+`bc08` (`nestest`) remain the CPU-correctness gate everything builds on.
+
+## 10. Recommendation
+
+**Correctness first, framerate as the committed north star via a C VM port.**
+Immediate next steps are the two `bd ready` entry points: **E1 `zbeg`** (grow the
+MVP to a complete 6502 core vs a golden reference — gates all of Track A) and, in
+parallel, **B1 `zr7x`** (forward-only fast mode — the speed baseline, and the
+cheapest way to learn how far the interpreter is from framerate before committing
+to the C port `eqz5`). Track A delivers the on-mission trophy — *correct
+reversible SMB with free rewind, TAS-replayable* — and validates the emulator;
+Track B (C port → stretch native codegen) is the longer arc to 60 FPS. Drop
+ROM-lifting entirely.
 
 ## Appendix — reproduce
 

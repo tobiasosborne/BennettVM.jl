@@ -7,6 +7,53 @@
 
 ---
 
+## Session — 2026-07-06 — North star raised: SMB @ NES framerate — two-track strategy + full bead DAG
+
+**What.** The emulator north star was raised from "nestest headless" to **play
+Super Mario Bros at actual NES framerate (60.0988 Hz), loading speedrun
+scripts.** Assessed bead coverage (answer: existing beads cover *only* the
+CPU-correctness trophy — zero PPU/APU/timing/loader/TAS/perf), specced a
+two-track strategy into `docs/design/emulator-on-bennettvm.md` §9, and filed the
+full DAG (16 beads + 1 new epic).
+
+**The load-bearing finding (§9.1).** Framerate is UNREACHABLE on the current
+Julia tree-walking VM interpreter — ~2–4 orders of magnitude short — because of
+**double interpretation** (Julia interprets the VMProgram which interprets 6502;
+1 guest instr ≈ 20–80 VM `step!`). Budget: SMB needs ~500k 6502-instr/s +
+~5.4M PPU-dot/s; E0 measured ~28,500 guest-opcodes/s forward on a *toy* core.
+**Reversibility is NOT the blocker** — `rr` does native reversible execution at
+~1.2–2× overhead. The interpreter is. So framerate ⇒ get off the Julia
+interpreter.
+
+**Strategy (correctness first, user-directed).**
+- **Track A** (epic `v5eb`, P2): full reversible NES, correct-but-slow, on the
+  VM. Beads `hahl`(ROM/NROM loader) → `6sma`(PPU bg) → `tsjq`(sprites+sprite-0)
+  / `pldf`(scroll+NMI) ; `jm77`(controller→InputRef) ; `87sk`(APU) ;
+  `nxpa`(.fm2 parser) ; `ikow`(framebuffer golden vs FCEUX) ; capstone
+  `ztz7`(SMB boots→1-1 under TAS). E1 `zbeg` bumped P3→P2 (gates all of Track A).
+- **Track B** (NEW epic `1is3`, P2–P4): faster reversible execution. **Lead
+  approach = PORT THE VM INTERPRETER TO C** (`eqz5`) — the user's directive; a
+  fast C `run!`/`unrun!` reimplementing L1/L2/L3, ~10–50× over the Julia
+  tree-walker, reversibility semantics port directly. `zr7x` forward-only fast
+  mode lands first (baseline + decouples speed from reversibility). `9xla` Julia
+  hot-loop opt ; `vspu` bounded rewind horizon (can't keep ~51M deltas/level) ;
+  `3b70` real-time frame scheduler ; `3h9u` (stretch) native codegen + rr-style
+  delta instrumentation.
+
+**Gotchas / decisions worth knowing.**
+- **SMB is genuinely the easy NES target for mappers**: Mapper 0 / NROM, no bank
+  switching, and it uses only official opcodes. The hard parts are PPU
+  sprite-0 hit (HUD/playfield split — load-bearing) + NMI timing, not the CPU.
+- **A `.fm2` TAS movie is BOTH the speedrun-loader AND the PPU oracle** —
+  per-frame framebuffer hashes vs FCEUX are the golden master (Rule 4).
+- **`bd ready` after wiring** correctly surfaces exactly two entry points:
+  `zbeg` (E1 core) and `zr7x` (B1 fast mode) — the intended parallel starts.
+- **Beads-sync (again):** every `bd create` re-triggered the lossy auto-export
+  that drops the 4 memory records; restored with `bd export --include-memories`
+  before commit (per `reference_beads_sync_models` gotcha 1).
+
+---
+
 ## Session — 2026-07-03 — Side quest: run an emulator (NES/6502) on the VM, reversibly — feasibility PROVEN + MVP
 
 **What.** Investigated "decompile Super Mario Bros → LLVM → run on BennettVM,
