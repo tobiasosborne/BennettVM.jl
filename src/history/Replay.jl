@@ -225,6 +225,16 @@ target. The same `RState` is returned for chaining.
 `s.step_count > 0`. PRD v4 §3.16: `unstep!` on a zero-step state MUST
 raise an `ErrorException` with a descriptive message.
 
+`!s.fast_mode` (bd `bennettvm-zr7x` / B1). A fast-mode `RState` — one
+that has, at any point, been advanced via `run!(...; record=false)`
+(`src/interpreter/Interpreter.jl`) — never had its L1/L2/L3 tape
+recorded, so backward execution is not merely expensive, it's
+undefined for the untracked interval. This is checked and raised
+BEFORE the `step_count` precondition (see `src/ir/RState.jl`
+§"Why `fast_mode` must participate" for why `isempty(history)` alone
+cannot distinguish this from the ordinary "no checkpoint pushed yet"
+case that legitimately falls back to `s.initial` below).
+
 # Algorithm
 
 See the top-of-file docstring §"The five-step algorithm" for the full
@@ -292,6 +302,30 @@ which work the per-step reversal performs.
     side (M7.4 is the dispatch-side half).
 """
 function unstep!(s::RState, prog::VMProgram)::RState
+    # (0) B1 (bd `bennettvm-zr7x`) fast-mode guard. Checked FIRST, ahead
+    # of the step_count precondition, because a fast-mode RState will
+    # typically also have `step_count > 0` (fast mode still counts
+    # steps — see `run!`'s docstring — it just never records them), so
+    # letting execution fall through to (1) and beyond would silently
+    # "succeed" via the s.initial replay fallback: technically correct
+    # (deterministic replay reproduces the same state) but an O(n)-per-
+    # call / O(n²)-total performance trap masquerading as a passing
+    # round-trip. Rule 1: fail loud instead, with a message that names
+    # the actual cause (fast mode) rather than a generic step_count
+    # complaint. See `src/ir/RState.jl` §"Why `fast_mode` must
+    # participate" and `run!`'s B1 docstring section for the full
+    # rationale.
+    s.fast_mode &&
+        error("unstep!: RState.fast_mode is true — this RState was ",
+              "advanced (at least in part) via run!(...; record=false) ",
+              "(bd bennettvm-zr7x / B1 fast mode), so its reversibility ",
+              "tape was never recorded. Backward execution (unstep!/",
+              "unrun!) is impossible BY DESIGN for a fast-mode run, not ",
+              "merely slow — re-run the program with the default ",
+              "`record=true` if you need to reverse it. Rule 1: fail ",
+              "loud rather than silently full-replaying from ",
+              "s.initial on every backward step.")
+
     # (1) Precondition. PRD v4 §3.16 + Rule 1: descriptive raise on
     # step_count <= 0, not a silent no-op. Spike Q4 §"Test patterns
     # worth keeping" identified fail-fast-on-empty-unstep! as a
@@ -684,6 +718,11 @@ property is implied by `unstep!`'s correctness; M4.5 tests it).
     reports the remaining entries' step indices via `_entry_step`
     (M4.3 dispatch helper; gracefully handles future M6/M7 entry
     types).
+  - `s.fast_mode` is `true` (bd `bennettvm-zr7x` / B1) — `unstep!`'s
+    guard (0) raises on the FIRST loop iteration, immediately, before
+    any partial reversal happens. See `unstep!`'s docstring
+    §"Precondition" and `src/ir/RState.jl` §"Why `fast_mode` must
+    participate".
 
 # Ref
 

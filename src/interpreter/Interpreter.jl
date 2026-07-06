@@ -1583,6 +1583,38 @@ end
 # Ref: spike/RETROSPECTIVE.md Q3 — silent partial-return failure mode.
 # Ref: CLAUDE.md Rule 1 (fail loud); Rule 4 (every test asserts a
 #      known-correct value, not just "didn't throw").
+#
+# ## B1 (bd `bennettvm-zr7x`) — `record::Bool` fast mode
+#
+# Track B of the framerate strategy (`docs/design/emulator-on-bennettvm.md`
+# §9.2) needs a **forward-only fast mode**: run to halt with NO
+# reversibility tape, to (a) measure raw forward throughput and (b)
+# validate correctness at speed, decoupled from "is reversible". The
+# M7.6 `replay_mode::Bool` kwarg on `step!` ALREADY suppresses every
+# L1/L2/L3 push when `true` (see `step!`'s docstring §"M7.6 — L2 delta
+# push integration") — that machinery is REUSED verbatim, not
+# reinvented. What's missing is a narrow, user-facing name for it:
+# `test/test_per_step_inverse.jl`'s top-of-file comment documents that
+# `replay_mode` is "deliberately NOT exposed: it is an internal kwarg
+# … Per CLAUDE.md Rule 1, we keep the failure surface narrow." `record`
+# is that dedicated public surface — `run!(s, prog; record=false)` — so
+# ordinary callers reach for a documented forward-only mode instead of
+# being told to pass an internal replay flag.
+#
+# `record=false` ALSO sets `s.fast_mode = true` (`src/ir/RState.jl`),
+# a monotonic taint bit `unstep!` (`src/history/Replay.jl`) checks and
+# refuses to run past. Without that bit, `unstep!`'s existing
+# fall-back-to-`s.initial`-and-replay path (which exists to reverse a
+# *normal* run that simply hasn't pushed any checkpoint yet) would
+# ALSO silently "succeed" on a fast-mode RState — replaying the ENTIRE
+# program forward from scratch on every single backward step, an
+# O(n) cost per `unstep!` and O(n²) for a full `unrun!`. That is
+# technically correct (deterministic replay) but is exactly the
+# "runs, just catastrophically slowly" trap Rule 4 forbids papering
+# over with a passing-looking round-trip test — see `RState.jl`
+# §"Why this can't be inferred from `isempty(history)`" for the full
+# argument. So `unrun!`/`unstep!` after a fast-mode run FAIL LOUD
+# instead (see `src/history/Replay.jl`), by design.
 
 """
     run!(s::RState, prog::VMProgram;
@@ -1590,7 +1622,8 @@ end
          checkpoint_interval::Int = 64,
          must_cache_set::Set{Tuple{Symbol, Int}} =
              Set{Tuple{Symbol, Int}}(),
-         replay_mode::Bool = false) -> RState
+         replay_mode::Bool = false,
+         record::Bool = true) -> RState
 
 Repeatedly `step!` until `is_halted(s)`, or until `max_steps`
 steps have been taken — whichever first. Errors descriptively if
@@ -1638,6 +1671,27 @@ See `step!` docstring §"M7.6 — L2 delta push integration" for the
 full design rationale (kwarg-vs-VMProgram-field decision, the
 `s_pre` simplification, and the `replay_mode` semantics).
 
+# B1 (bd `bennettvm-zr7x`) — `record::Bool` fast mode
+
+`record::Bool = true`. Pass `record = false` for **fast mode**:
+`run!` forwards `replay_mode = true` to every `step!` call regardless
+of the caller's own `replay_mode` value (the two are OR'd — see this
+file's top-of-section §"B1 … `record::Bool` fast mode" comment above
+for the full rationale), so NO L1/L2/L3 history entry is ever pushed,
+and sets `s.fast_mode = true` on entry (`src/ir/RState.jl`) so that
+`unstep!` / `unrun!` (`src/history/Replay.jl`) refuse to run on this
+`RState` afterward — loudly, not silently. `checkpoint_interval` and
+`must_cache_set` are still accepted (for call-site symmetry with the
+recording path) but are moot in fast mode: `step!`'s push gate is
+short-circuited by `replay_mode` before either kwarg is consulted.
+
+The marking is monotonic: once any `run!(...; record=false)` call has
+touched an `RState`, `s.fast_mode` stays `true` even if a later call
+passes `record=true` — the tape gap during the fast stretch can never
+be un-created. Forward correctness (`result(s)`) is identical to the
+`record=true` path bit-for-bit — fast mode only removes the *history*,
+never changes `forward()`'s dispatch.
+
 # Arguments
 
   * `s` — RState; mutated in place.
@@ -1645,11 +1699,13 @@ full design rationale (kwarg-vs-VMProgram-field decision, the
   * `max_steps` — keyword; default 10_000. Pick higher for unbounded-
     loop programs like `collatz_steps(::Int8)`.
   * `checkpoint_interval` — keyword; default 64. Forwarded to every
-    `step!` call.
+    `step!` call. Moot when `record = false`.
   * `must_cache_set` — keyword; default empty. Forwarded to every
-    `step!` call (M7.6).
+    `step!` call (M7.6). Moot when `record = false`.
   * `replay_mode` — keyword; default `false`. Forwarded to every
-    `step!` call (M7.6).
+    `step!` call (M7.6), OR'd with `!record`.
+  * `record` — keyword; default `true`. `false` selects B1 fast mode
+    (see above).
 
 # Returns
 
@@ -1676,7 +1732,21 @@ function run!(s::RState, prog::VMProgram;
               checkpoint_interval::Int = 64,
               must_cache_set::Set{Tuple{Symbol, Int}} =
                   Set{Tuple{Symbol, Int}}(),
-              replay_mode::Bool = false)
+              replay_mode::Bool = false,
+              record::Bool = true)
+    # B1 (bd `bennettvm-zr7x`). `record=false` is FAST MODE: OR it into
+    # `replay_mode` so every step! call below suppresses ALL history
+    # pushes (reusing the M7.6 machinery verbatim — see this function's
+    # top-of-section comment and docstring §"B1 … fast mode"), and
+    # permanently taint `s.fast_mode` so `unstep!`/`unrun!` fail loud
+    # afterward instead of silently full-replaying from `s.initial` on
+    # every backward step (`src/ir/RState.jl` §"Why `fast_mode` …").
+    # Marking happens unconditionally (even if `s` is already halted /
+    # zero steps run) — a `record=false` call is itself the taint
+    # event, not a side effect of iterating.
+    record || (s.fast_mode = true)
+    effective_replay_mode = replay_mode || !record
+
     n = 0
     while !is_halted(s)
         n >= max_steps && error(
@@ -1687,7 +1757,7 @@ function run!(s::RState, prog::VMProgram;
         step!(s, prog;
               checkpoint_interval=checkpoint_interval,
               must_cache_set=must_cache_set,
-              replay_mode=replay_mode)
+              replay_mode=effective_replay_mode)
         n += 1
     end
     return s

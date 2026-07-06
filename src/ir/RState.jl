@@ -213,7 +213,7 @@ abstract type AbstractHistoryEntry end
     RState(current::IState, history::Vector{AbstractHistoryEntry}, step_count::Int)
     RState(current::IState, history::Vector{AbstractHistoryEntry}, step_count::Int, initial::IState)
 
-See the top-of-file docstring for the full rationale. Four fields:
+See the top-of-file docstring for the full rationale. Five fields:
 
   - `current::IState` — the live snapshot the next `step!` / `unstep!`
     will operate on.
@@ -229,6 +229,36 @@ See the top-of-file docstring for the full rationale. Four fields:
     `CheckpointEntry` at or before the backward target exists. See
     top-of-file section "Why `initial::IState` here, not a step-0
     anchor entry on history" for the rationale.
+  - `fast_mode::Bool` — poisoned-forever flag, default `false` (added
+    at B1 / bd `bennettvm-zr7x`). Set to `true` by `run!(...;
+    record=false)` (`src/interpreter/Interpreter.jl`) — the
+    forward-only benchmarking/validation mode that reuses the M7.6
+    `replay_mode` push-suppression machinery to skip recording the L1/L2/L3
+    tape entirely. Once `true`, `unstep!` (`src/history/Replay.jl`)
+    refuses to run, ever, even after the flag holder later calls
+    `run!` again with `record=true`.
+
+    **Why this can't be inferred from `isempty(history)`.** A
+    *normal* (recording) run can also end with an empty `history` —
+    e.g. `checkpoint_interval=typemax(Int)` with fewer than one L2 hit
+    (see `test/test_delta_push.jl`'s "no step ever pushes" endpoint) —
+    and `unstep!` MUST still work there, via the documented
+    fall-back-to-`s.initial`-and-replay path. That fallback is
+    *correct* in the normal case because every step was actually
+    dispatched through the recording-aware push gate (it just chose
+    not to push). In fast mode NO such guarantee was ever checked —
+    `record=false` skips the push-gate bookkeeping (M7.6 §"Pre-forward
+    L2 delta capture") altogether — so the empty-history state is
+    structurally indistinguishable from the safe case without an
+    explicit marker. `fast_mode` is that marker: a monotonic (one-way,
+    never reset) taint bit distinguishing "empty tape, safe to
+    replay-reconstruct" from "empty tape, reconstruction was never
+    contracted for." Rule 1: fail loud on the latter rather than let
+    `unstep!`'s `s.initial` fallback silently perform an O(n) full
+    replay per backward step (correct, but an O(n²) trap for `unrun!`
+    on a long fast-mode run — exactly the kind of "runs, just
+    catastrophically slowly" failure Rule 4 says a test must not
+    paper over).
 
 # Why three constructors
 
@@ -255,6 +285,7 @@ mutable struct RState
     history::Vector{AbstractHistoryEntry}
     step_count::Int
     initial::IState
+    fast_mode::Bool
 
     # 2-arg constructor (M2.3 back-compat): step_count defaults to 0,
     # initial defaults to deepcopy(current). Every pre-M4.2 call site
@@ -263,9 +294,11 @@ mutable struct RState
     # uses this form and continues to compile unchanged. The deepcopy
     # on `initial` is the M4.3 defense-in-depth pin (spike Q2.2):
     # without it, subsequent `step!` calls mutating `s.current.locals`
-    # would corrupt `s.initial` via Dict-aliasing.
+    # would corrupt `s.initial` via Dict-aliasing. `fast_mode` defaults
+    # to `false` — see "Why `fast_mode::Bool` here (bd bennettvm-zr7x /
+    # B1)" below.
     RState(current::IState, history::Vector{AbstractHistoryEntry}) =
-        new(current, history, 0, deepcopy(current))
+        new(current, history, 0, deepcopy(current), false)
 
     # 3-arg constructor (M4.2 back-compat): explicit step_count, initial
     # still defaults to deepcopy(current). Preserves every M4.2 test
@@ -273,7 +306,7 @@ mutable struct RState
     # `RState(istate, [], -1)` shape) unchanged.
     RState(current::IState, history::Vector{AbstractHistoryEntry},
            step_count::Int) =
-        new(current, history, step_count, deepcopy(current))
+        new(current, history, step_count, deepcopy(current), false)
 
     # 4-arg constructor (M4.3): explicit initial. No defensive deepcopy
     # of `initial` here — the caller has explicitly opted into providing
@@ -286,7 +319,7 @@ mutable struct RState
     # statement of intent.
     RState(current::IState, history::Vector{AbstractHistoryEntry},
            step_count::Int, initial::IState) =
-        new(current, history, step_count, initial)
+        new(current, history, step_count, initial, false)
 end
 
 """
@@ -337,6 +370,18 @@ that constructs two RStates via the 4-arg explicit-initial
 constructor and expects them to compare equal must be passing the
 *same* anchor.
 
+# Why `fast_mode` must participate (B1 / bennettvm-zr7x)
+
+Same rule, one level up again. A fast-mode RState (`fast_mode=true`)
+and a structurally-identical recording RState (`fast_mode=false`) are
+NOT equal — they carry different reversibility guarantees (one can
+`unstep!`, the other cannot, by construction) even if `current` /
+`history` / `step_count` / `initial` happen to coincide. Every
+pre-B1 constructor call defaults `fast_mode` to `false`, so this
+clause is a no-op for every pre-existing `==` comparison in the test
+suite; it only starts discriminating once a `record=false` run
+exists.
+
 Ref: `spike/RETROSPECTIVE.md` Q2.1.
 Ref: `src/ir/IState.jl` (the M2.2 override this mirrors).
 """
@@ -344,7 +389,8 @@ function Base.:(==)(a::RState, b::RState)
     a.current == b.current &&
         a.history == b.history &&
         a.step_count == b.step_count &&
-        a.initial == b.initial
+        a.initial == b.initial &&
+        a.fast_mode == b.fast_mode
 end
 
 function Base.hash(s::RState, h::UInt)
@@ -352,5 +398,6 @@ function Base.hash(s::RState, h::UInt)
     h = hash(s.history, h)
     h = hash(s.step_count, h)
     h = hash(s.initial, h)
+    h = hash(s.fast_mode, h)
     return h
 end

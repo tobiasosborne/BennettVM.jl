@@ -546,4 +546,13 @@ using BennettVM
     # the heap arena, and the IRPtrOffset struct GEP — end to end. Uses
     # `per_step_inverse_check` (re-include-guarded include inside the file).
     include("test_c_hashtable_e2e.jl")
+    # B1 (bd `bennettvm-zr7x`): `run!(...; record=false)` forward-only fast
+    # mode — the Track-B framerate baseline
+    # (`docs/design/emulator-on-bennettvm.md` §9.2). Fast == normal forward
+    # result on the collatz one-liner (the E0 MVP sub-testset is opt-in via
+    # `BENNETTVM_MVP_TESTS=1` — see the file header for the cost rationale),
+    # `isempty(history)` after fast mode, `unrun!`/`unstep!` fail loud
+    # (without mutating state) on a fast-mode RState, and the normal
+    # recording round-trip is unregressed.
+    include("test_fast_mode.jl")
 end

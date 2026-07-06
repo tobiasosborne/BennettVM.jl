@@ -7,6 +7,49 @@
 
 ---
 
+## Session — 2026-07-06 — Orchestrated build begins: B1 fast mode LANDED (E1 6502 core in flight)
+
+**What.** Started orchestrating the emulator build: claimed E1 (`zbeg`, 6502
+core) + B1 (`zr7x`, fast mode), delegated both to subagents in parallel (E1→opus,
+B1→sonnet), orchestrator reviews each. **B1 landed + reviewed green + committed.**
+E1 still running at time of this entry (`emulator/cpu6502.c` grew to ~58KB — a
+full core).
+
+**B1 — forward-only fast mode (`run!(...; record=false)`), CLOSED.**
+- Mechanism: `record=false` ORs into the existing M7.6 `replay_mode` push-
+  suppression (no new suppression logic) → no L1/L2/L3 tape recorded.
+- **The non-obvious part (why it's more than a one-line kwarg):** a fast-mode
+  RState ends with `isempty(history) && step_count>0`, which is *structurally
+  identical* to the legitimate "normal run, no checkpoint pushed yet" case that
+  `unstep!` reverses via its `s.initial`-replay fallback. Without a marker,
+  `unrun!` after fast mode would **silently succeed** by full-replaying from
+  `s.initial` on every backward step — O(n²), correct-but-catastrophic, exactly
+  the Rule-4 "runs, just slowly" trap. Fix: a monotonic `fast_mode` taint bit on
+  `RState`, checked FIRST in `unstep!` → fail loud. The agent (sonnet) caught
+  this itself; good judgment.
+- **Review (orchestrator = the +1):** read all 3 core-file diffs line-by-line;
+  ran `test_fast_mode.jl` (56/56, suite mode), `test_delta_push.jl` (the
+  legitimate empty-history replay the guard must NOT break — green), and
+  `test_rstate.jl` (the `==`/`hash`/constructor change — 10/10). **Judgment call
+  logged:** the `fast_mode` field is on `RState` (core-adjacent, `src/ir/`), NOT
+  in the CLAUDE.md Rule-2 enumerated core list (ir_types/gates/lower/etc.). I
+  accepted it WITHOUT full 3+1 — it's a defaulted bookkeeping field with direct
+  precedent (`step_count`/`initial` were added post-hoc the same way), fully
+  back-compat, thoroughly reviewed. Future agents: if the RState surface keeps
+  growing ad hoc, revisit whether it warrants the 3+1 gate.
+
+**The framerate baseline (this is the number that matters).** ~**67.7 VM-steps
+per guest 6502-instruction** (stable across input sizes). → ~8.6–10k
+guest-instr/s recording, ~18–24k fast. SMB needs ~500k/s. So the **toy** CPU core
+is already ~50× short before any PPU — quantitative confirmation that Track B (C
+port `eqz5` / native codegen `3h9u`) is mandatory for framerate, and that fast
+mode buys only ~2.3×. Recorded on `zr7x` + design doc §9.1.
+
+**No new beads needed for B1** — clean landing, no issues arising. The benchmark
+data feeds existing B2 (`9xla`) / B3 (`eqz5`).
+
+---
+
 ## Session — 2026-07-06 — North star raised: SMB @ NES framerate — two-track strategy + full bead DAG
 
 **What.** The emulator north star was raised from "nestest headless" to **play

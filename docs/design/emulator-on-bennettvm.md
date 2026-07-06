@@ -214,8 +214,11 @@ SMB runs the guest CPU through **two** interpreter layers: Julia tree-walks the
 `VMProgram`, and the `VMProgram` *is* the emulator interpreting 6502 opcodes. One
 guest 6502 instruction ≈ 20–80 VM `step!` calls. Budget for NTSC SMB: CPU 1.79
 MHz → ~500 k 6502-instr/s (~8,500/frame); a cycle-accurate PPU runs at 3× →
-~5.4 M dot-updates/s (the dominant cost). The E0 MVP measured **~28,500
-guest-opcodes/s forward** on a *toy* core with no PPU. So:
+~5.4 M dot-updates/s (the dominant cost). **B1 (`bennettvm-zr7x`) measured the
+baseline** on the E0 MVP (toy core, no PPU): a stable **~67.7 VM-steps per guest
+6502-instruction**, giving **~8.6–10 k guest-instr/s recording** and **~18–24 k
+fast (no history, ~2.1–2.4× faster)**. So even the toy CPU alone is already ~50×
+under SMB's ~500 k/s need — before any PPU. So:
 
 | Mode | vs. 60 FPS SMB |
 |---|---|
