@@ -191,7 +191,7 @@ Epic **`bennettvm-v5eb`** — *"Run an emulator on the VM (NES/6502 north-star).
 | Milestone | Deliverable | Blocked on |
 |---|---|---|
 | **E0** ✅ | MVP: hand-assembled 8-opcode 6502, C path, forward==native + round-trip | — (DONE, this note) |
-| **E1** (`bennettvm-zbeg`) | Full 6502 core (all official opcodes, flags, addressing modes) in C; unit-test each opcode vs a golden 6502 (`fake6502`) — *still headless, no I/O* | E0 |
+| **E1** (`bennettvm-zbeg`) ✅ | Full 151-opcode 6502 core (`emulator/cpu6502.c`); `switch` decode survived extraction (0 lookup-tables); 273/273 forward vs native+semantics, round-trip on the representative sample; hardware-faithful (indirect-JMP bug, stack quirks; NES-correct no-BCD) | E0 (DONE 2026-07-06) |
 | **E2** (`bennettvm-bc08`) | Run **`nestest.nes`** (mapper-0) headless; assert RAM `$0002`/`$0003`==`$00`; reversible round-trip | E1, `bennettvm-416r.4` (ROM-as-memory) |
 | **E3** | `bennettvm-6dko` **InputRef** (input-movie tape) + wire `OutputRef` (`m6c`) — the two-tape I/O model (§5) | E2, `m6c` |
 | **E4** | blargg `instr_test_v5` (headless, writes `$6000`) — per-instruction coverage | E2 |
