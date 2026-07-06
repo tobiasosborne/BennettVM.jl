@@ -253,7 +253,65 @@ the caller's variable, defeating the in-place mutation convention the
   bounded by depth. The cursor itself round-trips 0 to ... to 0 because every
   advance has a matching retract; an L2 payload on `ReturnExit` carries the
   amount so the inverse re-advances exactly (CW-C3).
+
+- `globals::GlobalROM` (READ-ONLY const-global segment; bead
+  `bennettvm-416r.4`). The fourth address-space tier beside the alloca-stack
+  (`stack_top`), the malloc-arena (`arena_top`), and the heap. A C/Rust/Julia
+  `const` array (`static const uint8_t rom[8] = {…}`) lowers to an
+  initialized read-only VM memory segment based at `GLOBAL_BASE = 2^48`
+  (`src/ir/intrinsics.jl`), disjoint from the stack `[1, 2^40)` and arena
+  `[2^40, 2^48)` tiers (one-comparison segment test). A `MemoryLoad` of an
+  address `>= GLOBAL_BASE` reads the ROM cell (`get(g.cells, addr, 0)`); a
+  `MemoryStore` to such an address FAILS LOUD (writing a `const` global is a
+  miscompile — Rule 1).
+
+  Why a dedicated `GlobalROM` wrapper, NOT a bare `Dict{Int64,Int64}` field,
+  and why it is EXCLUDED from `==`/`hash`/`deepcopy`. The ROM is materialized
+  ONCE (in the `VMProgram`, seeded into `initial_state`'s IState) and is
+  read-only for the whole run — it NEVER changes, so it is invariant between
+  the initial and final states and need not participate in the round-trip
+  equality invariant. Crucially, it must NOT be deep-copied into every L3
+  `CheckpointEntry` snapshot: a 16 KB NES ROM copied every K steps is the
+  scale-killer this design avoids. `GlobalROM` carries a custom
+  `Base.deepcopy_internal(g::GlobalROM, ::IdDict) = g` (below) that returns the
+  SAME object, so `deepcopy(::IState)` — used by `CheckpointEntry`, `RState`,
+  and `initial_state` — SHARES the one ROM reference across every snapshot
+  (materialized once, never per-checkpoint-copied). Excluding it from `==`/
+  `hash` (the hand-written methods below simply do not mention it) avoids
+  hashing/comparing 16 KB on every state comparison AND is sound precisely
+  because it is invariant + shared. This is the "read-only design" (proposer
+  A) realised WITHOUT a fragile custom `deepcopy_internal(::IState, …)`: the
+  override lives on the small `GlobalROM` type, so IState's default field-by-
+  field deepcopy still copies every mutable field correctly (a future field is
+  never silently dropped). Default is the shared empty `_EMPTY_GLOBAL_ROM`, set
+  by every constructor, so all 111+ existing `IState(...)` call sites and every
+  globals-free program (collatz, arena, hashtable) stay byte-identical.
 """
+
+# --- GlobalROM: the read-only const-global segment (bead bennettvm-416r.4) ---
+#
+# A thin wrapper around the ROM cell map so the deepcopy override targets THIS
+# type (not IState). Immutable by convention: the segment is READ-ONLY (a
+# `MemoryStore` to `>= GLOBAL_BASE` fails loud in `memory_floor.jl`), so the
+# inner `cells` dict is never mutated after `initial_state` seeds it.
+struct GlobalROM
+    cells::Dict{Int64,Int64}
+end
+
+# Empty default: a globals-free program shares this one read-only empty ROM.
+GlobalROM() = GlobalROM(Dict{Int64,Int64}())
+
+# The materialized-once / never-per-checkpoint-copied contract (see the
+# `globals` field rationale above). `deepcopy(::IState)` recurses field-by-
+# field via `deepcopy_internal`; for the `globals::GlobalROM` field this
+# override returns the SAME object, so every checkpoint snapshot, RState anchor,
+# and initial-state copy SHARES the one ROM reference rather than deep-copying
+# its (potentially 16 KB) cell map. Sound because the ROM is read-only.
+Base.deepcopy_internal(g::GlobalROM, ::IdDict) = g
+
+# Shared empty singleton — the default `globals` for every existing constructor.
+const _EMPTY_GLOBAL_ROM = GlobalROM()
+
 mutable struct IState
     pc::Int
     frames::Vector{Frame}       # call stack (ADR 0019 §1); never empty.
@@ -263,6 +321,8 @@ mutable struct IState
     heap_top::Int64             # runtime bump-pointer offset (ADR 0009; uil).
     arena_top::Int64            # malloc-arena bump-pointer offset (ADR 0018; CW-A2).
     stack_top::Int64            # runtime call-stack bump offset (CW-C3; see below).
+    globals::GlobalROM          # read-only const-global segment (416r.4; see above).
+                                #   EXCLUDED from ==/hash/deepcopy (shared, invariant).
 
     # 3-arg constructor: preserves every existing call site (M2.1
     # through M2.10) — empty memory AND empty revmap are the right
@@ -275,7 +335,8 @@ mutable struct IState
     # and behaves identically (single frame ⇒ byte-identical register file).
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol) =
         new(pc, [Frame(0, Symbol[], locals, :__entry)], status,
-            Dict{Int64,Int64}(), Dict{Int64,Int64}(), Int64(0), Int64(0), Int64(0))
+            Dict{Int64,Int64}(), Dict{Int64,Int64}(), Int64(0), Int64(0), Int64(0),
+            _EMPTY_GLOBAL_ROM)
 
     # 4-arg constructor: explicit memory, empty revmap. Used by M2.11+
     # tests and by any lowering pass that materializes a heap snapshot up
@@ -287,7 +348,7 @@ mutable struct IState
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}) =
         new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory,
-            Dict{Int64,Int64}(), Int64(0), Int64(0), Int64(0))
+            Dict{Int64,Int64}(), Int64(0), Int64(0), Int64(0), _EMPTY_GLOBAL_ROM)
 
     # 5-arg constructor: explicit memory AND revmap (ADR 0008 Decision 1).
     # Used by the `IRMap*` unit tests to build an IState with a populated
@@ -298,7 +359,7 @@ mutable struct IState
     IState(pc::Int, locals::Dict{Symbol,Int64}, status::Symbol,
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64}) =
         new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory, revmap,
-            Int64(0), Int64(0), Int64(0))
+            Int64(0), Int64(0), Int64(0), _EMPTY_GLOBAL_ROM)
 
     # 6-arg constructor: explicit `heap_top` (bead `bennettvm-uil`). Used
     # ONLY by the multi-DynAlloca unit tests to build an IState mid-stream (a
@@ -310,7 +371,7 @@ mutable struct IState
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64},
            heap_top::Integer) =
         new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory, revmap,
-            Int64(heap_top), Int64(0), Int64(0))
+            Int64(heap_top), Int64(0), Int64(0), _EMPTY_GLOBAL_ROM)
 
     # 7-arg constructor: explicit `arena_top` (ADR 0018 §A; bead CW-A2). Used
     # ONLY by the malloc-arena unit tests to build an IState mid-stream (a
@@ -323,7 +384,7 @@ mutable struct IState
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64},
            heap_top::Integer, arena_top::Integer) =
         new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory, revmap,
-            Int64(heap_top), Int64(arena_top), Int64(0))
+            Int64(heap_top), Int64(arena_top), Int64(0), _EMPTY_GLOBAL_ROM)
 
     # 8-arg constructor: explicit `stack_top` (CW-C3). Used ONLY by the
     # StackAlloca / cross-frame stack unit tests to build an IState mid-stream
@@ -333,7 +394,7 @@ mutable struct IState
            memory::Dict{Int64,Int64}, revmap::Dict{Int64,Int64},
            heap_top::Integer, arena_top::Integer, stack_top::Integer) =
         new(pc, [Frame(0, Symbol[], locals, :__entry)], status, memory, revmap,
-            Int64(heap_top), Int64(arena_top), Int64(stack_top))
+            Int64(heap_top), Int64(arena_top), Int64(stack_top), _EMPTY_GLOBAL_ROM)
 end
 
 """

@@ -7,6 +7,61 @@
 
 ---
 
+## Session — 2026-07-06 — 416r.4 LANDED via 3+1: const globals as read-only VM memory (unblocks real ROMs; closes dzd)
+
+**What.** `bennettvm-416r.4` (const globals as initialized read-only VM memory
+segments) — the prerequisite for loading a real NES ROM. Done via the CORE 3+1
+protocol (2 opus proposers → 1 opus implementer → orchestrator review), because
+it touches Bennett.jl's extractor AND BennettVM's IState/memory-floor.
+
+**The scoping finding that shaped it.** A `const uint8_t rom[]` read at a runtime
+index (`rom[i&7]`) breaks at the FRONT-END, not the VM: `getelementptr [8 x i8],
+ptr @rom, i64 0, i64 %idx` is the SAME 2-index array GEP wall as C stack arrays
+(dzd / qal5 / U16), just with a global base. So 416r.4 = front-end 2-index-array-
+GEP support + VM globals materialization, and the front-end half ALSO closes dzd.
+
+**Design decision (the 3+1 divergence I ruled on).** Both proposers converged
+(reuse `IRVarGEP`, one-element-per-cell — VERIFIED against `_extract_const_globals`
+which stores one zero-extended element per cell — `GLOBAL_BASE=2^48` tier). They
+split on ROM storage: Proposer B seeded it into `IState.memory` (→ deep-copied
+into EVERY L3 checkpoint — a 16KB ROM × thousands of checkpoints = scale-killer);
+Proposer A used a read-only segment excluded from checkpoints. **Ruled for A** —
+semantically correct (ROM is immutable) and essential for 16KB scale.
+
+**Implementation (verified green by orchestrator, not trusted).**
+- Front-end (Bennett.jl `src/extract/instructions.jl`): new "Case C" arm before
+  the qal5 reject — 2-index array GEP on a const-global OR local-alloca integer
+  array → `IRVarGEP(base, idx, elem_width)`. Fails loud on non-integer element /
+  first-index≠0 / >3 operands. Handles BOTH bases → **closes dzd** (the C-stack-
+  array wall E1 dodged with calloc).
+- VM: `GlobalROM` wrapper with `deepcopy_internal(g,_)=g` — the override lives on
+  the SMALL type, so IState's default field-by-field deepcopy stays safe (no
+  fragile custom IState deepcopy; a future field can't be silently dropped). ROM
+  is shared across all checkpoints, excluded from `==`/`hash`, seeded once at
+  `initial_state`. `MemoryStore` to `>=GLOBAL_BASE` FAILS LOUD (const write =
+  miscompile). `_global_segment` materializes only REFERENCED globals; a
+  `Define(name,base)` prepended to the entry block binds the ROM pointer
+  (reversible like any create).
+- Verified: `test_global_array_vm.jl` 2375/2375 (gtest all 0:255 fwd==native +
+  round-trip; store-to-global fails loud; dzd stack-array round-trip; 256B + 16KB
+  arrays + ROM-NOT-in-checkpoint assertion). BennettVM full suite 9328/9328.
+  Bennett.jl front-end (qal5/haiy updated legitimately, not weakened) green.
+
+**Two touched Bennett.jl fail-loud tests (reviewed, legit).** qal5's original
+fixture (`[4 x i32], ptr @tbl, 0, %i`) IS the 416r.4 goal and now extracts — the
+test now positively checks that + rejects a genuine multi-dim `[2x[2xi32]]` and a
+non-integer `[4xdouble]`. haiy swapped its now-supported `[4xi64]` local case for
+`[4xdouble]` (still rejected). Fail-loud coverage preserved.
+
+**CRITICAL follow-up for the roadmap.** Multi-function const globals are DEFERRED
+behind a fail-loud guard (`ingest_multi.jl`): per-function `_lower_parsed_ir`
+assigns bases from `GLOBAL_BASE+0`, so two functions referencing globals collide;
+the merged VMProgram also drops per-function globals. **This is on the nestest
+critical path** — `cpu6502.c` is multi-function and `cpu6502_core` (a callee)
+reads the ROM. Filed as a follow-up bead + wired as a dep for A1/E2.
+
+---
+
 ## Session — 2026-07-06 — E1 LANDED: full hardware-faithful 6502 core, all 151 opcodes green on the VM
 
 **What.** E1 (`zbeg`, CLOSED) — `emulator/cpu6502.c`, a complete MOS 6502

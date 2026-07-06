@@ -160,9 +160,9 @@ surprise; everything is already tracked:
 
 | Obstacle hit in the spike | Existing bead |
 |---|---|
-| a. C stack array `[64 x i8]` → unsupported 2-index GEP (`…,0,%idx`); dense Julia `switch`→lookup-table GEP is the same wall (Bennett-qal5/U16) | **`bennettvm-dzd`** (P2) — "C aggregate arrays (int a[N]) emit 2-index GEP rejected by Bennett.jl (U16)". *Workaround today: use `calloc`'d pointer RAM (single-index GEP), as the MVP does.* |
+| a. C stack array `[64 x i8]` → unsupported 2-index GEP (`…,0,%idx`); dense Julia `switch`→lookup-table GEP is the same wall (Bennett-qal5/U16) | **`bennettvm-dzd`** ✅ CLOSED 2026-07-06 — the `416r.4` front-end "Case C" arm handles the 2-index array GEP for BOTH global and local-alloca integer-array bases, so C stack arrays lower to `IRVarGEP`. (E1's `calloc` workaround is now optional.) |
 | b. Pure-**Julia** emulator: `zeros()` heap-alloc emits `movq %fs:0` GC thread-ptr **inline asm** → rejected (Bennett-5oyt/U15) | Julia array path: **`bennettvm-m9i`** (GenericMemory recognizer) + the `fdict`/gc-alloc CW-D workstream. *Workaround today: use the **C path**, as the MVP does.* |
-| c. ROM image / static lookup tables as initialized memory | **`bennettvm-416r.4`** (P1) — globals as initialized VM memory segments. |
+| c. ROM image / static lookup tables as initialized memory | **`bennettvm-416r.4`** ✅ landed 2026-07-06 (single-function) — const globals as a read-only VM memory segment (`GLOBAL_BASE=2^48`, excluded from checkpoints). **Multi-function** globals (a *callee* reading the ROM, e.g. `cpu6502_core`) are deferred behind a fail-loud guard → **`bennettvm-h6c3`**, the real gate for A1/E2. |
 | d. Output side-effect channel | **`bennettvm-m6c`/`6ox`/`rlx`/`agm`** (M10 OutputRef). |
 | e. Reverse cost dominated by L3 replay | **`bennettvm-uom`** (L1 Exchange lowering → zero-history memory ops) + **`bennettvm-w0a0`** (the perf wall itself). |
 | f. Input recording (nondeterministic input) | **none — new** → `bennettvm-6dko` (§8). |
@@ -271,7 +271,7 @@ nondeterminism, replay determinism" — the movie *is* the recorded nondetermini
 
 | Bead | Deliverable | Deps |
 |---|---|---|
-| `hahl` A1 | iNES/NROM ROM loader (PRG/CHR, ROM→VM memory) | `zbeg`, `416r.4` |
+| `hahl` A1 | iNES/NROM ROM loader (PRG/CHR, ROM→VM memory) | `zbeg` ✅, `416r.4` ✅ (single-fn) + `h6c3` (multi-fn globals) |
 | `6sma` A2 | PPU background (nametable/pattern/palette, scanline) | A1 |
 | `tsjq` A3 | PPU sprites + sprite-0 hit + OAM/OAMDMA | A2 |
 | `pldf` A4 | PPU scroll + NMI/vblank + CPU↔PPU interleave | A2 |

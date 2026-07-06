@@ -203,6 +203,52 @@ Block emission order: entry block first (so `VMProgram` / `LabelTable`
 see it as `blocks[1]`-resolvable via `entry_label`), then the remaining
 original blocks, then all trampolines.
 """
+# --- Read-only const-global segment layout (bead `bennettvm-416r.4`) ---
+#
+# Walk `parsed.globals` (Bennett.jl's compile-time-constant arrays, keyed by the
+# LLVM global name → `(data::Vector{UInt64}, elem_width)`; stored ONE zero-
+# extended element per cell — `../Bennett.jl/src/extract/module_walk.jl`) and
+# materialize ONLY the globals actually REFERENCED as an `IRVarGEP` base (the
+# lowered `rom[i]` shape). Each referenced global gets a CONTIGUOUS base from
+# `GLOBAL_BASE` (first-seen order), one Int64 cell per element (stride 1 — the
+# cell-addressed VM convention, matching `VarGEP`'s cell stride and the bump
+# allocator), advancing a running offset. `reinterpret(Int64, data[k+1])`
+# carries the full 64-bit pattern safely (a sub-64-bit element is zero-extended,
+# so its reinterpret is the same non-negative value the downstream `IRLoad` +
+# zext read back).
+#
+# Returns `(name_to_base::Dict{Symbol,Int64}, rom::GlobalROM,
+# ordered::Vector{Symbol})`. The ROM is seeded into `initial_state`'s IState
+# (shared, read-only); `name_to_base` drives the prepended `Define(name, base)`
+# that binds each global-pointer SSA name in the entry block. A global present
+# in `parsed.globals` but never GEP'd contributes nothing (no cells, no Define)
+# — a `const` the program never reads costs zero VM state.
+function _global_segment(parsed::Bennett.ParsedIR)
+    name_to_base = Dict{Symbol,Int64}()
+    ordered = Symbol[]
+    cells = Dict{Int64,Int64}()
+    isempty(parsed.globals) && return (name_to_base, GlobalROM(), ordered)
+    offset = Int64(0)
+    for b in parsed.blocks
+        for inst in b.instructions
+            if inst isa Bennett.IRVarGEP && inst.base isa Bennett.SSAOperand
+                gname = inst.base.name
+                if haskey(parsed.globals, gname) && !haskey(name_to_base, gname)
+                    (data, _ew) = parsed.globals[gname]
+                    base = GLOBAL_BASE + offset
+                    for k in 0:(length(data) - 1)
+                        cells[base + Int64(k)] = reinterpret(Int64, data[k + 1])
+                    end
+                    name_to_base[gname] = base
+                    push!(ordered, gname)
+                    offset += Int64(length(data))
+                end
+            end
+        end
+    end
+    return (name_to_base, GlobalROM(cells), ordered)
+end
+
 function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
                           label_prefix::Union{Nothing,Symbol} = nothing,
                           functions::Dict{Symbol,FunctionEntry} =
@@ -310,6 +356,14 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
     end
 
     out = BasicBlock[]
+
+    # Read-only const-global segment (bead `bennettvm-416r.4`). `global_bases`
+    # maps each referenced global's SSA name → its `GLOBAL_BASE`-relative base;
+    # `global_rom` is the shared read-only `GlobalROM` seeded into
+    # `initial_state`'s IState; `global_order` is first-seen order for the
+    # prepended entry-block `Define`s below. Empty for any routine with no
+    # const-array GEPs (every existing fixture) — the segment adds NOTHING then.
+    global_bases, global_rom, global_order = _global_segment(parsed)
 
     # Bump-allocator cursor for `IRAlloca` (ADR 0014 §D1). Monotone across
     # ALL blocks — every static alloca anywhere in the routine gets a fresh
@@ -427,6 +481,21 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
         end
         # Body: lowered non-φ instructions, then synthetic constant creates.
         body = Instruction[]
+        # Bind each referenced const-global's pointer SSA name to its
+        # `GLOBAL_BASE`-relative base (bead `bennettvm-416r.4`), PREPENDED to the
+        # ENTRY block so it is live before any `VarGEP(:rom, idx)` reads it. A
+        # `Define(name, base, :add, 0)` is the same non-destructive create the
+        # bump allocator uses for an alloca pointer — reversed by L3 replay like
+        # every other `Define`, so the ROM pointer round-trips cleanly. Fires
+        # only on the entry block (globals are module-scope; one binding site
+        # suffices) and only when the routine actually GEPs a const global
+        # (`global_order` empty otherwise → zero prepended instructions, every
+        # existing fixture byte-identical).
+        if b.label === raw_entry_label
+            for gname in global_order
+                push!(body, Define(gname, global_bases[gname], :add, Int64(0)))
+            end
+        end
         for inst in b.instructions
             if inst isa Bennett.IRAlloca
                 # Alloca needs the bump-allocator state (ADR 0014 §D1 / ADR
@@ -736,5 +805,5 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
     arg_widths = Int[w for (_n, w) in parsed.args]
     return VMProgram(out, LabelTable(out), entry_label,
                      arg_widths, copy(parsed.ret_elem_widths),
-                     functions, routine)
+                     functions, routine, global_rom)
 end

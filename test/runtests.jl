@@ -546,6 +546,15 @@ using BennettVM
     # the heap arena, and the IRPtrOffset struct GEP — end to end. Uses
     # `per_step_inverse_check` (re-include-guarded include inside the file).
     include("test_c_hashtable_e2e.jl")
+    # bead `bennettvm-416r.4`: const globals as initialized read-only VM memory
+    # segments. The acceptance gate `gtest(i)=rom[i&7]` (a `static const
+    # uint8_t rom[8]` read at a runtime index) runs forward == native clang AND
+    # reverses to its exact initial state; the 16 KB NES-ROM-scale case proves
+    # the read-only design (shared `GlobalROM`, NOT per-checkpoint-copied). The
+    # SAME front-end arm (Bennett.jl Case C) closes Bennett-dzd for local stack
+    # arrays. clang-gated: emits fresh `.ll` + native golden in a tempdir,
+    # self-skips if clang is absent (T5-corpus convention).
+    include("test_global_array_vm.jl")
     # B1 (bd `bennettvm-zr7x`): `run!(...; record=false)` forward-only fast
     # mode — the Track-B framerate baseline
     # (`docs/design/emulator-on-bennettvm.md` §9.2). Fast == normal forward

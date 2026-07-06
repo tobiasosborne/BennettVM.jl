@@ -230,6 +230,16 @@ function initial_state(prog::VMProgram, input::AbstractDict)::RState
     # ratification and PRD v4 §3.9 status-symbol enumeration.
     istate = IState(entry_addr.fwd_address, locals, :running)
 
+    # Seed the read-only const-global segment (bead `bennettvm-416r.4`). The
+    # ROM is materialized ONCE in the `VMProgram` (`_lower_parsed_ir` /
+    # `_global_segment`) and SHARED by reference into the IState — `GlobalROM`'s
+    # `deepcopy_internal` returns the same object, so the `deepcopy(istate)`
+    # anchor below (and every L3 `CheckpointEntry`) shares this one ROM rather
+    # than copying its cell map. Empty for a globals-free program (the shared
+    # `_EMPTY_GLOBAL_ROM` default was already installed by the constructor), so
+    # this assignment is a harmless no-op re-share there.
+    istate.globals = prog.globals
+
     # (7) Wrap in RState with an empty history vector. The element
     # type `AbstractHistoryEntry` (M2.3) is the polymorphism point for
     # the three layers PRD v4 §3.3 prescribes (L1 injective, L2 delta,

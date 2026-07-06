@@ -211,6 +211,18 @@ docstring "is_injective = false").
 """
 function forward(instr::MemoryStore, s::IState)::IState
     a = resolve_ptr(instr.ptr, s)
+    # Read-only const-global guard (bead `bennettvm-416r.4`, Rule 1). An address
+    # in the global segment (`>= GLOBAL_BASE`) names a cell of a `const` array
+    # (`static const uint8_t rom[…]`), which the source language forbids writing.
+    # A store here is a miscompile — fail loud rather than silently corrupt the
+    # (shared, read-only) ROM. Stores to the stack / arena / heap tiers
+    # (`< GLOBAL_BASE`) are unaffected.
+    a < GLOBAL_BASE ||
+        error("MemoryStore: write to const-global address ", a,
+              " (>= GLOBAL_BASE = ", GLOBAL_BASE, ") — the global segment is ",
+              "READ-ONLY (a `const` array cannot be stored to). This is a ",
+              "front-end miscompile: a store lowered onto a global pointer ",
+              "(bead `bennettvm-416r.4`; Rule 1 fail-loud).")
     s.memory[a] = _resolve(instr.value, s)
     s.pc += 1
     return s
@@ -229,7 +241,16 @@ checkpoint-replay layer's responsibility.
 """
 function forward(instr::MemoryLoad, s::IState)::IState
     a = resolve_ptr(instr.ptr, s)
-    active_locals(s)[instr.dest] = get(s.memory, a, Int64(0))   # zero-init: absent = 0.
+    # Read-only const-global segment (bead `bennettvm-416r.4`). An address
+    # `>= GLOBAL_BASE` reads a cell of a `const` array from the shared, read-only
+    # `IState.globals` ROM (materialized once, never per-checkpoint-copied). All
+    # such addresses were seeded at `initial_state`; a store to the segment fails
+    # loud (`MemoryStore.forward`), so a global address never lives in
+    # `s.memory`. Every OTHER address (stack / arena / heap) reads `s.memory`
+    # with the absent=0 convention, byte-identical to the pre-416r.4 behaviour.
+    val = a >= GLOBAL_BASE ? get(s.globals.cells, a, Int64(0)) :
+                             get(s.memory, a, Int64(0))
+    active_locals(s)[instr.dest] = val
     s.pc += 1
     return s
 end

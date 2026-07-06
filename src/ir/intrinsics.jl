@@ -101,6 +101,20 @@ reversibly without any host pointer ever entering the VM.
 const ARENA_BASE = Int64(1) << 40
 const CELL_BYTES = Int64(8)
 
+# `GLOBAL_BASE` is the FOURTH address-space tier (bead `bennettvm-416r.4`): the
+# read-only const-global segment, disjoint from the stack `[1, 2^40)` and the
+# malloc-arena `[2^40, 2^48)`. `2^48` sits just above the arena's ceiling
+# (ADR 0017 §3–4 / ADR 0018 §A reserve this slot for globals), so a single
+# `addr >= GLOBAL_BASE` comparison classifies an address as a global read
+# (`memory_floor.jl`'s `MemoryLoad` forward). A const array `static const
+# uint8_t rom[8] = {…}` is materialized ONCE into `IState.globals` (a shared,
+# read-only `GlobalROM` — `src/ir/IState.jl`) based at `GLOBAL_BASE + offset`;
+# a `MemoryStore` to `>= GLOBAL_BASE` FAILS LOUD (writing a `const` is a
+# miscompile — Rule 1). The `_lower_parsed_ir` pass (`src/ir/ingest.jl`) assigns
+# each referenced global a contiguous base from `GLOBAL_BASE` and binds its
+# pointer name via a prepended `Define(name, base)` in the entry block.
+const GLOBAL_BASE = Int64(1) << 48
+
 """
     _cell_count(nbytes::Int64) -> Int64
 

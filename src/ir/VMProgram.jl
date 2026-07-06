@@ -165,6 +165,10 @@ struct VMProgram
     return_widths::Vector{Int}
     functions::Dict{Symbol,FunctionEntry}   # CW-B2 (ADR 0019 §2) — function table.
     entry_function::Symbol                   # name of the entry-routine activation.
+    globals::GlobalROM                       # read-only const-global segment
+                                             #   (416r.4). Materialized ONCE here,
+                                             #   seeded into initial_state's IState,
+                                             #   shared (never per-checkpoint-copied).
 
     function VMProgram(blocks::Vector{BasicBlock},
                        label_table::LabelTable,
@@ -173,7 +177,8 @@ struct VMProgram
                        return_widths::Vector{Int},
                        functions::Dict{Symbol,FunctionEntry} =
                            Dict{Symbol,FunctionEntry}(),
-                       entry_function::Symbol = :main)
+                       entry_function::Symbol = :main,
+                       globals::GlobalROM = GlobalROM())
         length(label_table) == length(blocks) ||
             error("VMProgram: label_table has ", length(label_table),
                   " entries but blocks has ", length(blocks),
@@ -194,7 +199,7 @@ struct VMProgram
                       "interpreter (M2.17 inner-constructor invariant)")
         end
         return new(blocks, label_table, entry_label, arg_widths, return_widths,
-                   functions, entry_function)
+                   functions, entry_function, globals)
     end
 end
 

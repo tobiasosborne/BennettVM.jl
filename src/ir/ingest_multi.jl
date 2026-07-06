@@ -117,6 +117,23 @@ function lower_vm(funcs::Vector{<:Pair{Symbol,Bennett.ParsedIR}};
     for (name, parsed) in funcs
         prog = _lower_parsed_ir(parsed, name; label_prefix = name,
                                 functions = table)
+        # Const-global segment in a MULTI-function module is deferred (bead
+        # `bennettvm-416r.4` lands single-function only). Per-function
+        # `_lower_parsed_ir` assigns each referenced global a base from
+        # `GLOBAL_BASE + 0`, so two functions referencing globals would COLLIDE;
+        # correct handling needs a module-wide single assignment (a follow-up
+        # bead). The merged `VMProgram` (§3) also drops per-function globals, so
+        # a referenced global would silently read 0. Fail loud rather than
+        # miscompile (Rule 1). Existing fixtures (collatz / hashtable) GEP no
+        # const globals, so `global_rom.cells` is empty and this never fires.
+        isempty(prog.globals.cells) ||
+            error("lower_vm(multi): function :", name, " references a const ",
+                  "global array, but module-wide const-global support is not ",
+                  "yet implemented (per-function bases would collide at ",
+                  "GLOBAL_BASE; the merged VMProgram drops per-function ",
+                  "globals). Single-function const globals work today (bead ",
+                  "`bennettvm-416r.4`); the multi-function module-wide segment ",
+                  "is a follow-up. Rule 1 fail-loud.")
         append!(merged, prog.blocks)
     end
 
