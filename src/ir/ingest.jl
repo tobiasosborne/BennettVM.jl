@@ -267,6 +267,38 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
     # LabelTable keys off `BasicBlock.label`, not the marker label.
     _q(lbl::Symbol) = label_prefix === nothing ? lbl :
         Symbol(string(label_prefix), "#", string(lbl))
+
+    # Bennett-utzc / CW-D (ADR 0017 §4) — materialise the `:__unreachable__`
+    # halt sink. The Bennett.jl frontend emits a provably-dead throw arm as an
+    # empty block whose terminator is `IRBranch(nothing, :__unreachable__,
+    # nothing)` — an unconditional branch to the reserved sentinel label, a
+    # branch TARGET with NO matching source block (a dangling target). Without
+    # a real block for it, the Phase-1 edge loop's `by_label[dst]` (below)
+    # KeyErrors on the dangling `:__unreachable__` target. We inject a synthetic
+    # sink block into a LOCAL `blocks` copy so ALL downstream machinery (the
+    # `by_label` / `shared` / `const_defs` / `preds` dicts, the edge loop, the
+    # Phase-2 body/exit build, and the Phase-3 trampolines) treats it as an
+    # ordinary block. It is a `Bennett.IRRet()` (the void form — NO successor,
+    # `_successors` → []) so it is a leaf; the halt-on-entry `UnreachableHalt()`
+    # marker is injected into its body in Phase 2. Materialised into the LOCAL
+    # copy (NOT `parsed.blocks`) so the multi-function `_declared_returns` /
+    # `_static_frame_size` / `#`-label validators (`ingest_multi.jl`), which
+    # read the ORIGINAL `parsed.blocks`, never see it. Per-function sinks are
+    # `_q`-qualified downstream (`<fname>#__unreachable__`), so they never
+    # collide across a multi-function module (ADR 0019 §2). Fires only when a
+    # terminator actually targets `:__unreachable__` AND no such block already
+    # exists — every existing fixture is byte-identical (no sink, no change).
+    _targets_unreach(b::Bennett.IRBasicBlock) =
+        b.terminator isa Bennett.IRBranch &&
+        (b.terminator.true_label === :__unreachable__ ||
+         b.terminator.false_label === :__unreachable__)
+    if any(_targets_unreach, blocks) &&
+       !any(b -> b.label === :__unreachable__, blocks)
+        blocks = vcat(blocks,
+                      Bennett.IRBasicBlock(:__unreachable__, Bennett.IRInst[],
+                                           Bennett.IRRet()))
+    end
+
     by_label = Dict{Symbol,Bennett.IRBasicBlock}(b.label => b for b in blocks)
     # `raw_entry_label` keys the RAW-`b.label` internal lookups (`by_label`,
     # `b.label === raw_entry_label`); `entry_label` is the QUALIFIED label that
@@ -481,6 +513,15 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
         end
         # Body: lowered non-φ instructions, then synthetic constant creates.
         body = Instruction[]
+        # Bennett-utzc / CW-D (ADR 0017 §4) — the synthetic `:__unreachable__`
+        # sink halts ON ENTRY. Its ONLY body instruction is the halt-on-entry
+        # trap `UnreachableHalt()` (`forward` sets `status = :error`, bumps pc,
+        # mutates no data). The block has an empty `b.instructions` and no φ /
+        # const / ssa-copy creates (it is a leaf with no out-edges), so this is
+        # its sole body slot; the trailing `EndInstruction` exit is vestigial —
+        # a halt-on-entry never reaches it. Pushed FIRST so it is `body[1]`, the
+        # instruction control lands on at `fwd_address + 1`.
+        b.label === :__unreachable__ && push!(body, UnreachableHalt())
         # Bind each referenced const-global's pointer SSA name to its
         # `GLOBAL_BASE`-relative base (bead `bennettvm-416r.4`), PREPENDED to the
         # ENTRY block so it is live before any `VarGEP(:rom, idx)` reads it. A

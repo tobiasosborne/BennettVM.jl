@@ -274,6 +274,16 @@ is_injective(::Type{SwapInstruction})::Bool = true
 is_injective(::Type{BeginInstruction})::Bool = true
 is_injective(::Type{EndInstruction})::Bool   = true
 
+# Bennett-utzc / CW-D (ADR 0017 §4) — the `:__unreachable__` halt sink.
+# `UnreachableHalt.forward` touches only `status` (:running → :error) and `pc`,
+# both recovered structurally by its `inverse` — it destroys NO `locals` /
+# `memory` / cursor data, so it is L1-injective (the same "nothing to log"
+# footing as `EndInstruction`, which is pc-only at this layer). The push gate
+# (`src/interpreter/Interpreter.jl`) therefore records NO history entry for it,
+# and `unstep!`'s injective-class path reverses it via its self-`structural_
+# inverse`. See `src/ir/unreachable_halt.jl` for the full rationale.
+is_injective(::Type{UnreachableHalt})::Bool  = true
+
 # M2.9 — basic-block entry/exit (RC3 `l(x,...) <-` / `-> l(y,...)`).
 # Mogensen-RSSA paired entry/exit (ADR 0001 §Observations
 # Structural-Pattern point 1); pc-only at this dispatch layer.

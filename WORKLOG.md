@@ -7,6 +7,51 @@
 
 ---
 
+## Session — 2026-07-07 — bennettvm-g501 LANDED via 3+1: reversible `:__unreachable__` halt sink (UnreachableHalt) — BVM half of Bennett-utzc / ADR 0017 §4
+
+**What.** The BennettVM half of the cross-repo Bennett-utzc throw-block work. The
+Bennett.jl frontend dead-block pruner (bead Bennett-utzc, landing next) emits a
+provably-dead Julia throw arm (`@boundscheck`/`@assert` failure block) as an empty
+block terminated `IRBranch(nothing, :__unreachable__, nothing)` — an unconditional
+branch to the reserved sentinel `:__unreachable__`, a dangling TARGET with no source
+block. Three pieces:
+  - `src/ir/unreachable_halt.jl` — new `UnreachableHalt <: Instruction`, a non-control
+    body instr that HALTS ON ENTRY: `forward` sets `status = :error`, bumps pc, mutates
+    no locals/memory/cursor; `inverse` restores `:running`+pc; `is_injective=true` (no
+    history push). FIRST producer of `:error` anywhere in `src`.
+  - `src/ir/ingest.jl` `_lower_parsed_ir` — materialise a synthetic per-function sink
+    block into a LOCAL `blocks` copy (BEFORE the `by_label` build, so the Phase-1 edge
+    loop doesn't KeyError on the dangling target), `IRRet()` void leaf, `UnreachableHalt()`
+    injected in Phase 2. `_q`-qualified per function so multi-function sinks never collide.
+  - `src/interpreter/Interpreter.jl` `run!` — `while !is_halted` → `while status ===
+    :running`, plus a loud fail on a post-loop `:error` (a taken dead abort = Rule 1 trap).
+
+**Why `:error` not `:halted`.** A normal `End` → `:halted` (run! returns a result).
+Reaching the sink means a provably-dead arm was TAKEN — a contradiction — so `run!`
+must fail loud, not return a spurious result. The third status (`:error`, reserved
+since M2.1 but never produced) distinguishes it.
+
+**Gotchas (next agent).**
+1. `while !is_halted` was `status !== :halted`, true for BOTH `:running` and `:error`
+   — a sink setting `:error` would spin to `max_steps`. Changed to `status === :running`.
+   Behaviourally identical for every existing program (`:error` was unproducible in src).
+2. The sink MUST be materialised into a LOCAL `blocks` copy, NOT `parsed.blocks` — the
+   multi-function `_declared_returns`/`_static_frame_size`/`#`-label validators read the
+   ORIGINAL `parsed.blocks` and must not see the synthetic sink.
+3. `:__unreachable__` is a branch TARGET only — the Bennett.jl `_expand_switches` FORBIDS
+   a block literally so labelled, so the frontend keeps the dead block's own label and
+   leaves `:__unreachable__` dangling; BVM is the side that materialises the real block.
+
+**Tests.** `test/test_utzc_unreachable_sink.jl` (36): not-taken → round-trips to empty
+history; taken → halts loud `:error` (distinct from `:halted`); multi-function
+per-function sinks. Regression `test_dict_roundtrip.jl` 34/34 — the `run!` change is inert.
+
+**3+1.** 2 blind proposers (cross-repo design) → implementer → orchestrator review +
+independent re-run. Cross-repo sibling: Bennett-utzc (the Bennett.jl frontend pruner,
+landing next as the second sub-step).
+
+---
+
 ## Session — 2026-07-06 — 416r.4 LANDED via 3+1: const globals as read-only VM memory (unblocks real ROMs; closes dzd)
 
 **What.** `bennettvm-416r.4` (const globals as initialized read-only VM memory

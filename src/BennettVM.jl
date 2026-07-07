@@ -412,6 +412,17 @@ include("ir/intrinsics.jl")
 # and BEFORE `history/Injective.jl` / `history/delta.jl` (which pin the
 # memset/memcpy/memmove traits). Not yet exported.
 include("ir/intrinsics_bulk.jl")
+# Bennett-utzc / CW-D (ADR 0017 §4) — `UnreachableHalt`, the reversible
+# `:__unreachable__` halt sink. A plain body `Instruction` (NOT a
+# ControlInstruction) whose `forward` sets `status = :error` and bumps pc
+# (halt-on-entry trap for a taken provably-dead throw arm). MUST follow
+# `ir/instructions.jl` (defines the `Instruction` supertype + the generic
+# `forward`/`inverse`) and `ir/IState.jl` (defines `IState`), and MUST precede
+# `history/Injective.jl` (which PINS `is_injective(::Type{UnreachableHalt}) =
+# true`). Defines its own `structural_inverse(::UnreachableHalt) = i` (self-
+# inverse), creating the `structural_inverse` generic that `basic_block.jl`
+# later extends. Not exported — reached through the ingest pass.
+include("ir/unreachable_halt.jl")
 # M6.1 — `is_injective` trait (`bennettvm-9hf`). The L1 "no-log"
 # layer-1 predicate of PRD v4 §3.3: tells the rest of the VM whether
 # an instruction needs a history entry. Type-level `true` for the

@@ -530,6 +530,17 @@ using BennettVM
     # `per_step_inverse_check` via `test/test_per_step_inverse.jl`
     # (re-include-guarded); depends only on already-loaded symbols.
     include("test_call_roundtrip.jl")
+    # Bennett-utzc / CW-D (ADR 0017 §4): the reversible `:__unreachable__` halt
+    # sink. A dead throw arm branches to the dangling `:__unreachable__`
+    # sentinel; ingest materialises a synthetic per-function sink block whose
+    # sole body instruction `UnreachableHalt()` halts ON ENTRY with
+    # `status = :error`. Covers not-taken round-trip (RED without the fix:
+    # KeyError :__unreachable__), taken loud-halt, and the multi-function
+    # `#`-qualified no-collision case. Sits after `test_call_roundtrip.jl`
+    # (shares the multi-function lowering + `run!`-loop surface); pulls in
+    # `per_step_inverse_check` via a plain `include` of test_per_step_inverse.jl
+    # (the same idiom as test_dict_roundtrip.jl / test_call_roundtrip.jl).
+    include("test_utzc_unreachable_sink.jl")
     # CW-C2 chunk C (BVM ADR 0020 D5; Bennett-nd45): a C-track `.ll`-sourced
     # IRCall has a bare `Symbol` callee. The IRCall arm now dispatches via
     # `_callee_sym(inst.callee)` (nameof for Function, identity for Symbol), so

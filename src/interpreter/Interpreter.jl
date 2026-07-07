@@ -1758,7 +1758,15 @@ function run!(s::RState, prog::VMProgram;
     effective_replay_mode = replay_mode || !record
 
     n = 0
-    while !is_halted(s)
+    # Bennett-utzc / CW-D (ADR 0017 §4) — loop while RUNNING, not while
+    # `!is_halted`. `is_halted` is `status === :halted`, so `!is_halted` is
+    # `status !== :halted`, which is `true` for BOTH `:running` AND `:error`
+    # — a `:__unreachable__` sink (which sets `:error`, never `:halted`) would
+    # spin to `max_steps` under the old condition. `status === :running` exits
+    # the loop the instant the sink traps. This is BEHAVIOURALLY IDENTICAL for
+    # every existing program: `:error` was until now unproducible in `src/`, so
+    # while running `status === :running ⟺ !is_halted` held exactly.
+    while s.current.status === :running
         n >= max_steps && error(
             "run!: max_steps=$max_steps exceeded ",
             "(pc=$(s.current.pc), status=$(s.current.status)). ",
@@ -1770,5 +1778,16 @@ function run!(s::RState, prog::VMProgram;
               replay_mode=effective_replay_mode)
         n += 1
     end
+    # Bennett-utzc / CW-D (ADR 0017 §4) — loud fail on the halt sink. A clean
+    # exit leaves `status === :halted` (normal `EndInstruction` termination);
+    # `status === :error` means the loop exited because a `:__unreachable__`
+    # halt sink was TAKEN — a provably-dead throw arm fired, which is a
+    # compiler/analysis contradiction (Rule 1 fail-loud). The RState is left
+    # mid-run for inspection, exactly as the max_steps guard does.
+    s.current.status === :error && error(
+        "run!: reached the :__unreachable__ halt sink (status=:error) at ",
+        "pc=$(s.current.pc) — a provably-dead throw arm (Bennett-utzc / ",
+        "ADR 0017 §4) was TAKEN; the reversible program has trapped. ",
+        "RState left mid-run for inspection.")
     return s
 end
