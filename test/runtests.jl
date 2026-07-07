@@ -338,6 +338,14 @@ using BennettVM
     # and the tag-invariance soundness witness (vary tag → bit-identical IState).
     # Sits right after the arena floor it mirrors.
     include("test_gc_alloc_obj_ingest.jl")
+    # bennettvm-416r.12 (CW-D2) — julia `Memory{T}` backing-alloc ingest. Ingests
+    # Bennett.jl's bare Symbol-callee `IRCall(:jl_alloc_genericmemory_unchecked,
+    # [ptls, nbytes, typ])` as an arena bump-alloc mirroring `IntrinsicGCAlloc`:
+    # ptls DROPPED, size carried, type tag STRUCTURALLY UNREAD (ADR 0021 D3).
+    # Pins ingest shape, single-function lower_vm routing (no allowlist reject),
+    # forward/inverse arena round-trip, and the durable coupling invariant
+    # `Bennett._D1B_MODELED_HEAP_INTRINSICS == _HEAP_DISPATCH`.
+    include("test_416r12_jl_alloc_genericmemory.jl")
     # Bennett-igr3 — julia.gc_loaded data-ptr launder ingest (downstream of
     # Bennett-qmv7). Ingests Bennett.jl's `IRCall(Symbol("julia.gc_loaded"),
     # [mem, data])` — the GC-rooting launder that returns the data pointer — as

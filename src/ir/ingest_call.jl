@@ -61,6 +61,15 @@ function _lower_intrinsic_call(inst::Bennett.IRCall, callee::Symbol)::Instructio
         # state transition — the tag never influences VM state).
         _need(2)
         return IntrinsicGCAlloc(inst.dest, _lower_operand(a[1]), _lower_operand(a[2]))
+    elseif callee === :jl_alloc_genericmemory_unchecked
+        # Julia Memory{T} backing alloc (CW-D2 / 416r.12). Bennett's generic
+        # C-call arm carries [ptls, nbytes, typ] (VERIFIED — 3 args, ptls NOT
+        # dropped upstream). Drop a[1]=ptls (TLS ptr, no VM meaning); size=a[2]
+        # (the lbot-fused smul product, bytes); tag=a[3] (metadata, structurally
+        # unread — ADR 0021 D3). IntrinsicGCAlloc-shaped deterministic arena bump
+        # → inherits _ArenaAlloc forward/inverse/predelta, reverses for free.
+        _need(3)
+        return IntrinsicGCAlloc(inst.dest, _lower_operand(a[2]), _lower_operand(a[3]))
     elseif callee === :calloc
         _need(2)
         return IntrinsicCalloc(inst.dest, _lower_operand(a[1]), _lower_operand(a[2]))
@@ -146,4 +155,7 @@ const _HEAP_DISPATCH = Set{Symbol}((
     :memset, :memcpy, :memmove,                     # bulk memory
     :gc_alloc_obj,                                  # Julia typed-GC alloc (CW-D3
                                                     # Lever 3; tag IGNORED, ADR 0021 D3)
+    :jl_alloc_genericmemory_unchecked,              # Julia Memory{T} backing alloc
+                                                    # (CW-D2 / 416r.12; ptls dropped,
+                                                    # tag IGNORED — IntrinsicGCAlloc-shaped)
 ))

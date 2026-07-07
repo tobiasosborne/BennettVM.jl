@@ -7,6 +7,45 @@
 
 ---
 
+## Session — 2026-07-07 — bennettvm-416r.12 LANDED (cross-repo): close the fdict closed-world set (CW-D2) — EXTRACTION COMPLETE
+
+**What (BVM half).** `src/ir/ingest_call.jl`: add `:jl_alloc_genericmemory_unchecked`
+to `_HEAP_DISPATCH` + a `_lower_intrinsic_call` arm → `IntrinsicGCAlloc(inst.dest,
+_lower_operand(a[2]), _lower_operand(a[3]))`. Bennett's generic C-call arm carries
+`[ptls, nbytes, typ]` (3 args, ptls NOT dropped upstream — contrast gc_alloc_obj's
+task); drop a[1]=ptls, size=a[2] (the lbot-fused smul product), tag=a[3] (metadata,
+structurally unread, ADR 0021 D3). Reuses `IntrinsicGCAlloc`/`_ArenaAlloc` → deterministic
+arena bump + L2 retract, reverses for free. No name normalization (Bennett emits bare
+`:jl_alloc_genericmemory_unchecked`; `_callee_sym` is identity on Symbols).
+
+**Coupling.** `Bennett._D1B_MODELED_HEAP_INTRINSICS` (the front-end closed-world
+whitelist) and `BennettVM._HEAP_DISPATCH` are MIRRORED Sets; a BVM-side test asserts
+`Set(Bennett._D1B_MODELED_HEAP_INTRINSICS) == BennettVM._HEAP_DISPATCH`. Only a BVM test
+can see both (BVM path-depends on Bennett, no back-dep). This machine-checks the
+tolerate-here ⟺ ingest-there invariant so a future drift is a red test, not a silent
+false-extraction-pass.
+
+**MILESTONE.** Cross-repo close of the fdict EXTRACTION chain (6 walls: yd4f, 583s,
+utzc/g501, lbot, 8bys, 416r.12 — Bennett.jl commit `8ee16bd`). The closed 4-body set
+(fdict_d1b, setindex!, rehash!, ht_keyindex2_shorthash!) extracts under ptr_cells=true.
+
+**lower_vm(fdict_set) next blockers (observed, IN ORDER — the assembly walls ahead; filed).**
+  0. **`#`-in-key reject** at `src/ir/ingest_multi.jl:89` — BVM reserves `#` for label
+     qualification (ADR 0019 §2), but Bennett's content-addressed set keys are
+     `<bare>#<digest>`. Cross-repo key normalization at the set boundary.
+  1. **`julia.get_pgcstack` SoftCall reject** at `src/ir/softcall_instruction.jl:253`
+     (via `ingest_body.jl:361`) — a Bennett-side MODELED cell IRCall (feeds the current-task
+     GEP chain, `julia_set.jl:66-73`, can't be dropped) with no BVM ingest home. Mirror
+     `julia.gc_loaded`'s handling at `ingest_body.jl:270`.
+  2. **Const-globals collision** at `ingest_multi.jl:129` — the multi-function const-global
+     un-deferral (`bennettvm-416r.4`). Then byte/cell + aggregate-ABI round-trip debug.
+
+**Process.** 3+1 (2 concise blind proposers → 1 cross-repo implementer → orchestrator
+review + independent re-run). New `test/test_416r12_jl_alloc_genericmemory.jl` (23, incl.
+the coupling cross-check); `test_dict_roundtrip` 34/34 + arena/ingest regression green.
+
+---
+
 ## Session — 2026-07-07 — bennettvm-g501 LANDED via 3+1: reversible `:__unreachable__` halt sink (UnreachableHalt) — BVM half of Bennett-utzc / ADR 0017 §4
 
 **What.** The BennettVM half of the cross-repo Bennett-utzc throw-block work. The
