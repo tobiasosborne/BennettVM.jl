@@ -1,12 +1,29 @@
 # Bennett.jl version pin
 
-Per PRD v3 §7.5 and CLAUDE.md Rule 14, BennettVM.jl pins Bennett.jl
-during initial development to insulate against frontend churn.
+Per PRD v3 §7.5 and CLAUDE.md Rule 14, BennettVM.jl tracks a nominated
+Bennett.jl commit during initial development to insulate against frontend
+churn.
 
-**Pinned SHA:** `31b63a6` (xv0u: IRPtrOffset.elem_width for cell-addressed BennettVM)
-**Pinned date:** 2026-06-05 (repinned from `231bde6` of 2026-06-04)
-**Bennett.jl HEAD commit at pin time:**
+**How the dependency actually resolves.** BennettVM does *not* pin a git
+revision. `Manifest.toml` carries a Julia **path / dev dependency**
+(`[[deps.Bennett]] … path = "../Bennett.jl"`), so every build and test run
+compiles against **whatever is currently checked out in the sibling
+`../Bennett.jl` working tree** — never against a frozen SHA. The "pin"
+recorded below is therefore **documentary**: it names the last Bennett.jl
+commit this repo was validated against, so a reader can
+`git -C ../Bennett.jl checkout <sha>` to reproduce a known-good state.
+Keeping `../Bennett.jl` at (or additively ahead of) the recorded commit is a
+convention, not a lockfile guarantee — the Manifest imposes no revision
+constraint.
+
+**Last validated against:** `31b63a6` (xv0u: IRPtrOffset.elem_width for cell-addressed BennettVM)
+**Validated date:** 2026-06-05 (previously `231bde6` of 2026-06-04)
+**Bennett.jl HEAD commit summary at validation:**
 `feat(xv0u): IRPtrOffset preserves elem_width for cell-addressed BennettVM (b5x)`
+**`../Bennett.jl` working-tree HEAD when this note was last refreshed (2026-07-07):**
+`cbddc32` — `416r.4 (front-end): Case C two-index array GEP arm (+ closes dzd) + fix doh6`
+(the working tree has advanced past the last-validated commit; this line is
+informational, not a re-validation)
 
 ## Repin rationale (2026-06-05)
 
@@ -124,14 +141,20 @@ a less-reversible IR) is PRD v4 open question §VIII.2.
 - Phase 2: repin at v4 ratification; record new SHA in this file with
   date and the Bennett.jl HEAD commit summary.
 
-## How to check the pin is intact
+## How to check the last-validated commit still resolves
+
+Because the dependency is a path dep, there is nothing to "unpin" — the
+build always uses the current `../Bennett.jl` checkout regardless of the SHA
+below. This check only confirms the last-validated commit is still reachable
+so a known-good state can be reproduced:
 
 ```bash
 cd ../Bennett.jl
-git rev-parse 877341ec388004a69636ac4530d4d9abf2439486   # must resolve
-git log --oneline 877341e -1
-# expected: 877341e Bennett-7kzr + Bennett-jefu: docs refresh — README architectural limits + drift fixes
+git rev-parse 31b63a6efe6acf0636faf26499d530509f3635f7   # must resolve
+git log --oneline 31b63a6 -1
+# expected: 31b63a6 feat(xv0u): IRPtrOffset preserves elem_width for cell-addressed BennettVM (b5x)
 ```
 
 If the SHA is unreachable (Bennett.jl history rewrite, GC), file a
-beads issue immediately — losing the pinned base breaks reproducibility.
+beads issue immediately — losing the last-validated base breaks
+reproducibility.
