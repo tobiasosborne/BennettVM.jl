@@ -7,6 +7,64 @@
 
 ---
 
+## Session — 2026-07-10 — bennettvm-5m1t: content-addressed Julia-set keys (CW-D, blocker 0 cleared)
+
+**The wall.** `lower_vm(::Vector{Pair{Symbol,ParsedIR}})` could not ingest a Bennett
+closed-world Julia set. `extract_parsed_ir_set_from_julia` (Bennett
+`src/extract/julia_set.jl:120-121/338`) emits CONTENT-ADDRESSED keys of the shape
+`<barename>#<8hex-digest>` (e.g. `setindex!#cfbb045b`, `fdict_d1b#4a8d3eda`) — the
+digest disambiguates argtype specialisations. Two layers broke:
+  1. **Reject** — `ingest_multi.jl` fail-loud-rejected any '#'-bearing key ('#'
+     reserved for label qualification, ADR 0019 §2). This was blocker 0.
+  2. **Guard-5 miss** (deeper, latent behind the reject) — the table was keyed by the
+     DIGESTED key, but the in-set call sites carry a BARE `nameof` (a digest-free
+     `Function` callee). So even past the reject, every cross-body `CallEnter` would
+     miss the table.
+
+**Fix (two converging helpers).**
+  * `ingest_multi.jl` `_vm_funcname(key)` — de-digests a table key to its bare VM name:
+    strip the 9-char `#<8hex>` tail, then sanitise any RESIDUAL '#' to '.'. Closure
+    barenames are themselves '#'-bearing (key `#9#<digest>` → `.9`). '#'-free keys
+    (C-track / bare) are fixed points. Non-digest '#'-bearing keys keep the old
+    fail-loud reject.
+  * `ingest_body.jl` `_vm_dispatch_name(callee)` — sanitises the call-site closure '#'
+    to '.' (no digest to strip; call sites are bare). Rewrites guard-5 ONLY; every
+    other guard (nondeterminism / heap / gc_loaded / Float32) stays on raw
+    `_callee_sym` byte-identically.
+
+**Why '.' not '_'.** '.' is chosen PRECISELY because Julia's `nameof` can NEVER
+produce '.', so a sanitised closure name (`.9`) can never structurally alias a genuine
+function name — it's impossible-by-construction, not merely collision-detected. ('_'
+is a legal `nameof` char and would risk aliasing.)
+
+**Collision guard.** Two keys de-digesting to the same bare name (`f#aaaa1111` +
+`f#bbbb2222` → `:f`) fail loud naming BOTH originating keys — same generic function,
+different specialisations, and bare call sites can't disambiguate (mirrors Bennett
+`julia_set.jl` `_closed_world_check!`).
+
+**The successor wall (verified, NOT this bead).** With blocker 0 cleared, the REAL
+fdict set (`extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
+ptr_cells=true)`; keys `fdict_d1b#…, setindex!#…, rehash!#…, ht_keyindex2_shorthash!#…`)
+now advances past the '#' wall and walls at `julia.get_pgcstack` (a SoftCall allowlist
+reject — bead `bennettvm-p81t`). Test (b) pins this exact successor message; when p81t
+lands that assertion flips (intended).
+
+**Test.** `test/test_5m1t_content_addressed_keys.jl` (registered after
+`test_symbol_callee_ingest.jl`), 51 assertions: de-digest helper unit, real fdict set
+clearing the wall → get_pgcstack, hand-built digested 2-body lower + full forward/reverse
+round-trip, closure-barename sanitise (`#9` ↔ `.9`), same-bare collision fail-loud,
+entry-kwarg dual-form (digested key AND bare name agree). RED first (helper undefined +
+'#' wall everywhere), then GREEN 51/51.
+
+**Regression.** Fast set (test_symbol_callee_ingest, test_call_roundtrip,
+test_416r12_jl_alloc_genericmemory) all green; full `Pkg.test()` green. Comment-only
+edit to test_416r12 point-(5) (blocker 0 now cleared; successor = get_pgcstack).
+
+**Gotcha for the next agent.** The fdict extraction itself (Bennett side) is SLOW
+(~2 min inside test (b)) — that dominates this test file's wall-clock, not the lowering.
+
+---
+
 ## Session — 2026-07-07 — bennettvm-416r.12 LANDED (cross-repo): close the fdict closed-world set (CW-D2) — EXTRACTION COMPLETE
 
 **What (BVM half).** `src/ir/ingest_call.jl`: add `:jl_alloc_genericmemory_unchecked`

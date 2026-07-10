@@ -556,6 +556,19 @@ using BennettVM
     # and the guard-5 function table (in-module → CallEnter), and the
     # nondeterminism/Float32 guards still fire.
     include("test_symbol_callee_ingest.jl")
+    # bead `bennettvm-5m1t` (CW-D): content-addressed Julia-set keys
+    # (`<barename>#<8hex-digest>`). Bennett's `extract_parsed_ir_set_from_julia`
+    # emits digested table keys while the in-set call sites carry a bare
+    # `nameof`. `lower_vm(::Vector{Pair})` now de-digests keys (`_vm_funcname`)
+    # and the guard-5 call site sanitises the closure '#' (`_vm_dispatch_name`)
+    # so the two converge; closure barenames (`#9`) sanitise to '.' (a char
+    # `nameof` can never produce). Pins the de-digest helper, the real fdict set
+    # clearing the '#' wall + advancing to the `julia.get_pgcstack` successor
+    # wall (bead `bennettvm-p81t`), a hand-built digested 2-body lower + full
+    # round-trip, the closure-barename sanitise, the same-bare collision
+    # fail-loud, and the entry-kwarg dual-form acceptance. Sits right after its
+    # Symbol-callee ingest sibling (shares the guard-5 surface).
+    include("test_5m1t_content_addressed_keys.jl")
     # CW-C3 (bead `bennettvm-416r.10`): THE STORY DEMO — a normal C hash-table
     # program (clang -O0 .ll) executes and REVERSES on the VM, bit-for-bit
     # against its native golden master (`test/reference/c/GOLDEN.txt`). The first

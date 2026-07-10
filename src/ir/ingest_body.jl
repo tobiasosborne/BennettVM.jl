@@ -77,6 +77,17 @@ Any other `IRInst` subtype is rejected loudly (Rule 1).
 _callee_sym(callee::Function) = nameof(callee)
 _callee_sym(callee::Symbol)   = callee
 
+# Resolve an `IRCall.callee` to its guard-5 DISPATCH name, converging with the
+# multi-function table key (`_vm_funcname` in `ingest_multi.jl`). Call sites carry
+# BARE names (no content-addressed `#<8hex>` digest to strip — a Julia set's
+# in-set call site is a bare `nameof` `Function`), so ONLY the closure-'#'
+# sanitise applies: a closure barename `#9` (whose table key is `#9#<digest>` →
+# `_vm_funcname` → `.9`) becomes `.9` here too. A '#'-free callee is a fixed
+# point, so intrinsic / soft / C-track callees (and every non-closure name) are
+# untouched. Used for guard-5 resolution ONLY; the nondeterminism / heap /
+# gc_loaded / Float32 guards stay on the raw `_callee_sym` byte-identically.
+_vm_dispatch_name(callee) = Symbol(replace(String(_callee_sym(callee)), '#' => '.'))
+
 function _lower_body_inst(inst::Bennett.IRInst,
                           functions::Dict{Symbol,FunctionEntry} =
                               Dict{Symbol,FunctionEntry}()
@@ -345,18 +356,24 @@ function _lower_body_inst(inst::Bennett.IRInst,
         # — `Bennett.ParsedIR` is single-function only, so the table is never
         # populated there), this guard never fires and a non-soft, non-heap
         # callee still reaches the SoftCall allowlist reject below (unchanged).
-        if haskey(functions, _callee_sym(inst.callee))
-            fe = functions[_callee_sym(inst.callee)]
+        # Resolve the callee to its dispatch name ONCE (closure '#'→'.' sanitised
+        # to converge with the `_vm_funcname` table key). Used for the table
+        # lookup, the FunctionEntry fetch, AND the emitted CallEnter — the three
+        # must agree so the interpreter can resolve the call to the callee's
+        # `#`-qualified entry label.
+        vmname = _vm_dispatch_name(inst.callee)
+        if haskey(functions, vmname)
+            fe = functions[vmname]
             callargs = Symbol[a.name for a in inst.args
                               if a isa Bennett.SSAOperand]
             length(callargs) == length(inst.args) ||
-                error("lower_vm: IRCall to in-module function :",
-                      _callee_sym(inst.callee), " has a non-SSA (constant) arg in ",
+                error("lower_vm: IRCall to in-module function :", vmname,
+                      " has a non-SSA (constant) arg in ",
                       inst.args, " — reversible VM-call args must be SSA names ",
                       "(the MOVE semantics, ADR 0019 §3; Rule 1 fail-loud). ",
                       "Materialise the constant via a synthetic Define first.")
             targets = isempty(fe.returns) ? Symbol[] : Symbol[inst.dest]
-            return CallEnter(_callee_sym(inst.callee), callargs, targets)
+            return CallEnter(vmname, callargs, targets)
         end
         return SoftCall(inst.dest, _callee_sym(inst.callee),
                         Union{Symbol,Int64}[_lower_operand(a)

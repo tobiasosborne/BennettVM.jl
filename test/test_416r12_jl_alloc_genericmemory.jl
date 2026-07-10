@@ -142,11 +142,13 @@ const _Bm  = Bennett
     # ------------------------------------------------------------------
     # (5) End-to-end fdict set — NOT lowered here. The CLOSED 4-body set from
     #     Bennett (`extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
-    #     ptr_cells=true)`) does NOT yet survive `lower_vm(set)`: it dies EARLIER
-    #     than this allocator — first at ingest_multi's `#`-in-key reject (BVM
-    #     reserves `#` for label qualification; the canonical keys are
-    #     `<barename>#<digest>`), then at `julia.get_pgcstack` (a SoftCall
-    #     allowlist reject), then const-globals. Those are separate follow-up
+    #     ptr_cells=true)`) does NOT yet survive `lower_vm(set)`. The `#`-in-key
+    #     reject (blocker 0 — the canonical keys are `<barename>#<digest>`) is now
+    #     CLEARED by bead `bennettvm-5m1t` (`_vm_funcname` de-digests keys +
+    #     `_vm_dispatch_name` sanitises the closure '#'; see
+    #     `test_5m1t_content_addressed_keys.jl`). Past that wall the set now dies
+    #     at `julia.get_pgcstack` (a SoftCall allowlist reject — bead
+    #     `bennettvm-p81t`), then const-globals. Those are separate follow-up
     #     beads (mapped in the 416r.12 handoff), NOT this bead's scope. This test
     #     deliberately does NOT feed the full set to lower_vm.
     # ------------------------------------------------------------------

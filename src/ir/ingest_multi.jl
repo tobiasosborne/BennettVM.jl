@@ -33,6 +33,42 @@ Ref: docs/adr/0019-reversible-calls.md §2 (function table; #-qualification;
      the two fail-loud validations), §8 (Impact: multi-function lowering).
 """
 
+# Content-addressed Julia-set keys (Bennett `extract_parsed_ir_set_from_julia`,
+# `../Bennett.jl/src/extract/julia_set.jl:120-121/338`) have the shape
+# `<barename>#<8hex-digest>` — the digest disambiguates argtype specialisations
+# of one generic function. BennettVM keys its function table by the BARE VM name,
+# because the in-set call sites carry only a bare `nameof` (a digest-free
+# `Function` callee), so guard-5 (`ingest_body.jl`) resolves against the bare
+# name, not the digested key. `_vm_funcname` maps a table KEY to that VM name:
+#
+#   * digest-shaped (`…#<8hex>`): strip the 9-char `#<digest>` tail, then
+#     sanitise any RESIDUAL '#' (a closure barename like `#9` → `.9`) to '.'.
+#     '.' is chosen PRECISELY because Julia's `nameof` can NEVER produce '.', so
+#     a sanitised closure name can NEVER alias a genuine function name
+#     (structurally impossible — not merely detected). This converges with the
+#     call-site `_vm_dispatch_name` in `ingest_body.jl`.
+#   * '#'-bearing but NOT digest-shaped: malformed — keep the old fail-loud
+#     reject ('#' is reserved for label qualification, ADR 0019 §2; Rule 1).
+#   * '#'-free (C-track / bare `nameof`): identity — a fixed point.
+#
+# Ref: docs/adr/0019-reversible-calls.md §2; `../Bennett.jl/src/extract/julia_set.jl`.
+const _CONTENT_DIGEST_RE = r"#[0-9a-fA-F]{8}$"
+
+function _vm_funcname(key::Symbol)::Symbol
+    s = String(key)
+    if occursin(_CONTENT_DIGEST_RE, s)
+        # strip `#<8hex>` (9 chars, all ASCII single-byte), sanitise residual '#'.
+        return Symbol(replace(s[1:end-9], '#' => '.'))
+    elseif occursin('#', s)
+        error("lower_vm(multi): function name :", key, " contains '#' but is ",
+              "not content-addressed (`<barename>#<8hex-digest>`) — the '#' ",
+              "separator is reserved for label qualification (ADR 0019 §2; ",
+              "Rule 1 fail-loud).")
+    else
+        return key
+    end
+end
+
 # Derive a function's declared returns from its `ParsedIR` (the IRRet op
 # name). Mirrors `_lower_parsed_ir`'s End-building (`retval =
 # _lower_operand(term.op)`). A non-SSA / aggregate return is out of scope
@@ -82,19 +118,21 @@ function lower_vm(funcs::Vector{<:Pair{Symbol,Bennett.ParsedIR}};
         error("lower_vm(multi): empty function vector — a module must have ",
               "at least one function (Rule 1 fail-loud).")
 
-    # (1) Validation + function-table pre-scan (ADR 0019 §2).
-    seen = Set{Symbol}()
+    # (1) Validation + function-table pre-scan (ADR 0019 §2). Table keys are the
+    # BARE VM name (`_vm_funcname`), NOT the raw content-addressed key, so the
+    # call-site `_vm_dispatch_name` (bare `nameof`) resolves against them.
+    seen = Dict{Symbol,Symbol}()   # vmname → originating (raw) key
     table = Dict{Symbol,FunctionEntry}()
     for (name, parsed) in funcs
-        occursin('#', string(name)) &&
-            error("lower_vm(multi): function name :", name, " contains '#' — ",
-                  "the '#' separator is reserved for label qualification (ADR ",
-                  "0019 §2; Rule 1 fail-loud).")
-        name in seen &&
-            error("lower_vm(multi): duplicate function name :", name,
-                  " — function names must be unique across the module (ADR ",
-                  "0019 §2; Rule 1 fail-loud).")
-        push!(seen, name)
+        vmname = _vm_funcname(name)
+        haskey(seen, vmname) &&
+            error("lower_vm(multi): content-addressed keys :", seen[vmname],
+                  " and :", name, " collide on their bare VM name :", vmname,
+                  " — same generic function, different argtype specialisations; ",
+                  "call sites carry only a bare `nameof` so cannot disambiguate ",
+                  "(ADR 0019 §2; mirrors Bennett julia_set.jl ",
+                  "`_closed_world_check!`'s ambiguity guard; Rule 1 fail-loud).")
+        seen[vmname] = name
         for b in parsed.blocks
             occursin('#', string(b.label)) &&
                 error("lower_vm(multi): block label :", b.label, " in function :",
@@ -102,20 +140,28 @@ function lower_vm(funcs::Vector{<:Pair{Symbol,Bennett.ParsedIR}};
                       "qualification separator (ADR 0019 §2; Rule 1 fail-loud).")
         end
         params = Symbol[n for (n, _w) in parsed.args]
-        entry_label = Symbol(string(name), "#", string(first(parsed.blocks).label))
-        table[name] = FunctionEntry(name, entry_label, params,
-                                    _declared_returns(parsed),
-                                    _static_frame_size(parsed))
+        entry_label = Symbol(string(vmname), "#", string(first(parsed.blocks).label))
+        table[vmname] = FunctionEntry(vmname, entry_label, params,
+                                      _declared_returns(parsed),
+                                      _static_frame_size(parsed))
     end
-    haskey(table, entry) ||
-        error("lower_vm(multi): entry function :", entry, " is not in the ",
-              "module (functions: ", sort!(collect(keys(table))),
-              "; Rule 1 fail-loud).")
+    # Entry may be passed as the raw digested key OR the pre-de-digested VM name;
+    # both map to the same internal name (`_vm_funcname` is a fixed point on the
+    # bare name).
+    entry_internal = _vm_funcname(entry)
+    haskey(table, entry_internal) ||
+        error("lower_vm(multi): entry function :", entry, " (VM name :",
+              entry_internal, ") is not in the module (functions: ",
+              sort!(collect(keys(table))), "; Rule 1 fail-loud).")
 
-    # (2) Lower each function with qualified labels + the full table.
+    # (2) Lower each function under its bare VM name (`_lower_parsed_ir`'s
+    # `routine` + `#`-qualified `label_prefix`), so its qualified block labels
+    # (`<vmname>#<label>`) match the `FunctionEntry.entry_label` a CallEnter
+    # resolves through.
     merged = BasicBlock[]
     for (name, parsed) in funcs
-        prog = _lower_parsed_ir(parsed, name; label_prefix = name,
+        vmname = _vm_funcname(name)
+        prog = _lower_parsed_ir(parsed, vmname; label_prefix = vmname,
                                 functions = table)
         # Const-global segment in a MULTI-function module is deferred (bead
         # `bennettvm-416r.4` lands single-function only). Per-function
@@ -141,10 +187,9 @@ function lower_vm(funcs::Vector{<:Pair{Symbol,Bennett.ParsedIR}};
     # entry function's qualified entry label is the module entry; the merged
     # LabelTable computes correct flat-stream addresses across all functions
     # because it walks `merged` in order.
-    return VMProgram(merged, LabelTable(merged), table[entry].entry_label,
-                     Int[w for (_n, w) in funcs[findfirst(p -> p.first === entry,
-                                                          funcs)].second.args],
-                     copy(funcs[findfirst(p -> p.first === entry,
-                                          funcs)].second.ret_elem_widths),
-                     table, entry)
+    entry_idx = findfirst(p -> _vm_funcname(p.first) === entry_internal, funcs)
+    return VMProgram(merged, LabelTable(merged), table[entry_internal].entry_label,
+                     Int[w for (_n, w) in funcs[entry_idx].second.args],
+                     copy(funcs[entry_idx].second.ret_elem_widths),
+                     table, entry_internal)
 end
