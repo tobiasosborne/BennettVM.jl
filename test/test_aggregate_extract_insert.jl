@@ -161,12 +161,18 @@ _agg_oracle(x) = x + 7
     end
 
     # ------------------------------------------------------------------
-    # (4) DEFERRED — an aggregate dangling into IRRet fails loud (Rule 1).
-    #     The multi-key return (EndInstruction.returns = [name_slot0…],
-    #     keyed off ret_elem_widths) is the follow-on bead; do NOT let a
-    #     decomposed aggregate name dangle into a single-symbol End.
+    # (4) The multi-key aggregate RETURN landed (bead `bennettvm-x3t0`,
+    #     2026-07-10): an INNER function returning a decomposed aggregate now
+    #     emits a slot-family End (see test_x3t0_multikey_return.jl). This
+    #     single-function ParsedIR IS the ENTRY routine, though, so it is
+    #     rejected by the x3t0 ENTRY-multi-return guard — `result()` keys the
+    #     halted frame's registers by single names, so a by-value multi-register
+    #     entry return has no single output key. The acq "returns aggregate SSA
+    #     value / bennettvm-acq" wall this testset used to pin is SUPERSEDED by
+    #     the x3t0 entry wall (Rule 1 still holds — the same input still fails
+    #     loud, now with the correct cause).
     # ------------------------------------------------------------------
-    @testset "DEFERRED aggregate IRRet → raises naming the deferral" begin
+    @testset "entry aggregate IRRet → x3t0 entry-multi-return wall" begin
         # Same build-up but RETURN the aggregate a1 (a [2 x i32]) directly.
         ret_agg_block = Bennett.IRBasicBlock(
             :entry,
@@ -187,8 +193,9 @@ _agg_oracle(x) = x + 7
         end
         @test e isa ErrorException
         @test occursin("aggregate", e.msg)
-        @test occursin("DEFERRED", e.msg)        # the deferral verb (Rule 4)
-        @test occursin("bennettvm-acq", e.msg)   # names the bead
+        @test occursin("DEFERRED", e.msg)          # the deferral verb (Rule 4)
+        @test occursin("entry multi-return", e.msg)  # the x3t0 entry wall
+        @test occursin("bennettvm-x3t0", e.msg)    # names the bead
     end
 
     # ------------------------------------------------------------------

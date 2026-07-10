@@ -166,11 +166,13 @@ const _B  = Bennett
     # ------------------------------------------------------------------
     # (e) the REAL fdict set clears the const-cond IRSelect wall AND the
     #     IRInsertBits bits-struct sret wall (bead bennettvm-416r.15,
-    #     Bennett-dv1z), advancing to the aggregate-RETURN reject (the multi-key
-    #     return keyed off ret_elem_widths is the follow-on bead bennettvm-x3t0).
-    #     ~2 min (full closed-world extraction). When it lands, this flips.
+    #     Bennett-dv1z) AND (bead bennettvm-x3t0) the aggregate-RETURN reject
+    #     (multi-key return landed), advancing to the sret_box MEMORY-ABI gate
+    #     (`setindex!` → `ht_keyindex2` with ret_width 64 ≠ 72; the blocker-5
+    #     follow-up bead). ~2 min (full closed-world extraction). When it lands,
+    #     this flips.
     # ------------------------------------------------------------------
-    @testset "fdict set advances to the aggregate-return wall" begin
+    @testset "fdict set advances to the sret_box gate (blocker 5)" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
@@ -185,6 +187,8 @@ const _B  = Bennett
         @test threw                                    # still throws (successor wall)
         @test !occursin("IRSelect cond is", msg)       # const-cond IRSelect wall CLEARED
         @test !occursin("IRInsertBits", msg)           # IRInsertBits wall CLEARED (416r.15)
-        @test occursin("returns aggregate SSA value", msg)  # aggregate-return wall
+        @test !occursin("returns aggregate SSA value", msg)  # aggregate-return wall CLEARED (x3t0)
+        @test occursin("sret_box", msg)                # the blocker-5 sret_box gate
+        @test occursin("blocker-5", msg)
     end
 end

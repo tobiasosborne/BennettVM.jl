@@ -386,7 +386,44 @@ function _lower_body_inst(inst::Bennett.IRInst,
                       inst.args, " — reversible VM-call args must be SSA names ",
                       "(the MOVE semantics, ADR 0019 §3; Rule 1 fail-loud). ",
                       "Materialise the constant via a synthetic Define first.")
-            targets = isempty(fe.returns) ? Symbol[] : Symbol[inst.dest]
+            # Return-landing targets (CW-D blocker 4, bead `bennettvm-x3t0`).
+            # `length(fe.returns)` is the callee's return ARITY:
+            #   * n == 0 (void — the C `ht_free`/`ht_put` shape): EMPTY targets
+            #     (a void `ReturnExit` lands nothing).
+            #   * n == 1 (scalar): the single `inst.dest` (the pre-x3t0 shape).
+            #   * n >= 2 (multi-key aggregate): the `_agg_slot_name` FAMILY of
+            #     `inst.dest`, so the callee's slot-family End MOVEs each returned
+            #     slot into the matching caller slot (the token then reads back
+            #     via IRExtractValue / returns via a forwarding IRRet).
+            # The multi-key case is GATED on the ABI discriminator
+            # `inst.ret_width == sum(fe.ret_elem_widths)`: a value-return call
+            # (ret_width == sum) is x3t0's scope; a call with ret_width ≠ the sum
+            # is the sret_box MEMORY ABI (blocker 5) — fail loud STATICALLY here
+            # (Rule 1, at the cause, not a downstream runtime arity symptom).
+            n = length(fe.returns)
+            if n <= 1
+                targets = n == 0 ? Symbol[] : Symbol[inst.dest]
+            else
+                isempty(fe.ret_elem_widths) &&
+                    error("lower_vm: IRCall to multi-return :", vmname,
+                          " (dest=", inst.dest, ") — the callee's FunctionEntry ",
+                          "has returns arity ", n, " but EMPTY ret_elem_widths; a ",
+                          "multi-register return must carry its per-element widths ",
+                          "(internal invariant — `ingest_multi.jl` populates them ",
+                          "from parsed.ret_elem_widths). Rule 1 fail-loud.")
+                total = sum(fe.ret_elem_widths)
+                inst.ret_width == total ||
+                    error("lower_vm: IRCall to multi-return :", vmname,
+                          " (dest=", inst.dest, ") has ret_width=", inst.ret_width,
+                          " but the callee returns a ", total,
+                          "-bit aggregate (ret_elem_widths=", fe.ret_elem_widths,
+                          ") — the caller is using the sret_box buffer ABI ",
+                          "(explicit result-buffer arg; by-value portion only). ",
+                          "DEFERRED: bead bennettvm-x3t0 scopes the value-return ",
+                          "ABI (ret_width == sum); the sret_box memory ABI is the ",
+                          "blocker-5 follow-up bead bennettvm-416r.16. Rule 1 fail-loud.")
+                targets = Symbol[_agg_slot_name(inst.dest, k) for k in 0:n-1]
+            end
             return CallEnter(vmname, callargs, targets)
         end
         return SoftCall(inst.dest, _callee_sym(inst.callee),

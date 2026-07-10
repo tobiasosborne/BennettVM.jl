@@ -69,7 +69,7 @@ end
     # ------------------------------------------------------------------
     # (b) the REAL fdict set clears the '#' wall, hits the aggregate-return wall.
     # ------------------------------------------------------------------
-    @testset "fdict set clears the '#' wall (advances to aggregate-return)" begin
+    @testset "fdict set clears the '#' wall (advances to sret_box gate)" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
@@ -88,15 +88,19 @@ end
         # bead bennettvm-p81t (2026-07-10) cleared the julia.get_pgcstack SoftCall
         # reject AND the negative-offset GEP guard; bead bennettvm-416r.14
         # (2026-07-10) cleared the const-cond IRSelect wall; bead bennettvm-416r.15
-        # (2026-07-10) cleared the IRInsertBits bits-struct sret wall (Bennett-dv1z).
-        # The successor wall is now the aggregate-RETURN reject — the terminal
-        # IRInsertBits dest dangles into a single-symbol EndInstruction.returns;
-        # the multi-key return (keyed off ret_elem_widths) is the follow-on bead
-        # bennettvm-x3t0. When THAT lands, this flips — intended.
+        # (2026-07-10) cleared the IRInsertBits bits-struct sret wall (Bennett-dv1z);
+        # bead bennettvm-x3t0 (2026-07-10) landed the multi-key aggregate RETURN
+        # (a callee's slot-family End lands into a caller's slot family). The
+        # successor wall is now the sret_box MEMORY-ABI gate: `setindex!` calls
+        # `ht_keyindex2` with `ret_width = 64 ≠ 72 = sum([64,8])` — the explicit
+        # result-buffer ABI, the blocker-5 sret_box bead `bennettvm-416r.16` (filed by the
+        # orchestrator). When THAT lands, this flips — intended.
         @test !occursin("julia.get_pgcstack", msg)
         @test !occursin("IRSelect cond is", msg)
-        @test !occursin("IRInsertBits", msg)           # IRInsertBits wall CLEARED
-        @test occursin("returns aggregate SSA value", msg)
+        @test !occursin("IRInsertBits", msg)                 # IRInsertBits wall CLEARED
+        @test !occursin("returns aggregate SSA value", msg)  # aggregate-return wall CLEARED (x3t0)
+        @test occursin("sret_box", msg)                      # the blocker-5 sret_box gate
+        @test occursin("blocker-5", msg)
     end
 
     # ------------------------------------------------------------------

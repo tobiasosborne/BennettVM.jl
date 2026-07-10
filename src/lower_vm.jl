@@ -76,6 +76,26 @@ Ref: docs/adr/0012-collatz-lowering.md §D1–D5
 """
 function lower_vm(parsed::Bennett.ParsedIR; opts=nothing)::VMProgram
     routine = opts isa Symbol ? opts : :main
+    # Single-function entry multi-return guard (CW-D blocker 4, bead
+    # `bennettvm-x3t0`). A single-function `ParsedIR` IS the entry routine, so
+    # a by-value multi-register return has no caller slot family to land into
+    # and no single `result(rs)` output key — the same wall the multi-function
+    # `lower_vm` entry guard (`ingest_multi.jl`) raises. `_lower_parsed_ir`
+    # itself builds slot-family Ends for INNER (callee) multi-returns and must
+    # NOT be given the entry-reject responsibility (it can't tell entry from
+    # callee), so the guard lives HERE at the single-function entry point.
+    # Rejecting before `_lower_parsed_ir` keeps that path's IRRet slot-family
+    # arm reachable only for genuine inner callees.
+    length(parsed.ret_elem_widths) <= 1 ||
+        error("lower_vm: single-function entry routine returns a ",
+              length(parsed.ret_elem_widths),
+              "-element by-value aggregate (ret_elem_widths=",
+              parsed.ret_elem_widths, ") — entry multi-return is DEFERRED: ",
+              "result() keys the halted frame's registers by their single SSA ",
+              "names, so a multi-register entry return has no single output key. ",
+              "Bead bennettvm-x3t0 scopes INNER multi-returns (a callee landing ",
+              "into a caller's slot family); the entry-return ABI is a follow-on. ",
+              "Rule 1 fail-loud.")
     prog = _lower_parsed_ir(parsed, routine)
 
     # Digest, computed from the lowered VMProgram (post-edge-split).

@@ -168,7 +168,7 @@ const _B  = Bennett
     #     off ret_elem_widths is the follow-on bead bennettvm-x3t0). When THAT
     #     lands, this flips.
     # ------------------------------------------------------------------
-    @testset "fdict set advances to the aggregate-return wall" begin
+    @testset "fdict set advances to the sret_box gate (blocker 5)" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
@@ -185,10 +185,12 @@ const _B  = Bennett
         @test !occursin("is negative", msg)            # negative-offset wall CLEARED
         @test !occursin("IRSelect cond is", msg)       # const-cond IRSelect wall CLEARED
         @test !occursin("IRInsertBits", msg)            # IRInsertBits wall CLEARED (416r.15)
-        # the successor wall is the aggregate-RETURN reject (the terminal
-        # IRInsertBits dest dangles into a single-symbol End; the multi-key
-        # return keyed off ret_elem_widths is the follow-on bead
-        # bennettvm-x3t0). When it lands this assert flips — intended.
-        @test occursin("returns aggregate SSA value", msg)
+        @test !occursin("returns aggregate SSA value", msg)  # aggregate-return wall CLEARED (x3t0)
+        # the successor wall is the sret_box MEMORY-ABI gate: `setindex!` calls
+        # `ht_keyindex2` with `ret_width = 64 ≠ 72 = sum([64,8])` — the explicit
+        # result-buffer ABI, the blocker-5 sret_box bead `bennettvm-416r.16` (filed by the
+        # orchestrator). When it lands this assert flips — intended.
+        @test occursin("sret_box", msg)                # the blocker-5 sret_box gate
+        @test occursin("blocker-5", msg)
     end
 end

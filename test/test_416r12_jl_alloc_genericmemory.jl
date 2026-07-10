@@ -156,11 +156,14 @@ const _Bm  = Bennett
     #     416r.12 handoff predicted) is now cleared by bead `bennettvm-416r.15`
     #     (2026-07-10; chain-follower slot decomposition — and there is NO
     #     IRExtractBits: unpacking happens at the return ABI via ret_elem_widths).
-    #     The set now dies at the aggregate-RETURN reject (the terminal
-    #     IRInsertBits dest dangles into a single-symbol End; the multi-key return
-    #     keyed off ret_elem_widths is the follow-on bead `bennettvm-x3t0`).
-    #     Those are separate follow-up beads, NOT this bead's scope. This test
-    #     deliberately does NOT feed the full set to lower_vm.
+    #     The aggregate-RETURN reject is now cleared by bead `bennettvm-x3t0`
+    #     (2026-07-10; the multi-key aggregate return — a callee's slot-family
+    #     End MOVEs into a caller's slot family, keyed off ret_elem_widths). The
+    #     set now dies at the sret_box MEMORY-ABI gate: `setindex!` calls
+    #     `ht_keyindex2` with `ret_width = 64 ≠ 72 = sum([64,8])` — the explicit
+    #     result-buffer ABI, the blocker-5 sret_box follow-up bead (filed by the
+    #     orchestrator). Those are separate follow-up beads, NOT this bead's
+    #     scope. This test deliberately does NOT feed the full set to lower_vm.
     # ------------------------------------------------------------------
 
 end

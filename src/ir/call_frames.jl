@@ -180,9 +180,12 @@ entry label, formal parameters, and return values.
   by `_declared_returns` (ingest_multi.jl) this holds the FIRST `IRRet`'s
   SSA name only — for a multi-exit-block function it is NOT authoritative
   for which name flows out at runtime (that is `EndInstruction.returns`).
-  Current code uses this field exclusively for `isempty` void detection;
-  do not build arity/liveness logic on it without fixing the population
-  (bead filed).**
+  Current code uses this field for `isempty` void detection AND — under x3t0
+  — for its LENGTH (the number of returned registers: 1 for a scalar/void, N
+  for a multi-key aggregate return, whose members are the `_agg_slot_name`
+  family). The per-register WIDTHS live in `ret_elem_widths` (below); this
+  field's members stay nominal for a multi-exit function (the first exit's
+  family — `EndInstruction.returns` remains authoritative at runtime).**
 - `frame_size::Int64` (CW-C3, bead `bennettvm-416r.10`). The total number of
   STATIC stack-alloca cells this function reserves — the size of its
   activation record in the global stack segment. `CallEnter` advances
@@ -192,9 +195,20 @@ entry label, formal parameters, and return values.
   `src/ir/IState.jl` `stack_top`). Defaults to 0 (a function with no static
   allocas / the CW-B frame-register test builders), populated by
   `ingest_multi.jl` from the function's static `IRAlloca` cells.
+- `ret_elem_widths::Vector{Int}` (CW-D blocker 4, bead `bennettvm-x3t0`). The
+  per-element bit widths of the function's BY-VALUE return (Bennett.jl's
+  `ParsedIR.ret_elem_widths`: `[8]` for a scalar i8, `[64, 8]` for a
+  `{i64, i8}` bits-struct). `sum(ret_elem_widths)` is the total by-value return
+  width; guard-5 (`ingest_body.jl`) uses it as the ABI DISCRIMINATOR — an
+  `IRCall` with `ret_width == sum` is the value-return ABI (the token lands
+  into a caller `_agg_slot_name` slot family, this bead), whereas `ret_width` ≠
+  the sum is the sret_box MEMORY ABI (an explicit result-buffer arg; blocker 5,
+  deferred, fails loud). Defaults to `Int[]` (hand-built test builders);
+  `ingest_multi.jl` copies `parsed.ret_elem_widths` into it.
 
 Ref: docs/adr/0019-reversible-calls.md §2 (function table over one flat
      stream; `#`-qualified labels; closed-world callee resolution at ingest).
+Ref: /home/tobias/Projects/Bennett.jl/src/ir_types.jl:570 (ParsedIR.ret_elem_widths).
 """
 struct FunctionEntry
     name::Symbol
@@ -202,6 +216,8 @@ struct FunctionEntry
     params::Vector{Symbol}
     returns::Vector{Symbol}
     frame_size::Int64    # total STATIC stack-alloca cells of this function (CW-C3)
+    ret_elem_widths::Vector{Int}   # per-element by-value return widths (x3t0);
+                                   # sum = total by-value return width (guard-5 ABI)
 
     # `frame_size` defaults to 0 (CW-C3): a function with no static allocas
     # occupies no stack region, and EVERY existing 4-arg `FunctionEntry(name,
@@ -212,12 +228,22 @@ struct FunctionEntry
     # The multi-function lowering (`ingest_multi.jl`) populates the real size
     # from the function's static `IRAlloca` cells so a caller of an
     # alloca-bearing callee offsets correctly.
+    #
+    # `ret_elem_widths` defaults to `Int[]` (x3t0): an empty width vector means
+    # guard-5 treats the callee's return by its `returns` arity alone
+    # (scalar/void, the pre-x3t0 shape); it is populated by `ingest_multi.jl`
+    # from `parsed.ret_elem_widths` so guard-5 can discriminate the value-return
+    # ABI (`ret_width == sum(ret_elem_widths)`) from the sret_box memory ABI.
     FunctionEntry(name::Symbol, entry_label::Symbol, params::Vector{Symbol},
                   returns::Vector{Symbol}) =
-        new(name, entry_label, params, returns, Int64(0))
+        new(name, entry_label, params, returns, Int64(0), Int[])
     FunctionEntry(name::Symbol, entry_label::Symbol, params::Vector{Symbol},
                   returns::Vector{Symbol}, frame_size::Integer) =
-        new(name, entry_label, params, returns, Int64(frame_size))
+        new(name, entry_label, params, returns, Int64(frame_size), Int[])
+    FunctionEntry(name::Symbol, entry_label::Symbol, params::Vector{Symbol},
+                  returns::Vector{Symbol}, frame_size::Integer,
+                  ret_elem_widths::Vector{Int}) =
+        new(name, entry_label, params, returns, Int64(frame_size), ret_elem_widths)
 end
 
 function Base.:(==)(a::FunctionEntry, b::FunctionEntry)
@@ -225,7 +251,8 @@ function Base.:(==)(a::FunctionEntry, b::FunctionEntry)
     a.entry_label === b.entry_label &&
     a.params == b.params &&
     a.returns == b.returns &&
-    a.frame_size == b.frame_size
+    a.frame_size == b.frame_size &&
+    a.ret_elem_widths == b.ret_elem_widths   # x3t0: joins ==/hash in lock-step.
 end
 
 function Base.hash(f::FunctionEntry, h::UInt)
@@ -234,5 +261,6 @@ function Base.hash(f::FunctionEntry, h::UInt)
     h = hash(f.params, h)
     h = hash(f.returns, h)
     h = hash(f.frame_size, h)
+    h = hash(f.ret_elem_widths, h)   # x3t0.
     return h
 end

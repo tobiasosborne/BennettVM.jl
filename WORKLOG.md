@@ -7,6 +7,68 @@
 
 ---
 
+## Session — 2026-07-10 — bennettvm-x3t0: multi-key aggregate RETURN (CW-D blocker 4)
+
+**The wall.** Downstream of 416r.15, the closed fdict set died at the
+aggregate-RETURN reject (`src/ir/ingest.jl`: "IRRet returns aggregate SSA value
+… DEFERRED", bead acq). This bead lands the multi-key return: a callee returning
+a `{i64,i8}` by VALUE lands into the caller's per-slot `_agg_slot_name` family.
+
+**THE RUNTIME IS ALREADY FULLY N-ARY — zero interpreter changes.** `ReturnExit`
+(struct + `predelta_payload` + `forward` + `inverse`, `call_transitions.jl`) and
+the End→ReturnExit synthesis (`Interpreter.jl` ~974, `rets = instr.returns`,
+`fr.targets`) already loop over N returns/targets. Verified by testset (a) of
+`test_x3t0_multikey_return.jl`: a HAND-BUILT 2-value CallEnter/ReturnExit module
+round-trips (result correct, `unrun!` → empty history, frames==1, current==init)
+— GREEN before any change. The whole bead is ingest/lowering only. Comment-only
+touch at the synthesis site records it's now exercised with N=2.
+
+**The uniform slot-family rule.** An aggregate SSA value is a family of N
+`_agg_slot_name(name, k)` keys (the acq model). x3t0 extends the family to CALL
+TOKENS: a value-ABI `IRCall` dest whose callee returns N>1 elements acquires slot
+structure AT THE CALL SITE (`agg_dests` admits it via
+`_is_value_abi_multiret_call`), so a caller `extractvalue`s the token and a
+forwarding function `IRRet`s it directly (the __v207 shape, testset (c)).
+
+**The `ret_width == sum(ret_elem_widths)` discriminator (NOT arg arity).**
+Guard-5 (`ingest_body.jl`) splits the VALUE-return ABI (ret_width == sum → land
+into slot family) from the sret_box MEMORY ABI (ret_width ≠ sum → blocker 5,
+fail loud). It keys off the RETURN width, NOT argument arity — the self-recursive
+`ht_keyindex2` call passes 1 arg vs 2 params (a separate frontend gap; the
+orchestrator filed it as `bennettvm-416r.17`), so an arg-arity discriminator would false-wall it.
+
+**Static, not runtime, sret wall (Rule 1: fail at the cause).** The sret_box
+caller is rejected STATICALLY at ingest guard-5, not as a downstream runtime
+arity symptom. `FunctionEntry` gained `ret_elem_widths::Vector{Int}` (last field,
+back-compat `Int[]` default for the ~12 hand-built test sites) to carry the ABI
+widths; `returns` still carries only arity/void-detection (its members are the
+slot family, nominal for multi-exit functions — per-block End is authoritative).
+
+**Entry multi-return is DEFERRED (both paths).** `result()` keys the halted
+frame's registers by single SSA names, so a by-value multi-register ENTRY return
+has no output key. Rejected in `lower_vm(multi)` (`ingest_multi.jl`) AND the
+single-function `lower_vm(::ParsedIR)` (`lower_vm.jl`). `_lower_parsed_ir` builds
+slot-family Ends for INNER callees only and cannot tell entry from callee, so the
+entry-reject lives at the two entry points, not in the shared driver. This
+superseded the old acq "returns aggregate SSA value" wall for the two
+single-function test cases (test_aggregate_extract_insert (4),
+test_fail_loud_completeness F2) — updated to pin the x3t0 entry wall.
+
+**The real fdict set now stops at the sret gate during setindex! lowering.**
+Merge order `[fdict, setindex!, rehash!, ht_keyindex2]`: fdict (scalar entry)
+lowers, then setindex! calls `ht_keyindex2_shorthash!` with
+`ret_width=64 ≠ 72=sum([64,8])` → guard-5 sret_box reject (captured: "IRCall to
+multi-return :ht_keyindex2_shorthash! (dest=__v1) has ret_width=64 …"). The four
+CW-D wall-pin tests (5m1t, p81t, 416r14, 416r15) flipped from the acq wall to the
+blocker-5 `sret_box` substring; ht_keyindex2's own value-ABI return + self-call
+are never lowered (4th, unreached).
+
+**Discovery for the orchestrator (re-confirmed):** the L171 self-recursive
+`IRCall(ht_keyindex2, [key], [8], ret_width=72)` passes 1 arg vs the callee's 2
+params (frontend drops `h`) — a separate runtime-blocking gap, out of x3t0 scope (filed as `bennettvm-416r.17`).
+
+---
+
 ## Session — 2026-07-10 — bennettvm-416r.15: IRInsertBits bits-struct sret packing (the {i64,i8} wall)
 
 **The wall.** Downstream of 416r.14, the closed fdict set

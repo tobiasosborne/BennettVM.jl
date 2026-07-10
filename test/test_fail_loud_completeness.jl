@@ -55,9 +55,10 @@
 #         STATIC GEP) but carries its own Rule-1 reject for a sub-element /
 #         struct byte offset (non-whole-element multiple, BG3 / U16 out of
 #         scope) — pinned here from the fail-loud angle;
-#       - a RETURNED aggregate (`IRInsertValue` / `IRExtractValue` now LOWER for
-#         ArrayType — bead `bennettvm-acq` — but a returned `[N x iW]` aggregate
-#         is still DEFERRED) hits the ingest IRRet aggregate-return guard;
+#       - a RETURNED aggregate (`IRInsertValue` / `IRExtractValue` LOWER for
+#         ArrayType — bead `bennettvm-acq`; an INNER-callee multi-key return
+#         LANDS — bead `bennettvm-x3t0`; but an ENTRY-routine multi-register
+#         return is DEFERRED) hits the x3t0 entry-multi-return guard;
 #       - an `IRSwitch` arriving as a terminator hits `_successors`' reject;
 #       - a non-SSA-operand `IRStore` / `IRLoad` ptr hits the memory-floor
 #         reject (a pointer must be an `SSAOperand` naming an alloca dest).
@@ -181,8 +182,12 @@ _faillow_ret_x() = Bennett.IRRet(Bennett.SSAOperand(:__x), 32)
     # `ret_elem_widths` is the follow-on bead). The ingest IRRet guard fails
     # loud on it (Rule 1) — this is the fail-loud-completeness surface that
     # replaces the old "extract/insert unsupported" GAP rows.
-    @testset "F2 DEFERRED aggregate IRRet → ingest guard names the deferral" begin
-        # Build a [2 x i32] aggregate, then RETURN it (the deferred shape).
+    @testset "F2 entry aggregate IRRet → x3t0 entry-multi-return wall" begin
+        # Build a [2 x i32] aggregate, then RETURN it. Single-function ⇒ this IS
+        # the entry routine; the multi-key aggregate return (bead
+        # `bennettvm-x3t0`) works for INNER callees but the ENTRY return has no
+        # caller slot family, so the x3t0 entry guard rejects it (superseding the
+        # old acq "returns aggregate SSA value" wall — Rule 1 still holds).
         agg_block = Bennett.IRBasicBlock(
             :entry,
             Bennett.IRInst[
@@ -201,9 +206,10 @@ _faillow_ret_x() = Bennett.IRRet(Bennett.SSAOperand(:__x), 32)
             ex
         end
         @test e isa ErrorException
-        @test occursin("aggregate", e.msg)         # Rule 4 — names the cause
+        @test occursin("aggregate", e.msg)          # Rule 4 — names the cause
         @test occursin("DEFERRED", e.msg)
-        @test occursin("bennettvm-acq", e.msg)
+        @test occursin("entry multi-return", e.msg)  # the x3t0 entry wall
+        @test occursin("bennettvm-x3t0", e.msg)
     end
 
     # And the scalar-consumed chain itself does NOT raise (the positive half of

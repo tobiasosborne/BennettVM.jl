@@ -971,6 +971,11 @@ function step!(s::RState, prog::VMProgram;
     #     marker may carry a dummy ret symbol that the void caller never lands).
     #     The empty-returns case also matches the void caller's empty `targets`,
     #     so the `ReturnExit` returns↔targets arity holds.
+    # x3t0 (CW-D blocker 4): this synthesis is ALREADY N-ary — `instr.returns`
+    # is the per-block End's slot family (length N) for a multi-key aggregate
+    # return, and `fr.targets` is the caller's matching N-slot family, so the
+    # synthesized `ReturnExit` MOVEs all N slots with ZERO interpreter change.
+    # Exercised with N=2 by the `{i64,i8}` returns of bead bennettvm-x3t0.
     if instr isa EndInstruction && length(s.current.frames) > 1
         fr = s.current.frames[end]
         rets = (haskey(prog.functions, fr.fname) &&

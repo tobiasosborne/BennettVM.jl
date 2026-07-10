@@ -249,6 +249,28 @@ function _global_segment(parsed::Bennett.ParsedIR)
     return (name_to_base, GlobalROM(cells), ordered)
 end
 
+# Is `inst` a VALUE-ABI call whose dest carries a multi-key aggregate return
+# (bead `bennettvm-x3t0`)? An `IRCall` to a KNOWN in-module function that
+# returns N > 1 elements, where `ret_width == sum(ret_elem_widths)` — the
+# by-value return ABI (the token lands into the caller's `_agg_slot_name` slot
+# family, so its dest IS an aggregate dest, readable by a later IRExtractValue
+# and returnable by a forwarding IRRet). This is the __v207 shape (the
+# self-recursive `ht_keyindex2` forward). An sret-ABI call (`ret_width` ≠ the
+# sum — the explicit result-buffer arg, blocker 5) is NOT admitted: its dest is
+# a 64-bit scalar, not the by-value aggregate. Resolves the callee via
+# `_vm_dispatch_name` (ingest_body.jl) to converge with the guard-5 / function-
+# table key.
+function _is_value_abi_multiret_call(inst::Bennett.IRInst,
+                                     functions::Dict{Symbol,FunctionEntry})::Bool
+    inst isa Bennett.IRCall || return false
+    vn = _vm_dispatch_name(inst.callee)
+    haskey(functions, vn) || return false
+    fe = functions[vn]
+    length(fe.returns) > 1 || return false
+    isempty(fe.ret_elem_widths) && return false   # inconsistent — guard-5 fails loud.
+    return inst.ret_width == sum(fe.ret_elem_widths)
+end
+
 function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
                           label_prefix::Union{Nothing,Symbol} = nothing,
                           functions::Dict{Symbol,FunctionEntry} =
@@ -454,10 +476,18 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
     # dest kinds are aggregate dests: a later IRExtractValue may read either
     # family, and a later aggregate-return IRRet of either fails loud (the
     # multi-key return, bead `bennettvm-x3t0`, is the follow-on).
+    # x3t0 (CW-D blocker 4): value-ABI multi-return CALL TOKENS also acquire the
+    # per-slot family (the __v207 shape — a caller `extractvalue`s the returned
+    # aggregate, and a forwarding function RETURNS the token directly). Admitted
+    # here so a later IRExtractValue of the token passes the aggregate-membership
+    # guard and a later IRRet of the token builds a slot-family End. An sret-ABI
+    # call (`ret_width` ≠ sum(ret_elem_widths), blocker 5) is NOT admitted — its
+    # dest is a 64-bit scalar, and guard-5 fails it loud.
     agg_dests = Set{Symbol}(inst.dest for b in blocks
                             for inst in b.instructions
                             if inst isa Bennett.IRInsertValue ||
-                               inst isa Bennett.IRInsertBits)
+                               inst isa Bennett.IRInsertBits ||
+                               _is_value_abi_multiret_call(inst, functions))
 
     # --- Phase 2: original blocks (entry block first). ---
     # Internal lookups use RAW `b.label` (`raw_entry_label`); the VMProgram-
@@ -868,29 +898,39 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
                 error("lower_vm: IRRet of a literal (", retval, ") is ",
                       "unsupported — End.returns is symbol-only; a const ",
                       "return would need a synthetic create (Rule 1).")
-            # Aggregate-return guard (bead `bennettvm-acq`, OPCODE G2 — the
-            # fatal-flaw fix). If the returned SSA name is an aggregate `dest`
-            # this pass DECOMPOSED into a per-slot family, it has NO single
-            # scalar key — emitting `EndInstruction(routine, [name])` would key
-            # the output off a symbol that never holds a value (`result(rs)` is
-            # keyed by the End's single return symbol). This bead scopes
-            # scalar-CONSUMED extract/insert only (every aggregate fully decays
-            # into scalar slots before return); the multi-key return
-            # (`EndInstruction.returns = [name_slot0, …]`, keyed off Bennett's
-            # `ret_elem_widths`) is a follow-on bead. Fail loud rather than let a
-            # decomposed aggregate name dangle into a single-symbol End (Rule 1).
-            retval in agg_dests &&
-                error("lower_vm: IRRet returns aggregate SSA value :", retval,
-                      " — returning a `[N x iW]` aggregate is DEFERRED (bead ",
-                      "`bennettvm-acq` scopes scalar-CONSUMED extract/insert ",
-                      "only). This pass decomposed :", retval, " into a per-slot ",
-                      "`_agg_<name>_slot<k>` family (no single scalar key holds ",
-                      "the aggregate), so it cannot flow into the symbol-only ",
-                      "`EndInstruction.returns`. The multi-key aggregate return ",
-                      "(End.returns = [", retval, "_slot0, …], keyed off ",
-                      "ret_elem_widths) is a follow-on bead. Rule 1 fail-loud — ",
-                      "do not dangle a decomposed aggregate into a scalar End.")
-            exit = EndInstruction(routine, Symbol[retval])
+            # Multi-key aggregate return (bead `bennettvm-x3t0`, CW-D blocker 4
+            # — the acq fatal-flaw fix). If the returned SSA name is an aggregate
+            # `dest` this pass decomposed into a per-slot family (an
+            # IRInsertValue / IRInsertBits build-up OR a value-ABI multi-return
+            # call token, `agg_dests`), it has NO single scalar key — a
+            # `[name]` End would key `result(rs)` off a symbol that never holds a
+            # value. Instead emit the per-slot FAMILY `EndInstruction.returns =
+            # [_agg_<name>_slot0, …, _agg_<name>_slot(n-1)]` (n =
+            # `length(ret_elem_widths)`), which the End→ReturnExit synthesis
+            # (Interpreter.jl, already N-ary) MOVEs into the caller's matching
+            # `_agg_slot_name` targets. `n >= 2` is REQUIRED: an aggregate name
+            # returned by a function whose `ret_elem_widths` is scalar/void
+            # (length ≤ 1) is an inconsistency — a decomposed family cannot flow
+            # into a single/zero-register return (Rule 1). The ENTRY routine's
+            # own multi-return is rejected earlier (the entry guards in
+            # `ingest_multi.jl` / `lower_vm.jl`), so this path builds slot
+            # families ONLY for INNER (callee) functions.
+            if retval in agg_dests
+                n = length(parsed.ret_elem_widths)
+                n >= 2 ||
+                    error("lower_vm: IRRet returns aggregate SSA value :", retval,
+                          " but the function's ret_elem_widths=",
+                          parsed.ret_elem_widths, " (arity ", n, ") is NOT ",
+                          "multi-element — a decomposed `_agg_<name>_slot<k>` ",
+                          "family (built by insertvalue/insertbits or a value-ABI ",
+                          "multi-return call) cannot flow into a scalar/void ",
+                          "return in a NON-multi function (bead `bennettvm-x3t0`; ",
+                          "Rule 1 fail-loud).")
+                exit = EndInstruction(routine,
+                                      Symbol[_agg_slot_name(retval, k) for k in 0:n-1])
+            else
+                exit = EndInstruction(routine, Symbol[retval])
+            end
         else  # IRBranch
             succs = _successors(term)
             if length(succs) == 1

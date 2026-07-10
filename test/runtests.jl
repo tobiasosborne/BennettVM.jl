@@ -606,6 +606,17 @@ using BennettVM
     # advancing to the aggregate-RETURN wall (follow-on bead bennettvm-x3t0).
     # Sits after 416r14 (its upstream). ~2.5 min (the real-set extraction).
     include("test_416r15_insertbits.jl")
+    # bead `bennettvm-x3t0` (CW-D blocker 4): multi-key aggregate RETURN across a
+    # reversible VM call. A callee returning a `{i64,i8}` by VALUE (ret_width ==
+    # sum(ret_elem_widths)) lands into a caller's `_agg_slot_name` slot family;
+    # the caller reads fields back via IRExtractValue and a forwarding function
+    # RETURNS the call token directly. Pins: the ALREADY-N-ary ReturnExit runtime
+    # contract (hand-built, green before the change), the InsertBits + call-token
+    # slot-family End/targets, run/unrun round-trips, the sret_box static wall
+    # (blocker 5), the fail-loud matrix, and the real fdict set advancing to the
+    # sret_box gate. Sits after 416r15 (its upstream). ~2.5 min (the real-set
+    # extraction in testset (f)).
+    include("test_x3t0_multikey_return.jl")
     # CW-C3 (bead `bennettvm-416r.10`): THE STORY DEMO — a normal C hash-table
     # program (clang -O0 .ll) executes and REVERSES on the VM, bit-for-bit
     # against its native golden master (`test/reference/c/GOLDEN.txt`). The first

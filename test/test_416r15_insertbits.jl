@@ -216,11 +216,15 @@ end
     end
 
     # ------------------------------------------------------------------
-    # (e) the REAL fdict set advances past the IRInsertBits wall to the
-    #     PRE-EXISTING aggregate-RETURN reject (bead `bennettvm-x3t0`). ~2 min
-    #     (full closed-world extraction). Returns are out of scope here.
+    # (e) the REAL fdict set advances past the IRInsertBits wall AND past the
+    #     aggregate-RETURN reject (bead `bennettvm-x3t0` landed the multi-key
+    #     return) to the sret_box MEMORY-ABI gate: `setindex!` calls
+    #     `ht_keyindex2` with `ret_width = 64 ≠ 72 = sum([64,8])` — the explicit
+    #     result-buffer ABI, the blocker-5 sret_box bead `bennettvm-416r.16` (filed by the
+    #     orchestrator). ~2 min (full closed-world extraction). Returns are now
+    #     in scope (x3t0); the sret_box memory ABI is not.
     # ------------------------------------------------------------------
-    @testset "real fdict set advances to the aggregate-return wall" begin
+    @testset "real fdict set advances to the sret_box gate (blocker 5)" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = Bennett.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                        ptr_cells = true)
@@ -232,8 +236,10 @@ end
             threw = true
             msg = sprint(showerror, e)
         end
-        @test threw                                       # still throws (next wall)
-        @test !occursin("IRInsertBits", msg)              # IRInsertBits wall CLEARED
-        @test occursin("returns aggregate SSA value", msg)  # the aggregate-return wall
+        @test threw                                          # still throws (next wall)
+        @test !occursin("IRInsertBits", msg)                 # IRInsertBits wall CLEARED
+        @test !occursin("returns aggregate SSA value", msg)  # aggregate-return wall CLEARED (x3t0)
+        @test occursin("sret_box", msg)                      # the blocker-5 sret_box gate
+        @test occursin("blocker-5", msg)
     end
 end

@@ -69,17 +69,28 @@ function _vm_funcname(key::Symbol)::Symbol
     end
 end
 
-# Derive a function's declared returns from its `ParsedIR` (the IRRet op
-# name). Mirrors `_lower_parsed_ir`'s End-building (`retval =
-# _lower_operand(term.op)`). A non-SSA / aggregate return is out of scope
-# here (the single-function path already fails loud on those); this scan only
-# needs the scalar return name for the `FunctionEntry`.
+# Derive a function's declared returns from its `ParsedIR`, keyed off the
+# BY-VALUE return ARITY (`length(parsed.ret_elem_widths)`; bead
+# `bennettvm-x3t0`). Mirrors `_lower_parsed_ir`'s End-building:
+#   * void (op not an SSAOperand) ⇒ `Symbol[]` (the C `ret void` shape).
+#   * scalar (arity ≤ 1) ⇒ `[op.name]` (unchanged — the pre-x3t0 behaviour).
+#   * multi-key (arity ≥ 2) ⇒ the `_agg_slot_name` FAMILY of the returned
+#     aggregate. The arity is load-bearing (guard-5 reads `length(returns)`);
+#     the member NAMES are nominal (this scan reads the FIRST exit's op, so for
+#     a multi-exit-block function they name the first exit's family — the
+#     per-block `EndInstruction.returns` is authoritative at runtime, see
+#     `call_frames.jl` `returns` CAVEAT). `_agg_slot_name` lives in
+#     `ingest_phi.jl` (included by `ingest.jl` before this file); it is reached
+#     at call time, so include order is satisfied.
 function _declared_returns(parsed::Bennett.ParsedIR)::Vector{Symbol}
+    n = length(parsed.ret_elem_widths)
     for b in parsed.blocks
         term = b.terminator
         if term isa Bennett.IRRet
             op = term.op
-            return op isa Bennett.SSAOperand ? Symbol[op.name] : Symbol[]
+            op isa Bennett.SSAOperand || return Symbol[]           # void
+            n <= 1 && return Symbol[op.name]                       # scalar
+            return Symbol[_agg_slot_name(op.name, k) for k in 0:n-1]  # multi-key
         end
     end
     return Symbol[]
@@ -143,7 +154,8 @@ function lower_vm(funcs::Vector{<:Pair{Symbol,Bennett.ParsedIR}};
         entry_label = Symbol(string(vmname), "#", string(first(parsed.blocks).label))
         table[vmname] = FunctionEntry(vmname, entry_label, params,
                                       _declared_returns(parsed),
-                                      _static_frame_size(parsed))
+                                      _static_frame_size(parsed),
+                                      copy(parsed.ret_elem_widths))  # x3t0 ABI widths
     end
     # Entry may be passed as the raw digested key OR the pre-de-digested VM name;
     # both map to the same internal name (`_vm_funcname` is a fixed point on the
@@ -153,6 +165,23 @@ function lower_vm(funcs::Vector{<:Pair{Symbol,Bennett.ParsedIR}};
         error("lower_vm(multi): entry function :", entry, " (VM name :",
               entry_internal, ") is not in the module (functions: ",
               sort!(collect(keys(table))), "; Rule 1 fail-loud).")
+    # Entry multi-return guard (CW-D blocker 4, bead `bennettvm-x3t0`). An INNER
+    # multi-return (a callee returning an aggregate into a caller's slot family)
+    # is x3t0's scope, but the ENTRY routine's return has no caller slot family
+    # to land into: `result(rs)` keys the halted frame's registers by their
+    # single SSA names, and a by-value multi-register entry return has no such
+    # single key. Fail loud rather than key the output off an ambiguous register
+    # set; the entry-return ABI is a follow-on (Rule 1).
+    length(table[entry_internal].ret_elem_widths) <= 1 ||
+        error("lower_vm(multi): entry function :", entry, " (VM name :",
+              entry_internal, ") returns a ",
+              length(table[entry_internal].ret_elem_widths),
+              "-element by-value aggregate (ret_elem_widths=",
+              table[entry_internal].ret_elem_widths, ") — entry multi-return is ",
+              "DEFERRED: result() keys single registers, so a multi-register ",
+              "entry return has no single output key. Bead bennettvm-x3t0 scopes ",
+              "INNER multi-returns (a callee landing into a caller's slot family); ",
+              "the entry-return ABI is a follow-on. Rule 1 fail-loud.")
 
     # (2) Lower each function under its bare VM name (`_lower_parsed_ir`'s
     # `routine` + `#`-qualified `label_prefix`), so its qualified block labels
