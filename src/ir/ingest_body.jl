@@ -259,38 +259,23 @@ function _lower_body_inst(inst::Bennett.IRInst,
         if _callee_sym(inst.callee) in _HEAP_DISPATCH
             return _lower_intrinsic_call(inst, _callee_sym(inst.callee))
         end
-        # julia.gc_loaded(mem, data) — Julia's GC-rooting data-pointer launder
-        # (Bennett-igr3; downstream of Bennett-qmv7). It RETURNS the data pointer
-        # (args[2]); `mem` (args[1]) only keeps the Memory GC-rooted and is
-        # STRUCTURALLY UNREAD by any VM state transition (the gc_alloc_obj
-        # type-tag pattern, ADR 0021 D3). In the cell-addressed VM the laundered
-        # data pointer IS the heap-Memory virtual base cell — the base
-        # Bennett.jl's qmv7 IRVarGEP/IRLoad/IRStore re-root onto — so alias
-        # `dest := data` via the established pointer-identity create
-        # `Define(dest, data, :add, 0)` (a pointer is just an Int64 cell; cf.
-        # `src/ir/array_index.jl:15`, the alloca-base idiom). Reversed by L3
-        # checkpoint-replay (`Define` is non-injective; ADR 0012 §D1). MUST come
-        # before the Float32 guard and the SoftCall constructor: gc_loaded is
-        # neither a `soft_f*` scalar create nor a heap intrinsic, so routing it
-        # to SoftCall would fail-loud spuriously (the pre-igr3 behavior). Keyed
-        # on the UN-canonicalised LLVM name `Symbol("julia.gc_loaded")` — verified
-        # empirically against the qmv7 `GCL_I8` fixture and `fdict_O0.ll` (operand
-        # order `[mem, data]`); contrast `:gc_alloc_obj`, which Bennett.jl
-        # canonicalises. (A lone launder callee — lift to a set beside
-        # `_HEAP_DISPATCH` in `ingest_call.jl` if more such callees arrive.)
-        if _callee_sym(inst.callee) === Symbol("julia.gc_loaded")
-            length(inst.args) == 2 ||
-                error("lower_vm: julia.gc_loaded (dest=", inst.dest, ") expects 2 ",
-                      "args (mem, data), got ", length(inst.args),
-                      " — malformed IR (Rule 1 fail-loud).")
-            # `data` (args[2]) is a Memory data pointer — lower via the SSA-ptr
-            # path (fail loud on a non-SSA pointer, matching the IRStore/IRLoad/
-            # IRVarGEP pointer-operand discipline); it returns the SSA name a
-            # `Define` lhs accepts (a pointer is just an Int64 cell).
-            return Define(inst.dest,
-                          _lower_ptr_operand(inst.args[2], Symbol("julia.gc_loaded"),
-                                             inst.dest),
-                          :add, Int64(0))
+        # Benign modeled-cell callees (bead `bennettvm-p81t`): non-heap Julia
+        # runtime intrinsics that lower to a NON-INJECTIVE `Define` create
+        # (an aliased or fixed Int64 cell), reversed by L3 checkpoint-replay
+        # (`Define` is non-injective; ADR 0012 §D1) — NOT an `Intrinsic*` heap
+        # op. This is the SET the old inline `julia.gc_loaded` arm's comment
+        # anticipated ("lift to a set beside `_HEAP_DISPATCH` if more such
+        # callees arrive"): `julia.get_pgcstack` (the per-task pgcstack pointer)
+        # is that second callee, so the lone-arm was lifted to
+        # `_BENIGN_CELL_DISPATCH` + `_lower_benign_cell_call` (`ingest_call.jl`).
+        # MUST come before the Float32 guard and the SoftCall constructor: a
+        # benign cell callee is neither a `soft_f*` scalar create nor a heap
+        # intrinsic, so routing it to SoftCall would fail-loud spuriously (the
+        # pre-igr3 / pre-p81t behavior). Guard ORDER preserved: after the
+        # nondeterminism + `_HEAP_DISPATCH` guards, before Float32 + SoftCall
+        # (ADR 0018 §C).
+        if _callee_sym(inst.callee) in _BENIGN_CELL_DISPATCH
+            return _lower_benign_cell_call(inst, _callee_sym(inst.callee))
         end
         # Float32-touching soft op guard (bead `bennettvm-h0t`; ADR 0011 §D2,
         # Bennett-3rph). A soft op "touches f32" iff its result OR any operand
@@ -456,11 +441,19 @@ function _lower_body_inst(inst::Bennett.IRInst,
                   "Decision 2b; bead bennettvm-b5x, field Bennett-xv0u). ",
                   "Rule 1 fail-loud.")
         ew_bytes = ew_bits ÷ 8
-        inst.offset_bytes >= 0 ||
-            error("lower_vm: IRPtrOffset offset_bytes=", inst.offset_bytes,
-                  " (dest=", inst.dest, ") is negative — a GEP below the alloca ",
-                  "base is malformed under mem=:vm (no production site emits a ",
-                  "negative offset; Rule 1 fail-loud rather than misaddress).")
+        # NEGATIVE offsets are legitimate under ptr_cells (bead `bennettvm-p81t`):
+        # the Julia GC preamble walks the current-task struct via
+        # `gep i8 %pgcstack, -152` (current_task = TLS_BASE-152) → `gep +168`
+        # (ptls_field = TLS_BASE+16). `Define(dest, base, :add, idx)` is EXACT
+        # signed pointer arithmetic, and sub-element misalignment is still caught
+        # by the divisibility guard below (sign-agnostic: `-152 % 1 == 0`,
+        # `-3 % 2 != 0`). The guard's old premise ("no production site emits a
+        # negative offset; Rule 1 fail-loud rather than misaddress") is FALSIFIED
+        # by this site, so the hard `offset_bytes >= 0` error is removed. (A
+        # taint-scoped tightening — reject a negative offset EXCEPT on a pgcstack-
+        # derived pointer — was considered and DEFERRED until a second negative-
+        # GEP source appears; while this is the only negative-GEP producer a
+        # blanket relaxation is simpler and no less safe.)
         inst.offset_bytes % ew_bytes == 0 ||
             error("lower_vm: IRPtrOffset offset_bytes=", inst.offset_bytes,
                   " (dest=", inst.dest, ") is not evenly divisible by the ",

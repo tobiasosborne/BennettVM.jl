@@ -159,3 +159,82 @@ const _HEAP_DISPATCH = Set{Symbol}((
                                                     # (CW-D2 / 416r.12; ptls dropped,
                                                     # tag IGNORED — IntrinsicGCAlloc-shaped)
 ))
+
+# ---------------------------------------------------------------------
+# Benign modeled-cell callees (bead `bennettvm-p81t`): non-heap Julia
+# runtime intrinsics that lower to a NON-INJECTIVE `Define` create (an
+# aliased or fixed Int64 cell), reversed by L3 checkpoint-replay (ADR 0012
+# §D1) — NOT an `Intrinsic*` heap op (contrast `_HEAP_DISPATCH`). A hit is
+# dispatched to `_lower_benign_cell_call`; the IRCall-arm check MUST sit
+# where the old inline `julia.gc_loaded` arm was — after the nondeterminism +
+# `_HEAP_DISPATCH` guards, BEFORE the Float32 guard + SoftCall constructor
+# (ADR 0018 §C). This is the set the old gc_loaded arm's comment anticipated
+# ("lift to a set beside `_HEAP_DISPATCH` if more such callees arrive"):
+# `julia.get_pgcstack` is that second callee.
+#
+# TLS sentinel tier: julia.get_pgcstack returns the per-task pgcstack
+# pointer, which has NO VM meaning; under the deterministic VM it is a FIXED
+# cell. `2^56` continues the ascending tier convention (stack < 2^40 ≤ arena
+# < 2^48 ≤ globals) with a 2^48-cell margin above GLOBAL_BASE — unreachable
+# by any real global. Derived addresses (current_task = TLS_BASE-152,
+# ptls_field = TLS_BASE+16) stay in the tier; the one IRLoad through them
+# reads an absent cell (zero-init) whose value feeds only
+# jl_alloc_genericmemory_unchecked's DROPPED ptls arg (ADR 0021 D3) —
+# structurally dead, so any constant is sound; this one is collision-free by
+# construction.
+const TLS_BASE = Int64(1) << 56
+
+const _BENIGN_CELL_DISPATCH = Set{Symbol}((
+    Symbol("julia.gc_loaded"),      # data-ptr launder (Bennett-igr3): Define(dest, args[2])
+    Symbol("julia.get_pgcstack"),   # TLS base (bennettvm-p81t): nullary fixed cell
+))
+
+"""
+    _lower_benign_cell_call(inst::Bennett.IRCall, callee::Symbol) -> Instruction
+
+Lower a benign modeled-cell `IRCall` (`callee ∈ _BENIGN_CELL_DISPATCH`) to a
+non-injective `Define` create (bead `bennettvm-p81t`; ADR 0018 §C; ADR 0012
+§D1). Both arms emit a `Define` reversed by L3 checkpoint-replay — no new
+inverse code.
+
+  * `julia.gc_loaded(mem, data)` — Julia's GC-rooting data-pointer launder
+    (Bennett-igr3; downstream of Bennett-qmv7). It RETURNS the data pointer
+    (args[2]); `mem` (args[1]) only keeps the Memory GC-rooted and is
+    STRUCTURALLY UNREAD by any VM state transition (the gc_alloc_obj type-tag
+    pattern, ADR 0021 D3). In the cell-addressed VM the laundered data pointer
+    IS the heap-Memory virtual base cell — the base Bennett.jl's qmv7
+    IRVarGEP/IRLoad/IRStore re-root onto — so alias `dest := data` via the
+    established pointer-identity create `Define(dest, data, :add, 0)` (a
+    pointer is just an Int64 cell; cf. `src/ir/array_index.jl:15`, the
+    alloca-base idiom). Keyed on the UN-canonicalised LLVM name
+    `Symbol("julia.gc_loaded")` — verified empirically against the qmv7
+    `GCL_I8` fixture and `fdict_O0.ll` (operand order `[mem, data]`); contrast
+    `:gc_alloc_obj`, which Bennett.jl canonicalises.
+
+  * `julia.get_pgcstack()` — the per-task pgcstack pointer (bennettvm-p81t),
+    a NULLARY named intrinsic with no VM meaning. Emit the fixed TLS-sentinel
+    create `Define(dest, TLS_BASE, :add, 0)` (see `TLS_BASE`).
+"""
+function _lower_benign_cell_call(inst::Bennett.IRCall, callee::Symbol)::Instruction
+    if callee === Symbol("julia.gc_loaded")
+        length(inst.args) == 2 ||
+            error("lower_vm: julia.gc_loaded (dest=", inst.dest, ") expects 2 ",
+                  "args (mem, data), got ", length(inst.args),
+                  " — malformed IR (Rule 1 fail-loud).")
+        # `data` (args[2]) is a Memory data pointer — lower via the SSA-ptr
+        # path (fail loud on a non-SSA pointer, matching the IRStore/IRLoad/
+        # IRVarGEP pointer-operand discipline); it returns the SSA name a
+        # `Define` lhs accepts (a pointer is just an Int64 cell).
+        return Define(inst.dest,
+                      _lower_ptr_operand(inst.args[2], Symbol("julia.gc_loaded"),
+                                         inst.dest),
+                      :add, Int64(0))
+    else  # julia.get_pgcstack
+        isempty(inst.args) ||
+            error("lower_vm: julia.get_pgcstack (dest=", inst.dest, ") expects 0 args, got ",
+                  length(inst.args), " (args=", inst.args, ") — the per-task pgcstack ",
+                  "pointer is nullary (Bennett src/extract/julia_set.jl GC preamble; ",
+                  "Rule 1 fail-loud).")
+        return Define(inst.dest, TLS_BASE, :add, Int64(0))
+    end
+end

@@ -146,11 +146,13 @@ const _Bm  = Bennett
     #     reject (blocker 0 — the canonical keys are `<barename>#<digest>`) is now
     #     CLEARED by bead `bennettvm-5m1t` (`_vm_funcname` de-digests keys +
     #     `_vm_dispatch_name` sanitises the closure '#'; see
-    #     `test_5m1t_content_addressed_keys.jl`). Past that wall the set now dies
-    #     at `julia.get_pgcstack` (a SoftCall allowlist reject — bead
-    #     `bennettvm-p81t`), then const-globals. Those are separate follow-up
-    #     beads (mapped in the 416r.12 handoff), NOT this bead's scope. This test
-    #     deliberately does NOT feed the full set to lower_vm.
+    #     `test_5m1t_content_addressed_keys.jl`). The `julia.get_pgcstack` SoftCall
+    #     reject AND the negative-offset GC-preamble GEP guard are now cleared by
+    #     bead `bennettvm-p81t` (2026-07-10; `_BENIGN_CELL_DISPATCH` +
+    #     `TLS_BASE`); the set now dies at a const-cond `IRSelect` wall (NOT
+    #     const-globals as the 416r.12 handoff predicted — the IRSelect const-cond
+    #     wall precedes it). Those are separate follow-up beads, NOT this bead's
+    #     scope. This test deliberately does NOT feed the full set to lower_vm.
     # ------------------------------------------------------------------
 
 end

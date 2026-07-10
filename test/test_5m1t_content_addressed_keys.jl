@@ -20,9 +20,10 @@
 # to '.' — a char `nameof` can NEVER produce, so a sanitised closure name can
 # never alias a genuine function name (structurally impossible).
 #
-# The REAL fdict set now clears the '#' wall and advances to the DOCUMENTED
-# next wall (`julia.get_pgcstack`, a SoftCall allowlist reject — bead
-# `bennettvm-p81t`, NOT this bead). Testset (b) pins that exact successor.
+# The REAL fdict set now clears the '#' wall and advances past the
+# `julia.get_pgcstack` + negative-offset GC-preamble walls (both cleared by
+# bead `bennettvm-p81t`, 2026-07-10) to the const-cond IRSelect wall (bead
+# `bennettvm-416r.14`). Testset (b) pins that exact current successor.
 
 using Test
 using BennettVM
@@ -66,7 +67,7 @@ end
     # ------------------------------------------------------------------
     # (b) the REAL fdict set clears the '#' wall, hits the get_pgcstack wall.
     # ------------------------------------------------------------------
-    @testset "fdict set clears the '#' wall (advances to julia.get_pgcstack)" begin
+    @testset "fdict set clears the '#' wall (advances to IRSelect const-cond)" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
@@ -82,9 +83,12 @@ end
         end
         @test threw                                    # DOES still throw (next wall)
         @test !occursin("contains '#'", msg)           # but NOT the '#' reject
-        # the successor wall is `julia.get_pgcstack` (bead bennettvm-p81t). When
-        # p81t lands this assert flips — intended.
-        @test occursin("julia.get_pgcstack", msg)
+        # bead bennettvm-p81t (2026-07-10) cleared the julia.get_pgcstack SoftCall
+        # reject AND the negative-offset GEP guard; the successor wall is now the
+        # const-cond IRSelect (bead bennettvm-416r.14). When THAT lands, this
+        # flips — intended.
+        @test !occursin("julia.get_pgcstack", msg)
+        @test occursin("IRSelect cond is", msg)
     end
 
     # ------------------------------------------------------------------

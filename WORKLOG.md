@@ -7,6 +7,85 @@
 
 ---
 
+## Session — 2026-07-10 — bennettvm-p81t: the Julia GC-preamble walls (get_pgcstack + negative-offset GEP)
+
+**Two co-located walls, one bead.** Downstream of 5m1t, the closed fdict set
+(`extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8}; ptr_cells=true)`,
+`fdict_d1b(a,b) = (d=Dict{Int8,Int8}(); d[a]=b; d[a])`) cleared the '#'-key wall and
+died in the Julia GC preamble, which needs TWO fixes that are useless apart:
+
+  1. **`julia.get_pgcstack` SoftCall reject.** A NULLARY named intrinsic returning
+     the per-task pgcstack pointer, appearing in 2 of 4 bodies (root + `rehash!`),
+     always a bare Symbol callee, 0 args, ret_width 64. Fell through to the SoftCall
+     allowlist: `SoftCall: unknown callee_name :julia.get_pgcstack (dest=pgcstack)`.
+  2. **Negative-offset IRPtrOffset guard.** Immediately after get_pgcstack the preamble
+     walks the current-task struct: `current_task = gep i8 %pgcstack, -152` →
+     `ptls_field = gep +168` (= pgcstack+16). The old `_lower_body_inst` IRPtrOffset arm
+     hard-errored on `offset_bytes < 0` ("no production site emits a negative offset") —
+     falsified by this exact site. A bare pgcstack fix alone just trips this next.
+
+**The dead-value proof (why a fixed constant is sound).** In `rehash!` the chain is
+`get_pgcstack → gep -152 → gep +168 → ptls_load = load(ptls_field)`, and `ptls_load`
+feeds ONLY `jl_alloc_genericmemory_unchecked`'s arg[1]=ptls, which `_lower_intrinsic_call`
+DROPS (ADR 0021 D3). No IRStore ever targets a pgcstack descendant. So the entire chain
+is STRUCTURALLY DEAD — any constant base value is sound. In the root body `current_task`
+has no consumer at all.
+
+**The TLS sentinel tier.** `TLS_BASE = 2^56` — a FIFTH address tier continuing the
+ascending convention (stack < 2^40 ≤ arena < 2^48 ≤ globals), with a 2^48-cell margin
+above GLOBAL_BASE so no real global can collide. `julia.get_pgcstack` → `Define(dest,
+TLS_BASE, :add, 0)`. Derived addresses stay in-tier: `current_task = TLS_BASE-152`,
+`ptls_field = TLS_BASE+16`. Since `TLS_BASE+16 ≥ GLOBAL_BASE`, the one surviving IRLoad
+reads the read-only globals ROM (`s.globals.cells`, NOT `s.memory`) with the absent=0
+convention — confirmed by the micro round-trip (test d): `pl == 0`, and the ROUND-TRIP
+still drains to empty history because the load is reversed by L3 checkpoint-replay.
+
+**The gc_loaded arm lift.** The old inline `julia.gc_loaded` arm (`ingest_body.jl`) had
+a comment: "A lone launder callee — lift to a set beside `_HEAP_DISPATCH` if more such
+callees arrive." `julia.get_pgcstack` IS that second callee. Lifted both to
+`_BENIGN_CELL_DISPATCH` (a Set of NON-heap runtime callees that lower to a non-injective
+`Define`, contrast `_HEAP_DISPATCH`'s `Intrinsic*` ops) + a shared `_lower_benign_cell_call`
+dispatcher, in `ingest_call.jl` beside `_HEAP_DISPATCH`. Guard ORDER preserved exactly
+(ADR 0018 §C): nondeterminism → `_HEAP_DISPATCH` → `_BENIGN_CELL_DISPATCH` → Float32 →
+SoftCall. The gc_loaded body moved VERBATIM (arity-2 + `Define(dest, _lower_ptr_operand(
+args[2]), :add, 0)`), so `test_igr3_gc_loaded_ingest.jl` stays byte-green.
+
+**Negative-offset relaxation.** Deleted the `offset_bytes >= 0` hard error; KEPT the
+whole-byte + divisibility guards (both sign-agnostic: `-152 % 1 == 0` lowers,
+`-3 % 2 != 0` still fails loud). `Define(dest, base, :add, idx)` is exact signed pointer
+arithmetic. A taint-scoped tightening (reject negative EXCEPT on a pgcstack-derived ptr)
+was considered and DEFERRED until a second negative-GEP source appears — a single blanket
+relaxation is the senior-grade choice while this is the only producer. This INVERTED the
+old `test_ptroffset.jl` (7) THROW assertion → rewrote it to pin the lower (element -2)
+plus a kept negative-sub-element divisibility reject.
+
+**Directional coupling check (rationale).** BennettVM MODELS `_BENIGN_CELL_DISPATCH`;
+Bennett's `_D1B_BENIGN_INTRINSIC_PREFIXES` (`julia_set.jl:45-74`, a PREFIX tuple carrying
+both `"julia.gc_"` and `"julia.get_pgcstack"`) must TOLERATE each modeled callee for the
+closed-world completeness check to accept the surviving IRCall. Test (e) asserts
+`any(startswith(String(c), p) for p in prefixes)` for each `c` — a DIRECTIONAL subset:
+Bennett tolerates MORE (genuinely dropped intrinsics), so equality would be wrong.
+
+**The successor wall — empirically corrected.** After BOTH fixes the set advances and
+dies at `lower_vm: IRSelect cond is ConstOperand (dest=__v30)` — a const-cond IRSelect (filed as bennettvm-416r.14),
+its own successor bead. NOTE: the 416r.12 handoff predicted const-globals as the next
+wall; empirically the const-cond IRSelect wall precedes it. Test (f) pins the current
+message and flips when the IRSelect bead lands.
+
+**Surprise for future agents.** The micro round-trip load hits `s.globals.cells` (the
+globals ROM), NOT `s.memory` — because `TLS_BASE+16 ≥ GLOBAL_BASE` classifies as a
+globals-tier read (`memory_floor.jl` `MemoryLoad.forward`). It still returns 0 (absent)
+and still reverses cleanly, but if you ever seed a real global near 2^56 you'd alias the
+TLS tier — the 2^48-cell margin is what keeps them disjoint.
+
+**Files.** `src/ir/ingest_call.jl` (+`TLS_BASE`, `_BENIGN_CELL_DISPATCH`,
+`_lower_benign_cell_call`); `src/ir/ingest_body.jl` (set-dispatch arm replacing the inline
+gc_loaded arm; relaxed IRPtrOffset guard); `test/test_p81t_pgcstack.jl` (new, 31 asserts);
+flipped pins in `test_5m1t_content_addressed_keys.jl` (b), `test_ptroffset.jl` (7),
+`test_416r12_jl_alloc_genericmemory.jl` (5) comment; registered in `runtests.jl`.
+
+---
+
 ## Session — 2026-07-10 — bennettvm-5m1t: content-addressed Julia-set keys (CW-D, blocker 0 cleared)
 
 **The wall.** `lower_vm(::Vector{Pair{Symbol,ParsedIR}})` could not ingest a Bennett

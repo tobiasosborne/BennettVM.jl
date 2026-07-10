@@ -223,17 +223,39 @@ end
     end
 
     # =================================================================
-    # (7) FAIL-LOUD: a negative offset_bytes (defensive — no mem=:vm site
-    #     emits one, but a GEP below the alloca base is malformed and must
-    #     not silently misaddress; hostile-review nit, bead `bennettvm-b5x`).
+    # (7) NEGATIVE offset_bytes now LOWERS (bead `bennettvm-p81t`, 2026-07-10):
+    #     the Julia GC preamble walks the current-task struct via
+    #     `gep i8 %pgcstack, -152` under ptr_cells, so a negative GEP is
+    #     legitimate. `Define(dest, base, :add, idx)` is exact signed pointer
+    #     arithmetic. The old hard `offset_bytes >= 0` reject was removed; the
+    #     SIGN-AGNOSTIC divisibility guard is KEPT (a negative sub-element
+    #     offset still fails loud).
     # =================================================================
-    @testset "(7) negative offset_bytes rejects loud" begin
+    @testset "(7) negative offset_bytes lowers (p81t); divisibility still loud" begin
+        # -8 bytes over i32 (4-byte) elements → element index -2 (exact).
+        blk = Bennett.IRBasicBlock(
+            :entry,
+            Bennett.IRInst[
+                Bennett.IRAlloca(:__arr, 32, Bennett.ConstOperand(4)),
+                Bennett.IRPtrOffset(:__gep, Bennett.SSAOperand(:__arr), -8, 32),
+            ],
+            Bennett.IRRet(Bennett.SSAOperand(:__gep), 32))
+        parsed = Bennett.ParsedIR(32, [(:__x, 32)], [blk], [32])
+        vm = lower_vm(parsed; opts=:ptroffset)
+        defs = [i for i in first(vm.blocks).instructions
+                if i isa BennettVM.Define && i.target == :__gep]
+        @test length(defs) == 1
+        @test defs[1].lhs == :__arr
+        @test defs[1].op == :add
+        @test defs[1].rhs == Int64(-2)        # -8 ÷ (32÷8) = -2 (exact signed)
+
+        # a NEGATIVE sub-element offset (-3 bytes, i16 = 2-byte elems) STILL
+        # fails loud: the sign-agnostic divisibility guard is kept.
         e = _ptroff_raise(
-            [Bennett.IRAlloca(:__arr, 32, Bennett.ConstOperand(4)),
-             Bennett.IRPtrOffset(:__gep, Bennett.SSAOperand(:__arr), -8, 32)],
-            Bennett.IRRet(Bennett.SSAOperand(:__arr), 32))
+            [Bennett.IRAlloca(:__a2, 16, Bennett.ConstOperand(4)),
+             Bennett.IRPtrOffset(:__g2, Bennett.SSAOperand(:__a2), -3, 16)],
+            Bennett.IRRet(Bennett.SSAOperand(:__a2), 32))
         @test e isa ErrorException
-        @test occursin("negative", e.msg)
-        @test occursin("IRPtrOffset", e.msg)
+        @test occursin("not evenly divisible", e.msg)
     end
 end

@@ -563,12 +563,26 @@ using BennettVM
     # and the guard-5 call site sanitises the closure '#' (`_vm_dispatch_name`)
     # so the two converge; closure barenames (`#9`) sanitise to '.' (a char
     # `nameof` can never produce). Pins the de-digest helper, the real fdict set
-    # clearing the '#' wall + advancing to the `julia.get_pgcstack` successor
-    # wall (bead `bennettvm-p81t`), a hand-built digested 2-body lower + full
+    # clearing the '#' wall + advancing past the `julia.get_pgcstack` wall
+    # (cleared by bead `bennettvm-p81t`) to the const-cond IRSelect successor
+    # wall, a hand-built digested 2-body lower + full
     # round-trip, the closure-barename sanitise, the same-bare collision
     # fail-loud, and the entry-kwarg dual-form acceptance. Sits right after its
     # Symbol-callee ingest sibling (shares the guard-5 surface).
     include("test_5m1t_content_addressed_keys.jl")
+    # bead `bennettvm-p81t` (CW-D): the Julia GC-preamble walls. Downstream of
+    # 5m1t, the closed fdict set dies at `julia.get_pgcstack` (a nullary named
+    # intrinsic returning the per-task pgcstack ptr — no VM meaning) and at the
+    # negative-offset GEP (`gep i8 %pgcstack, -152` current-task walk). Lifts
+    # `julia.get_pgcstack` (+ the `julia.gc_loaded` launder) to
+    # `_BENIGN_CELL_DISPATCH` → `Define(dest, TLS_BASE, :add, 0)` at a fixed
+    # 2^56 TLS-sentinel cell, and relaxes the IRPtrOffset guard to admit
+    # negative offsets (keeping the sign-agnostic divisibility guard). Pins the
+    # TLS Define shape, arity fail-loud, the negative-offset lower + divisibility
+    # reject, a micro GC-preamble round-trip (zero-init globals read), the
+    # directional Bennett-tolerance coupling, and the real fdict set advancing
+    # to the const-cond IRSelect successor wall. Sits after 5m1t (its upstream).
+    include("test_p81t_pgcstack.jl")
     # CW-C3 (bead `bennettvm-416r.10`): THE STORY DEMO — a normal C hash-table
     # program (clang -O0 .ll) executes and REVERSES on the VM, bit-for-bit
     # against its native golden master (`test/reference/c/GOLDEN.txt`). The first
