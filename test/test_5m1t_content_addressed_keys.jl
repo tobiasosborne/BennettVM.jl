@@ -22,8 +22,10 @@
 #
 # The REAL fdict set now clears the '#' wall and advances past the
 # `julia.get_pgcstack` + negative-offset GC-preamble walls (both cleared by
-# bead `bennettvm-p81t`, 2026-07-10) to the const-cond IRSelect wall (bead
-# `bennettvm-416r.14`). Testset (b) pins that exact current successor.
+# bead `bennettvm-p81t`, 2026-07-10) AND the const-cond IRSelect wall (cleared
+# by bead `bennettvm-416r.14`, 2026-07-10) to the `IRInsertBits` wall
+# (bits-struct sret packing, Bennett-dv1z). Testset (b) pins that exact current
+# successor.
 
 using Test
 using BennettVM
@@ -65,9 +67,9 @@ end
     end
 
     # ------------------------------------------------------------------
-    # (b) the REAL fdict set clears the '#' wall, hits the get_pgcstack wall.
+    # (b) the REAL fdict set clears the '#' wall, hits the IRInsertBits wall.
     # ------------------------------------------------------------------
-    @testset "fdict set clears the '#' wall (advances to IRSelect const-cond)" begin
+    @testset "fdict set clears the '#' wall (advances to IRInsertBits)" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
@@ -84,11 +86,14 @@ end
         @test threw                                    # DOES still throw (next wall)
         @test !occursin("contains '#'", msg)           # but NOT the '#' reject
         # bead bennettvm-p81t (2026-07-10) cleared the julia.get_pgcstack SoftCall
-        # reject AND the negative-offset GEP guard; the successor wall is now the
-        # const-cond IRSelect (bead bennettvm-416r.14). When THAT lands, this
+        # reject AND the negative-offset GEP guard; bead bennettvm-416r.14
+        # (2026-07-10) cleared the const-cond IRSelect wall. The successor wall
+        # is now `IRInsertBits` (bits-struct sret packing, Bennett-dv1z) — the
+        # IRInsertBits successor bead (bennettvm-416r.15). When THAT lands, this
         # flips — intended.
         @test !occursin("julia.get_pgcstack", msg)
-        @test occursin("IRSelect cond is", msg)
+        @test !occursin("IRSelect cond is", msg)
+        @test occursin("IRInsertBits", msg)
     end
 
     # ------------------------------------------------------------------

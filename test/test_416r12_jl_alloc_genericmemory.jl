@@ -149,10 +149,14 @@ const _Bm  = Bennett
     #     `test_5m1t_content_addressed_keys.jl`). The `julia.get_pgcstack` SoftCall
     #     reject AND the negative-offset GC-preamble GEP guard are now cleared by
     #     bead `bennettvm-p81t` (2026-07-10; `_BENIGN_CELL_DISPATCH` +
-    #     `TLS_BASE`); the set now dies at a const-cond `IRSelect` wall (NOT
-    #     const-globals as the 416r.12 handoff predicted — the IRSelect const-cond
-    #     wall precedes it). Those are separate follow-up beads, NOT this bead's
-    #     scope. This test deliberately does NOT feed the full set to lower_vm.
+    #     `TLS_BASE`); the const-cond `IRSelect` wall is cleared by bead
+    #     `bennettvm-416r.14` (2026-07-10; the optimize=false unfolded
+    #     `select i1 <const>` fold to a non-injective `Define`). The set now dies
+    #     at an `IRInsertBits` wall (bits-struct sret packing, Bennett-dv1z — NOT
+    #     const-globals as the 416r.12 handoff predicted; IRExtractBits likely
+    #     right behind, const-globals later if at all). Those are separate
+    #     follow-up beads, NOT this bead's scope. This test deliberately does NOT
+    #     feed the full set to lower_vm.
     # ------------------------------------------------------------------
 
 end

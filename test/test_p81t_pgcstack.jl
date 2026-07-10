@@ -161,11 +161,13 @@ const _B  = Bennett
     end
 
     # ------------------------------------------------------------------
-    # (f) the REAL fdict set now clears BOTH the pgcstack and negative-offset
-    #     walls, advancing to the IRSelect const-cond wall (bead bennettvm-416r.14,
-    #     being filed by the orchestrator). When THAT lands, this flips.
+    # (f) the REAL fdict set now clears the pgcstack, negative-offset, AND
+    #     const-cond IRSelect walls (the last by bead bennettvm-416r.14,
+    #     2026-07-10), advancing to the `IRInsertBits` wall (bits-struct sret
+    #     packing, Bennett-dv1z — bead bennettvm-416r.15, a 416r.14
+    #     follow-up). When THAT lands, this flips.
     # ------------------------------------------------------------------
-    @testset "fdict set advances to the IRSelect wall" begin
+    @testset "fdict set advances to the IRInsertBits wall" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
@@ -180,9 +182,10 @@ const _B  = Bennett
         @test threw                                    # still throws (successor wall)
         @test !occursin("julia.get_pgcstack", msg)     # pgcstack wall CLEARED
         @test !occursin("is negative", msg)            # negative-offset wall CLEARED
-        # the successor wall is the const-cond IRSelect (bead bennettvm-416r.14, filed by the
-        # orchestrator). When it lands these two asserts flip — intended.
-        @test occursin("IRSelect cond is", msg)
-        @test occursin("ConstOperand", msg)
+        @test !occursin("IRSelect cond is", msg)       # const-cond IRSelect wall CLEARED
+        # the successor wall is `IRInsertBits` (bits-struct sret packing,
+        # Bennett-dv1z — bead bennettvm-416r.15, a 416r.14 follow-up).
+        # When it lands this assert flips — intended.
+        @test occursin("IRInsertBits", msg)
     end
 end

@@ -583,6 +583,17 @@ using BennettVM
     # directional Bennett-tolerance coupling, and the real fdict set advancing
     # to the const-cond IRSelect successor wall. Sits after 5m1t (its upstream).
     include("test_p81t_pgcstack.jl")
+    # bead `bennettvm-416r.14`: const-cond IRSelect fold. A closed-world Julia set
+    # extracted at optimize=false mirrors LLVM's UNFOLDED `select i1 <const>, t, f`
+    # (Bennett does NO IR-level fold — its circuit path folds at the GATE level;
+    # BVM the interpreter has no gate layer). The IRSelect arm now statically
+    # resolves the taken arm on a ConstOperand cond and emits the established
+    # non-injective `Define` (reversibility-neutral — both is_injective==false).
+    # Pins the fold-to-Define unit (cond 0/1/-1, SSA cond untouched), the invalid
+    # -i1-const fail-loud, fold≡materialised-select behavioral equivalence, a micro
+    # round-trip, and the real fdict set advancing to the IRInsertBits successor
+    # wall. Sits after p81t (its upstream).
+    include("test_416r14_const_cond_select.jl")
     # CW-C3 (bead `bennettvm-416r.10`): THE STORY DEMO — a normal C hash-table
     # program (clang -O0 .ll) executes and REVERSES on the VM, bit-for-bit
     # against its native golden master (`test/reference/c/GOLDEN.txt`). The first

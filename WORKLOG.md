@@ -7,6 +7,78 @@
 
 ---
 
+## Session — 2026-07-10 — bennettvm-416r.14: const-cond IRSelect fold (the optimize=false unfolded-select wall)
+
+**The wall.** Downstream of p81t, the closed fdict set
+(`extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8}; ptr_cells=true)`)
+cleared the GC-preamble walls and died at
+`lower_vm: IRSelect cond is Bennett.ConstOperand (dest=__v30)` — the IRSelect arm
+in `src/ir/ingest_body.jl` required an `SSAOperand` predicate.
+
+**The census.** 42 const-cond selects across the closed set (root 10, rehash! 9,
+ht_keyindex2 23; setindex! 0) vs **69 SSA-cond selects** (untouched by this fix).
+Cond encoding in-corpus: `ConstOperand(0)` ×41 (LLVM i1 `false` → false arm op2)
+and `ConstOperand(-1)` ×1 (LLVM sign-extended i1 `true` → true arm op1, whose taken
+arm is itself `ConstOperand(0)`). A bare `1` never appears in-corpus, but `1` MUST
+be accepted (i1 `true`). All widths 64.
+
+**Origin — the optimize=false caveat (Bennett Rule 5).** These are literal
+`select i1 false, i64 0, i64 %x` in the −O0 IR of Base `Dict` internals.
+instcombine would fold them at `optimize=true`, but the project mandates
+`optimize=false` for predictable IR (Bennett Rule 5). Bennett does NO IR-level fold:
+its **circuit** path folds these DOWNSTREAM at the GATE level via `_fold_constants`
+(the utzc pruner only touches dead-block terminators). BVM is an interpreter with
+**no gate layer**, so the const-cond select reaches ingest un-folded — hence the wall.
+Consequence for the fold: it must be a **no-op when absent** (an SSA-cond select is
+byte-identical to before; only the `ConstOperand`-cond branch is new).
+
+**The fold.** Single touch point: the IRSelect arm gets a `ConstOperand`-cond branch
+BEFORE the `SSAOperand` requirement. It statically resolves the taken arm
+(`(c & 1) == 1 ? op1 : op2`) and emits the established non-injective
+`Define(dest, lowered(taken), :add, 0)` — the same p81t Define idiom.
+
+  * **Reversibility-neutral.** Both `Define` and `SelectInstruction` are
+    `is_injective == false` (`src/history/Injective.jl`), reversed by the SAME L3
+    checkpoint-replay. Swapping one non-injective create for another changes nothing
+    about the reversal machinery.
+  * **The `(c & 1) == 1` predicate ≡ the interpreter's `cond != 0`.** On the i1
+    whitelist {0,1,−1}: `c != 0` → {false,true,true}; `(c & 1)==1` → {false,true,true}.
+    Identical — so the fold is behaviorally identical to the select it replaces
+    (proven directly by testset (c): the folded `Define` and a hand-built
+    `SelectInstruction` with the cond materialised into a local write the same dest
+    value for every `c ∈ {0,1,−1}`).
+  * **NO width masking.** `SelectInstruction.forward` never masks its arms, so the
+    fold must not either — it emits a default-width-64 identity copy. (Also correct
+    for the width==0 pointer sentinel: pointers are Int64 cells.)
+  * **False-path-safe by construction.** The UNTAKEN arm is NEVER `_lower_operand`'d
+    — if it names a dead SSA value on a pruned edge, this fold references nothing.
+  * **Fail-loud (Rule 1):** a cond value outside {0,1,−1} (e.g. `ConstOperand(2)`)
+    errors with "not a valid i1 constant" — a non-boolean select cond is malformed
+    or unmodelled IR.
+
+**The TWICE-corrected successor wall.** The 416r.12 handoff predicted the successor
+would be a const-globals guard. Empirically it was the const-cond IRSelect (this
+bead). After THIS fold, the real set advances to
+`lower_vm: unsupported IRInst body subtype Bennett.IRInsertBits` — the CONFIRMED
+successor (filed as bennettvm-416r.15; bits-struct sret packing, Bennett-dv1z; `IRExtractBits` likely right
+behind, const-globals later if at all). Do NOT trust wall predictions; run the set.
+
+**Tests.** New `test/test_416r14_const_cond_select.jl` (56 asserts): fold-to-Define
+unit (0/1/−1 + SSA-cond untouched), invalid-i1-const fail-loud, fold≡materialised-select
+behavioral equivalence, a micro round-trip (P0.6), and the real set advancing to the
+IRInsertBits wall. Flipped the two existing wall-pins (`test_5m1t` (b), `test_p81t` (f))
+from `occursin("IRSelect cond is")` → `occursin("IRInsertBits")`, and updated the
+`test_416r12` point-(5) comment.
+
+**Gotcha for the next agent.** BVM test files that lack a top-of-file `using Test`
+(e.g. `test_select.jl`) or that reference helpers defined in `runtests.jl`
+(`per_step_inverse_check` in `test_collatz_roundtrip.jl`) CANNOT be run standalone —
+they error with `@testset not defined` / `UndefVarError`. That is a harness artifact,
+NOT a regression. `test_collatz_forward.jl` (26/26) and `test_opcode_coverage.jl`
+(86/86) DO run standalone and were the SSA-cond-select regression witnesses here.
+
+---
+
 ## Session — 2026-07-10 — bennettvm-p81t: the Julia GC-preamble walls (get_pgcstack + negative-offset GEP)
 
 **Two co-located walls, one bead.** Downstream of 5m1t, the closed fdict set

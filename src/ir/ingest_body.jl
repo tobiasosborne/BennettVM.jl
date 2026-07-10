@@ -117,10 +117,39 @@ function _lower_body_inst(inst::Bennett.IRInst,
         return Define(inst.dest, _lower_operand(inst.op1), inst.predicate,
                       _lower_operand(inst.op2), inst.width)
     elseif inst isa Bennett.IRSelect
+        if inst.cond isa Bennett.ConstOperand
+            # Const-cond fold (bead bennettvm-416r.14). A closed-world Julia set
+            # extracted at optimize=false mirrors LLVM's UNFOLDED
+            # `select i1 <const>, t, f` verbatim — Bennett does NO IR-level fold
+            # (its circuit path folds these at the GATE level via _fold_constants;
+            # BVM the interpreter has no gate layer). Statically resolve the taken
+            # arm and emit the established non-injective Define create (Define and
+            # SelectInstruction are both is_injective==false, reversed by the SAME
+            # L3 checkpoint-replay — reversibility-neutral; cf. the p81t Define
+            # idiom, ingest_call.jl). i1 const encoding: 0 (false), 1, or
+            # sign-extended -1 (true) — mask to the low bit; on this whitelist
+            # `(c & 1) == 1` equals the interpreter's own `cond != 0` predicate
+            # (select_instruction.jl), so the fold is behaviorally identical to the
+            # select it replaces. NO width masking: SelectInstruction never masks
+            # its arms, so the fold must not either (default-width-64 identity
+            # copy; also correct for the width==0 ptr sentinel — pointers are
+            # Int64 cells). The UNTAKEN arm is NEVER resolved — if it names a
+            # dead SSA value on a pruned edge this fold references nothing
+            # (false-path-safe by construction).
+            c = Int64(inst.cond.value)
+            c in (Int64(0), Int64(1), Int64(-1)) ||
+                error("lower_vm: IRSelect const cond value ", c, " (dest=", inst.dest,
+                      ") is not a valid i1 constant (expected 0, 1, or sign-extended ",
+                      "-1). A non-boolean select condition is a malformed or ",
+                      "unmodelled IR shape (bead bennettvm-416r.14; Rule 1 fail-loud).")
+            taken = (c & Int64(1)) == Int64(1) ? inst.op1 : inst.op2
+            return Define(inst.dest, _lower_operand(taken), :add, Int64(0))
+        end
         inst.cond isa Bennett.SSAOperand ||
             error("lower_vm: IRSelect cond is ", typeof(inst.cond),
                   " (dest=", inst.dest, "); ADR 0012 §D3 requires an ",
-                  "SSAOperand predicate produced by an upstream IRICmp.")
+                  "SSAOperand predicate produced by an upstream IRICmp, or a ",
+                  "ConstOperand folded statically (bead bennettvm-416r.14).")
         # op1 is the TRUE arm, op2 the FALSE arm — Bennett.jl pins this
         # (Bennett.jl/src/ir_types.jl:89-93: `op1::IROperand # true value`,
         # `op2::IROperand # false value`), matching LLVM `select i1 c, t, f`
