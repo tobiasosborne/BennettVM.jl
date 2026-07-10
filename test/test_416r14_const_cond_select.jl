@@ -164,12 +164,13 @@ const _B  = Bennett
     end
 
     # ------------------------------------------------------------------
-    # (e) the REAL fdict set clears the const-cond IRSelect wall and advances
-    #     to the IRInsertBits successor wall (bits-struct sret packing,
-    #     Bennett-dv1z). ~2 min (full closed-world extraction). When the
-    #     IRInsertBits successor bead (416r.14 follow-up) lands, this flips.
+    # (e) the REAL fdict set clears the const-cond IRSelect wall AND the
+    #     IRInsertBits bits-struct sret wall (bead bennettvm-416r.15,
+    #     Bennett-dv1z), advancing to the aggregate-RETURN reject (the multi-key
+    #     return keyed off ret_elem_widths is the follow-on bead bennettvm-x3t0).
+    #     ~2 min (full closed-world extraction). When it lands, this flips.
     # ------------------------------------------------------------------
-    @testset "fdict set advances to the IRInsertBits wall" begin
+    @testset "fdict set advances to the aggregate-return wall" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
@@ -183,6 +184,7 @@ const _B  = Bennett
         end
         @test threw                                    # still throws (successor wall)
         @test !occursin("IRSelect cond is", msg)       # const-cond IRSelect wall CLEARED
-        @test occursin("IRInsertBits", msg)            # the successor wall
+        @test !occursin("IRInsertBits", msg)           # IRInsertBits wall CLEARED (416r.15)
+        @test occursin("returns aggregate SSA value", msg)  # aggregate-return wall
     end
 end

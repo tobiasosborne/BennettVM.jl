@@ -424,6 +424,18 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
     # constant args never collide (`_call_const_arg_name`, ingest_phi.jl).
     call_const_counter = 0
 
+    # IRInsertBits chain-follower registries (bead `bennettvm-416r.15`,
+    # Bennett-dv1z). A `{i64,i8}`-style bits-struct sret value is packed as a
+    # ZERO_AGG-rooted, ASCENDING-CONTIGUOUS `IRInsertBits` chain
+    # (`_synthesize_sret_bits`, ../Bennett.jl/src/extract/sret.jl): field `k` at
+    # bit offset `sum(widths[0:k-1])`. The dense field index `k` is recovered by
+    # FOLLOWING THE CHAIN (not by parsing the bit offset arithmetic), so each
+    # IRInsertBits dest records its field index `k` (`bits_index`) and its
+    # end-bit `bit_offset + val_width` (`bits_endbit`) for the next insert's
+    # contiguity check. Monotone within one function.
+    bits_index  = Dict{Symbol,Int}()   # InsertBits dest → dense field index k
+    bits_endbit = Dict{Symbol,Int}()   # InsertBits dest → bit_offset + val_width
+
     # Aggregate-dest registry (bead `bennettvm-acq`, OPCODE G2). Every
     # `IRInsertValue.dest` is an SSA name bound to an aggregate VALUE that this
     # pass DECOMPOSES into a per-slot `Define` family (no scalar key of its own
@@ -436,9 +448,16 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
     # aggregate-return reject (a decomposed aggregate name must NOT dangle into
     # the single-symbol `EndInstruction.returns` — the multi-key return is the
     # follow-on bead).
+    # Both IRInsertValue (ArrayType `[N x iW]`) AND IRInsertBits (heterogeneous
+    # `{i64,i8}`-style bits-struct sret packing, Bennett-dv1z; bead
+    # `bennettvm-416r.15`) build per-slot `_agg_slot_name` families, so BOTH
+    # dest kinds are aggregate dests: a later IRExtractValue may read either
+    # family, and a later aggregate-return IRRet of either fails loud (the
+    # multi-key return, bead `bennettvm-x3t0`, is the follow-on).
     agg_dests = Set{Symbol}(inst.dest for b in blocks
                             for inst in b.instructions
-                            if inst isa Bennett.IRInsertValue)
+                            if inst isa Bennett.IRInsertValue ||
+                               inst isa Bennett.IRInsertBits)
 
     # --- Phase 2: original blocks (entry block first). ---
     # Internal lookups use RAW `b.label` (`raw_entry_label`); the VMProgram-
@@ -714,6 +733,61 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
                 push!(body, Define(inst.dest,
                                    _agg_slot_name(inst.agg.name, inst.index),
                                    :add, Int64(0)))
+            elseif inst isa Bennett.IRInsertBits
+                # `{i64,i8}`-style bits-struct sret packing (Bennett-dv1z; bead
+                # `bennettvm-416r.15`) → the SAME per-field slot family as
+                # IRInsertValue (bead `bennettvm-acq`). Each field lives in its
+                # OWN Int64 cell, so `total_width > 64` (72 here) is a NON-issue:
+                # the packed value is NEVER materialised, only the per-field
+                # scalars are. The dense field index `k` comes from FOLLOWING THE
+                # CHAIN — `_synthesize_sret_bits`
+                # (../Bennett.jl/src/extract/sret.jl) guarantees ZERO_AGG-rooted
+                # ASCENDING-CONTIGUOUS chains (fields tile `[0, total_width)` in
+                # field order). `k` matches `ret_elem_widths` field order, so the
+                # eventual multi-key return (bead `bennettvm-x3t0`) treats
+                # IRInsertBits and IRInsertValue families identically. A PARTIAL
+                # chain (higher fields never inserted) leaves higher slots
+                # undefined — a downstream `resolve!` fails loud rather than
+                # silently zero-filling; the sret synthesizer never emits partial
+                # chains (Rule 1). Non-injective `Define` copies, reversed by L3
+                # checkpoint-replay — the exact reversibility contract the
+                # IRInsertValue slot family already carries.
+                local k::Int
+                if inst.agg === Bennett.ZERO_AGG
+                    inst.bit_offset == 0 || error(
+                        "lower_vm: IRInsertBits ZERO_AGG-rooted insert has ",
+                        "bit_offset=", inst.bit_offset, " ≠ 0 (dest=", inst.dest,
+                        ") — a contiguous chain must start at bit 0 (bead ",
+                        "`bennettvm-416r.15`, Rule 1 fail-loud).")
+                    k = 0
+                elseif inst.agg isa Bennett.SSAOperand &&
+                       haskey(bits_index, inst.agg.name)
+                    inst.bit_offset == bits_endbit[inst.agg.name] || error(
+                        "lower_vm: IRInsertBits bit_offset=", inst.bit_offset,
+                        " (dest=", inst.dest, ") is not contiguous with the ",
+                        "prior field end ", bits_endbit[inst.agg.name], " — only ",
+                        "ascending-contiguous bits-struct chains ",
+                        "(_synthesize_sret_bits) are modelled (bead ",
+                        "`bennettvm-416r.15`, Rule 1 fail-loud).")
+                    k = bits_index[inst.agg.name] + 1
+                    # Inherit prior fields (READ from `agg`'s slot family, not
+                    # consumed — SSA values persist for later use).
+                    for j in 0:(k - 1)
+                        push!(body, Define(_agg_slot_name(inst.dest, j),
+                                           _agg_slot_name(inst.agg.name, j),
+                                           :add, Int64(0)))
+                    end
+                else
+                    error("lower_vm: IRInsertBits agg is ", typeof(inst.agg),
+                          " (dest=", inst.dest, ") — expected ZERO_AGG or an ",
+                          "SSAOperand naming a prior IRInsertBits dest (an ",
+                          "unmodelled bits-struct shape; bead ",
+                          "`bennettvm-416r.15`, Rule 1 fail-loud).")
+                end
+                push!(body, Define(_agg_slot_name(inst.dest, k),
+                                   _lower_operand(inst.val), :add, Int64(0)))
+                bits_index[inst.dest]  = k
+                bits_endbit[inst.dest] = inst.bit_offset + inst.val_width
             elseif inst isa Bennett.IRCall &&
                    haskey(functions, _callee_sym(inst.callee)) &&
                    any(a -> a isa Bennett.ConstOperand, inst.args)

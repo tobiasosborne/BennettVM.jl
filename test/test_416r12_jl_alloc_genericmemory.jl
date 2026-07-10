@@ -151,12 +151,16 @@ const _Bm  = Bennett
     #     bead `bennettvm-p81t` (2026-07-10; `_BENIGN_CELL_DISPATCH` +
     #     `TLS_BASE`); the const-cond `IRSelect` wall is cleared by bead
     #     `bennettvm-416r.14` (2026-07-10; the optimize=false unfolded
-    #     `select i1 <const>` fold to a non-injective `Define`). The set now dies
-    #     at an `IRInsertBits` wall (bits-struct sret packing, Bennett-dv1z — NOT
-    #     const-globals as the 416r.12 handoff predicted; IRExtractBits likely
-    #     right behind, const-globals later if at all). Those are separate
-    #     follow-up beads, NOT this bead's scope. This test deliberately does NOT
-    #     feed the full set to lower_vm.
+    #     `select i1 <const>` fold to a non-injective `Define`). The `IRInsertBits`
+    #     bits-struct sret wall (packing, Bennett-dv1z — NOT const-globals as the
+    #     416r.12 handoff predicted) is now cleared by bead `bennettvm-416r.15`
+    #     (2026-07-10; chain-follower slot decomposition — and there is NO
+    #     IRExtractBits: unpacking happens at the return ABI via ret_elem_widths).
+    #     The set now dies at the aggregate-RETURN reject (the terminal
+    #     IRInsertBits dest dangles into a single-symbol End; the multi-key return
+    #     keyed off ret_elem_widths is the follow-on bead `bennettvm-x3t0`).
+    #     Those are separate follow-up beads, NOT this bead's scope. This test
+    #     deliberately does NOT feed the full set to lower_vm.
     # ------------------------------------------------------------------
 
 end

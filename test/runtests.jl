@@ -594,6 +594,18 @@ using BennettVM
     # round-trip, and the real fdict set advancing to the IRInsertBits successor
     # wall. Sits after p81t (its upstream).
     include("test_416r14_const_cond_select.jl")
+    # bead `bennettvm-416r.15` (CW-D): IRInsertBits bits-struct sret packing
+    # (Bennett-dv1z). The closed fdict set's `ht_keyindex2_shorthash!` packs a
+    # `{i64,i8}` = (hash, slot) return as a ZERO_AGG-rooted ascending-contiguous
+    # IRInsertBits chain; this arm decomposes it into the SAME per-field slot
+    # family as IRInsertValue (bead `bennettvm-acq`), the chain-follower field
+    # index dissolving the total_width>64 crux (each field is its own Int64
+    # cell). Pins the {i64,i8} build-via-IRInsertBits / read-via-IRExtractValue
+    # round-trip, the contiguity fail-loud guards, the ≤64 uniform path, the
+    # exact slot-assignment (field-order) spot check, and the real fdict set
+    # advancing to the aggregate-RETURN wall (follow-on bead bennettvm-x3t0).
+    # Sits after 416r14 (its upstream). ~2.5 min (the real-set extraction).
+    include("test_416r15_insertbits.jl")
     # CW-C3 (bead `bennettvm-416r.10`): THE STORY DEMO — a normal C hash-table
     # program (clang -O0 .ll) executes and REVERSES on the VM, bit-for-bit
     # against its native golden master (`test/reference/c/GOLDEN.txt`). The first

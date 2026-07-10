@@ -161,13 +161,14 @@ const _B  = Bennett
     end
 
     # ------------------------------------------------------------------
-    # (f) the REAL fdict set now clears the pgcstack, negative-offset, AND
-    #     const-cond IRSelect walls (the last by bead bennettvm-416r.14,
-    #     2026-07-10), advancing to the `IRInsertBits` wall (bits-struct sret
-    #     packing, Bennett-dv1z — bead bennettvm-416r.15, a 416r.14
-    #     follow-up). When THAT lands, this flips.
+    # (f) the REAL fdict set now clears the pgcstack, negative-offset,
+    #     const-cond IRSelect (bead bennettvm-416r.14), AND IRInsertBits
+    #     bits-struct sret (bead bennettvm-416r.15, Bennett-dv1z) walls,
+    #     advancing to the aggregate-RETURN reject (the multi-key return keyed
+    #     off ret_elem_widths is the follow-on bead bennettvm-x3t0). When THAT
+    #     lands, this flips.
     # ------------------------------------------------------------------
-    @testset "fdict set advances to the IRInsertBits wall" begin
+    @testset "fdict set advances to the aggregate-return wall" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
@@ -183,9 +184,11 @@ const _B  = Bennett
         @test !occursin("julia.get_pgcstack", msg)     # pgcstack wall CLEARED
         @test !occursin("is negative", msg)            # negative-offset wall CLEARED
         @test !occursin("IRSelect cond is", msg)       # const-cond IRSelect wall CLEARED
-        # the successor wall is `IRInsertBits` (bits-struct sret packing,
-        # Bennett-dv1z — bead bennettvm-416r.15, a 416r.14 follow-up).
-        # When it lands this assert flips — intended.
-        @test occursin("IRInsertBits", msg)
+        @test !occursin("IRInsertBits", msg)            # IRInsertBits wall CLEARED (416r.15)
+        # the successor wall is the aggregate-RETURN reject (the terminal
+        # IRInsertBits dest dangles into a single-symbol End; the multi-key
+        # return keyed off ret_elem_widths is the follow-on bead
+        # bennettvm-x3t0). When it lands this assert flips — intended.
+        @test occursin("returns aggregate SSA value", msg)
     end
 end

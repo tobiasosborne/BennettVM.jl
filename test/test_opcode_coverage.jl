@@ -152,15 +152,16 @@ end
 @testset "IRInst opcode coverage (bennettvm-d7t; mirrors docs/coverage-matrix.md)" begin
 
     # =================================================================
-    # (0) The taxonomy itself: 20 concrete IRInst subtypes, 18/0/2
-    #     (DONE/GAP/N-A) as of bead `bennettvm-acq` + Bennett-6bu3 (the
-    #     aggregate pair IRInsertValue/IRExtractValue moved GAP → DONE at
-    #     `acq`; IRInsertBits — the 20th subtype, Bennett-dv1z — is N/A like
-    #     IRSwitch, never reaching BVM). coverage-matrix.md "The taxonomy" +
-    #     Tally. We assert the COUNT (20) against the LIVE Bennett.jl type tree
-    #     so a Bennett.jl pin bump that adds / removes a subtype trips here (and
-    #     forces a matrix re-audit). The count moved 19→20 with Bennett-6bu3
-    #     reconciling the pre-existing dv1z IRInsertBits drift.
+    # (0) The taxonomy itself: 20 concrete IRInst subtypes, 19/0/1
+    #     (DONE/GAP/N-A) as of bead `bennettvm-416r.15` (the aggregate pair
+    #     IRInsertValue/IRExtractValue moved GAP → DONE at `acq`; IRInsertBits —
+    #     the 20th subtype, Bennett-dv1z — moved N/A → DONE at `416r.15`, now
+    #     reaching BVM via the bits-struct sret chain-follower slot family; only
+    #     IRSwitch remains N/A). coverage-matrix.md "The taxonomy" + Tally. We
+    #     assert the COUNT (20) against the LIVE Bennett.jl type tree so a
+    #     Bennett.jl pin bump that adds / removes a subtype trips here (and forces
+    #     a matrix re-audit). The count moved 19→20 with Bennett-6bu3 reconciling
+    #     the pre-existing dv1z IRInsertBits drift.
     # =================================================================
     @testset "(0) 20 concrete IRInst subtypes (matrix taxonomy)" begin
         concrete = filter(isconcretetype,
@@ -172,10 +173,12 @@ end
         # pre-existing dv1z drift that made this testset RED). These ingest 1:1
         # to the VM-side IRMap* ops (src/ir/revmap.jl); see the DONE rows below.
         # IRInsertBits is SYNTHESISED by Bennett.jl's sret path
-        # (_synthesize_sret_bits) and NEVER reaches BennettVM (sret aggregate
-        # returns are rejected upstream of BVM), so it adds a concrete subtype
-        # but no lower_vm coverage row — N/A, like IRSwitch. The pin moves in
-        # lockstep with Bennett.jl's test_q04a subtype pin (also 20).
+        # (_synthesize_sret_bits) as a ZERO_AGG-rooted ascending-contiguous
+        # `{i64,i8}` bits-struct chain; bead `bennettvm-416r.15` lowers it at the
+        # ingest.jl call site into the SAME per-field `_agg_slot_name` slot family
+        # as IRInsertValue (chain-follower field index), so it is now DONE (see
+        # test_416r15_insertbits.jl). The pin moves in lockstep with Bennett.jl's
+        # test_q04a subtype pin (also 20).
         @test length(concrete) == 20
         # Every subtype this file references must be one of them (no typo'd
         # phantom type slips through as `Bennett.IRWhatever <: Any`).

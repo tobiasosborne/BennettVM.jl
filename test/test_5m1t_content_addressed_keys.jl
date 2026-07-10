@@ -67,9 +67,9 @@ end
     end
 
     # ------------------------------------------------------------------
-    # (b) the REAL fdict set clears the '#' wall, hits the IRInsertBits wall.
+    # (b) the REAL fdict set clears the '#' wall, hits the aggregate-return wall.
     # ------------------------------------------------------------------
-    @testset "fdict set clears the '#' wall (advances to IRInsertBits)" begin
+    @testset "fdict set clears the '#' wall (advances to aggregate-return)" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
@@ -87,13 +87,16 @@ end
         @test !occursin("contains '#'", msg)           # but NOT the '#' reject
         # bead bennettvm-p81t (2026-07-10) cleared the julia.get_pgcstack SoftCall
         # reject AND the negative-offset GEP guard; bead bennettvm-416r.14
-        # (2026-07-10) cleared the const-cond IRSelect wall. The successor wall
-        # is now `IRInsertBits` (bits-struct sret packing, Bennett-dv1z) — the
-        # IRInsertBits successor bead (bennettvm-416r.15). When THAT lands, this
-        # flips — intended.
+        # (2026-07-10) cleared the const-cond IRSelect wall; bead bennettvm-416r.15
+        # (2026-07-10) cleared the IRInsertBits bits-struct sret wall (Bennett-dv1z).
+        # The successor wall is now the aggregate-RETURN reject — the terminal
+        # IRInsertBits dest dangles into a single-symbol EndInstruction.returns;
+        # the multi-key return (keyed off ret_elem_widths) is the follow-on bead
+        # bennettvm-x3t0. When THAT lands, this flips — intended.
         @test !occursin("julia.get_pgcstack", msg)
         @test !occursin("IRSelect cond is", msg)
-        @test occursin("IRInsertBits", msg)
+        @test !occursin("IRInsertBits", msg)           # IRInsertBits wall CLEARED
+        @test occursin("returns aggregate SSA value", msg)
     end
 
     # ------------------------------------------------------------------

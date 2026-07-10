@@ -7,6 +7,87 @@
 
 ---
 
+## Session — 2026-07-10 — bennettvm-416r.15: IRInsertBits bits-struct sret packing (the {i64,i8} wall)
+
+**The wall.** Downstream of 416r.14, the closed fdict set
+(`extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8}; ptr_cells=true)`)
+cleared the const-cond IRSelect wall and died at
+`lower_vm: unsupported IRInst body subtype Bennett.IRInsertBits` — the
+`_lower_body_inst` catch-all in `src/ir/ingest_body.jl`.
+
+**The bead hypothesis was FALSIFIED (no IRExtractBits).** The 416r.12 / 416r.14
+handoff notes predicted an `IRExtractBits` wall "right behind" IRInsertBits.
+There is NO IRExtractBits anywhere in Bennett — packing only. Unpacking a
+bits-struct return happens at the RETURN ABI via `ret_elem_widths` (Bennett's
+`_read_output` consumes the widths contiguously in field order), never as an
+instruction. So the successor is NOT IRExtractBits; it is the aggregate-RETURN
+reject (see below).
+
+**The 5-chain census.** All 10 IRInsertBits sites live in ONE function,
+`ht_keyindex2_shorthash!`: five identical ZERO_AGG-rooted 2-insert chains,
+`(off=0, vw=64, tw=72)` then `(off=64, vw=8, tw=72)` — a `{i64, i8}` = `(hash,
+slot)` tuple. Each terminal dest is consumed by exactly one `IRRet(dest, 72)`
+with `ret_elem_widths = [64, 8]`. The values are never stored / passed /
+re-extracted. All bit offsets are compile-time `Int` fields. (A sixth return
+site forwards a 72-bit value from a self-recursive call — `IRRet(__v207, 72)`,
+NOT an InsertBits site; out of scope.)
+
+**Why per-field slots dissolve the `total_width > 64` crux.** `IState.locals`
+are `Int64`; a naive "pack 72 bits into one cell" would truncate. But
+IRInsertValue (bead `bennettvm-acq`) already models an aggregate as a FAMILY of
+per-field `_agg_slot_name(dest, k)` keys, one Int64 cell per field. IRInsertBits
+reuses that family verbatim: field 0 (i64) → `_agg_<dest>_slot0`, field 1 (i8) →
+`_agg_<dest>_slot1`. The packed 72-bit value is NEVER materialised — only the two
+per-field scalars are — so `total_width > 64` is a non-issue. Confirmed by test
+(c): a `{i8,i8}` tw=16 chain decomposes through the SAME path with no ≤64 special
+case.
+
+**Chain-follower vs global-partition (the design trade).** The dense field index
+`k` is recovered by FOLLOWING THE CHAIN (`ZERO_AGG ⇒ k=0`; `SSAOperand naming a
+prior IRInsertBits dest ⇒ k = prior k + 1`), NOT by parsing the bit-offset
+arithmetic into a global bit→field partition. Ground truth (Law 1):
+`_synthesize_sret_bits` (`../Bennett.jl/src/extract/sret.jl:947`) guarantees
+ZERO_AGG-rooted, ascending-contiguous chains that tile `[0, total_width)` in
+field order, `bit += w` after each field. The arm asserts BOTH invariants
+fail-loud: a ZERO_AGG insert with `bit_offset ≠ 0` ("must start at bit 0") and a
+non-contiguous next insert ("not contiguous"), plus an `agg` that is an
+SSAOperand not naming a prior IRInsertBits dest ("unmodelled bits-struct shape").
+A PARTIAL chain (higher fields never inserted) leaves higher slots undefined and
+a downstream `resolve!` fails loud rather than silently zero-filling — acceptable
+because the sret synthesizer NEVER emits partial chains (Rule 1).
+
+**Slot / ret_elem_widths field-order alignment.** `k` matches `ret_elem_widths`
+field order (field0-low / field1-high), so the eventual multi-key return (bead
+`bennettvm-x3t0`) will treat IRInsertBits and IRInsertValue slot families
+identically — one `EndInstruction.returns = [slot0, slot1, …]` keyed off the
+widths. Test (d) pins the field order structurally: `_agg_b_slot0` copies from
+`_agg_a_slot0` (inherited), `_agg_b_slot1` receives `:y` (the k=1 insert) — a
+swapped-k bug flips these.
+
+**IRExtractValue interop (the load-bearing reuse).** IRInsertBits dests are added
+to the `agg_dests` pre-scan alongside IRInsertValue, so the EXISTING
+IRExtractValue arm reads a bits-struct family with zero new code — test (a) builds
+via IRInsertBits and reads both fields via IRExtractValue, round-tripping to empty
+history. This is the proof the two slot families are one abstraction.
+
+**Confirmed successor = the aggregate-RETURN reject (bead `bennettvm-x3t0`).**
+After the fix the real set advances (empirically, ~2 min) to
+`lower_vm: IRRet returns aggregate SSA value :__vNNN — returning a [N x iW]
+aggregate is DEFERRED (bead bennettvm-acq …)`: the terminal IRInsertBits dest is
+in `agg_dests` and dangles into the single-symbol `EndInstruction.returns`. This
+is the PRE-EXISTING acq return guard (returns are out of scope here; the
+orchestrator re-scoped x3t0 for the multi-key return). Beyond that, the
+caller-side `setindex!` uses a 2-cell `sret_box` memory ABI (alloca + loads at
+cell 0 / byte 8) — a DIFFERENT, later wall (blocker 5).
+
+**Files.** `src/ir/ingest.jl` (agg_dests pre-scan +IRInsertBits; `bits_index` /
+`bits_endbit` registries; the new body arm after IRExtractValue),
+`src/ir/ingest_body.jl` (catch-all litany), `test/test_416r15_insertbits.jl`
+(new, 48 assertions), three wall-pin flips (`test_5m1t` / `test_p81t` /
+`test_416r14`) IRInsertBits → "returns aggregate SSA value", `test_416r12`
+point-(5) comment, `test_opcode_coverage` taxonomy N/A→DONE prose (count stays
+20), `test/runtests.jl` registration.
+
 ## Session — 2026-07-10 — bennettvm-416r.14: const-cond IRSelect fold (the optimize=false unfolded-select wall)
 
 **The wall.** Downstream of p81t, the closed fdict set
