@@ -159,11 +159,16 @@ const _Bm  = Bennett
     #     The aggregate-RETURN reject is now cleared by bead `bennettvm-x3t0`
     #     (2026-07-10; the multi-key aggregate return — a callee's slot-family
     #     End MOVEs into a caller's slot family, keyed off ret_elem_widths). The
-    #     set now dies at the sret_box MEMORY-ABI gate: `setindex!` calls
-    #     `ht_keyindex2` with `ret_width = 64 ≠ 72 = sum([64,8])` — the explicit
-    #     result-buffer ABI, the blocker-5 sret_box follow-up bead (filed by the
-    #     orchestrator). Those are separate follow-up beads, NOT this bead's
-    #     scope. This test deliberately does NOT feed the full set to lower_vm.
+    #     LAST static wall — the sret_box MEMORY-ABI gate (`setindex!` calls
+    #     `ht_keyindex2` with `ret_width = 64 ≠ 72 = sum([64,8])`) — is now
+    #     cleared by bead `bennettvm-416r.16` (2026-07-11): the Bennett front-end
+    #     rewrites the consumed sret-out box call to the VALUE ABI (ret_width 72,
+    #     box loads → IRExtractValue) at extraction, so `lower_vm(set)` COMPLETES.
+    #     The CW-D static-wall chain is DONE; the first RUNTIME wall is jl_global
+    #     const-global materialization (successor beads `bennettvm-416r.13` /
+    #     416r.4). See `test_5m1t` / `test_x3t0` (f) for the lower_vm-completes +
+    #     runtime-wall pins. This test deliberately does NOT feed the set to
+    #     lower_vm (it scopes the jl_alloc_genericmemory intrinsic).
     # ------------------------------------------------------------------
 
 end

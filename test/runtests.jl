@@ -617,6 +617,13 @@ using BennettVM
     # sret_box gate. Sits after 416r15 (its upstream). ~2.5 min (the real-set
     # extraction in testset (f)).
     include("test_x3t0_multikey_return.jl")
+    # bead `bennettvm-416r.16` (CW-D blocker 5, the LAST static wall): the caller-
+    # side consumed-sret reconciliation. The Bennett front-end rewrites a consumed
+    # sret-out box call to the VALUE ABI (ret_width == sum(field widths), box loads
+    # → IRExtractValue); this test pins the BVM ingest + runtime of that shape with
+    # the field reads spread ACROSS BLOCKS (cross-block slot-family liveness),
+    # full run!/unrun! round-trip vs oracle. Sits after x3t0 (its upstream ABI).
+    include("test_416r16_consumed_sret_bridge.jl")
     # CW-C3 (bead `bennettvm-416r.10`): THE STORY DEMO — a normal C hash-table
     # program (clang -O0 .ll) executes and REVERSES on the VM, bit-for-bit
     # against its native golden master (`test/reference/c/GOLDEN.txt`). The first

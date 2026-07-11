@@ -172,23 +172,18 @@ const _B  = Bennett
     #     follow-up bead). ~2 min (full closed-world extraction). When it lands,
     #     this flips.
     # ------------------------------------------------------------------
-    @testset "fdict set advances to the sret_box gate (blocker 5)" begin
+    @testset "fdict set lowers to a VMProgram (static-wall chain DONE)" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
-        threw = false
-        msg = ""
-        try
-            _BV.lower_vm(set; entry = first(set).first)
-        catch e
-            threw = true
-            msg = sprint(showerror, e)
-        end
-        @test threw                                    # still throws (successor wall)
-        @test !occursin("IRSelect cond is", msg)       # const-cond IRSelect wall CLEARED
-        @test !occursin("IRInsertBits", msg)           # IRInsertBits wall CLEARED (416r.15)
-        @test !occursin("returns aggregate SSA value", msg)  # aggregate-return wall CLEARED (x3t0)
-        @test occursin("sret_box", msg)                # the blocker-5 sret_box gate
-        @test occursin("blocker-5", msg)
+        # bead bennettvm-416r.16 (2026-07-11): the caller-side consumed-sret
+        # reconciliation cleared the LAST static wall — setindex!'s ht_keyindex2
+        # consumed sret-out box call is rewritten to the VALUE ABI (ret_width 72
+        # == sum([64,8])), so lower_vm COMPLETES. The static chain is DONE; the
+        # first RUNTIME wall is jl_global materialization (beads 416r.13 / 416r.4).
+        prog = _BV.lower_vm(set; entry = first(set).first)
+        @test prog isa _BV.VMProgram
+        @test haskey(prog.functions, :ht_keyindex2_shorthash!)
+        @test length(prog.functions[:ht_keyindex2_shorthash!].returns) == 2
     end
 end

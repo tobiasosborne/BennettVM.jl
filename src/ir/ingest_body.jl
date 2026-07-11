@@ -417,11 +417,14 @@ function _lower_body_inst(inst::Bennett.IRInst,
                           " (dest=", inst.dest, ") has ret_width=", inst.ret_width,
                           " but the callee returns a ", total,
                           "-bit aggregate (ret_elem_widths=", fe.ret_elem_widths,
-                          ") — the caller is using the sret_box buffer ABI ",
-                          "(explicit result-buffer arg; by-value portion only). ",
-                          "DEFERRED: bead bennettvm-x3t0 scopes the value-return ",
-                          "ABI (ret_width == sum); the sret_box memory ABI is the ",
-                          "blocker-5 follow-up bead bennettvm-416r.16. Rule 1 fail-loud.")
+                          ") — the front-end consumed-sret reconciliation ",
+                          "(Bennett extract/sret.jl, bennettvm-416r.16) did not ",
+                          "fire for this call — unreconciled sret_box ABI. This ",
+                          "gate is now defense-in-depth: 416r.16 rewrites a ",
+                          "consumed sret-out box call to the value ABI ",
+                          "(ret_width == sum) at extraction; reaching here means a ",
+                          "box-ABI call (ret_width ≠ sum) leaked through. Rule 1 ",
+                          "fail-loud.")
                 targets = Symbol[_agg_slot_name(inst.dest, k) for k in 0:n-1]
             end
             return CallEnter(vmname, callargs, targets)

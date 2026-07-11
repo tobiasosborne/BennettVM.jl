@@ -168,29 +168,19 @@ const _B  = Bennett
     #     off ret_elem_widths is the follow-on bead bennettvm-x3t0). When THAT
     #     lands, this flips.
     # ------------------------------------------------------------------
-    @testset "fdict set advances to the sret_box gate (blocker 5)" begin
+    @testset "fdict set lowers to a VMProgram (static-wall chain DONE)" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
-        threw = false
-        msg = ""
-        try
-            _BV.lower_vm(set; entry = first(set).first)
-        catch e
-            threw = true
-            msg = sprint(showerror, e)
-        end
-        @test threw                                    # still throws (successor wall)
-        @test !occursin("julia.get_pgcstack", msg)     # pgcstack wall CLEARED
-        @test !occursin("is negative", msg)            # negative-offset wall CLEARED
-        @test !occursin("IRSelect cond is", msg)       # const-cond IRSelect wall CLEARED
-        @test !occursin("IRInsertBits", msg)            # IRInsertBits wall CLEARED (416r.15)
-        @test !occursin("returns aggregate SSA value", msg)  # aggregate-return wall CLEARED (x3t0)
-        # the successor wall is the sret_box MEMORY-ABI gate: `setindex!` calls
-        # `ht_keyindex2` with `ret_width = 64 ≠ 72 = sum([64,8])` — the explicit
-        # result-buffer ABI, the blocker-5 sret_box bead `bennettvm-416r.16` (filed by the
-        # orchestrator). When it lands this assert flips — intended.
-        @test occursin("sret_box", msg)                # the blocker-5 sret_box gate
-        @test occursin("blocker-5", msg)
+        # bead bennettvm-416r.16 (2026-07-11) landed the caller-side consumed-sret
+        # reconciliation — the LAST static wall. setindex!'s ht_keyindex2 consumed
+        # sret-out box call is rewritten to the VALUE ABI (ret_width 72 ==
+        # sum([64,8])) at extraction, so guard-5 lands its slot family and
+        # lower_vm COMPLETES. The static-wall chain is DONE; the first RUNTIME
+        # wall is jl_global const-global materialization (beads 416r.13 / 416r.4).
+        prog = _BV.lower_vm(set; entry = first(set).first)
+        @test prog isa _BV.VMProgram
+        @test haskey(prog.functions, :ht_keyindex2_shorthash!)
+        @test length(prog.functions[:ht_keyindex2_shorthash!].returns) == 2
     end
 end

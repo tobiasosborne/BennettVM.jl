@@ -69,38 +69,23 @@ end
     # ------------------------------------------------------------------
     # (b) the REAL fdict set clears the '#' wall, hits the aggregate-return wall.
     # ------------------------------------------------------------------
-    @testset "fdict set clears the '#' wall (advances to sret_box gate)" begin
+    @testset "fdict set lowers to a VMProgram (static-wall chain DONE)" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
         # sanity: the set really carries digested keys with '#'.
         @test any(p -> occursin('#', string(p.first)), set)
-        threw = false
-        msg = ""
-        try
-            _BV.lower_vm(set; entry = first(set).first)
-        catch e
-            threw = true
-            msg = sprint(showerror, e)
-        end
-        @test threw                                    # DOES still throw (next wall)
-        @test !occursin("contains '#'", msg)           # but NOT the '#' reject
-        # bead bennettvm-p81t (2026-07-10) cleared the julia.get_pgcstack SoftCall
-        # reject AND the negative-offset GEP guard; bead bennettvm-416r.14
-        # (2026-07-10) cleared the const-cond IRSelect wall; bead bennettvm-416r.15
-        # (2026-07-10) cleared the IRInsertBits bits-struct sret wall (Bennett-dv1z);
-        # bead bennettvm-x3t0 (2026-07-10) landed the multi-key aggregate RETURN
-        # (a callee's slot-family End lands into a caller's slot family). The
-        # successor wall is now the sret_box MEMORY-ABI gate: `setindex!` calls
-        # `ht_keyindex2` with `ret_width = 64 ≠ 72 = sum([64,8])` — the explicit
-        # result-buffer ABI, the blocker-5 sret_box bead `bennettvm-416r.16` (filed by the
-        # orchestrator). When THAT lands, this flips — intended.
-        @test !occursin("julia.get_pgcstack", msg)
-        @test !occursin("IRSelect cond is", msg)
-        @test !occursin("IRInsertBits", msg)                 # IRInsertBits wall CLEARED
-        @test !occursin("returns aggregate SSA value", msg)  # aggregate-return wall CLEARED (x3t0)
-        @test occursin("sret_box", msg)                      # the blocker-5 sret_box gate
-        @test occursin("blocker-5", msg)
+        # bead bennettvm-416r.16 (2026-07-11) landed the caller-side consumed-sret
+        # reconciliation — the LAST static wall of the CW-D fdict chain. The
+        # front-end rewrites `setindex!`'s `ht_keyindex2` consumed sret-out box
+        # call to the VALUE ABI (`ret_width = 72 = sum([64,8])`, box loads →
+        # IRExtractValue), so guard-5 lands its slot family and lower_vm COMPLETES.
+        # The static chain is DONE; the first RUNTIME wall is jl_global const-
+        # global materialization (beads bennettvm-416r.13 / 416r.4).
+        prog = _BV.lower_vm(set; entry = first(set).first)
+        @test prog isa _BV.VMProgram
+        @test haskey(prog.functions, :ht_keyindex2_shorthash!)
+        @test length(prog.functions[:ht_keyindex2_shorthash!].returns) == 2
     end
 
     # ------------------------------------------------------------------

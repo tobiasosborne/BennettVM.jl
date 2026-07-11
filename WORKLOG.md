@@ -7,6 +7,71 @@
 
 ---
 
+## Session — 2026-07-11 — bennettvm-416r.16: caller-side consumed-sret reconciliation (CW-D blocker 5, LAST static wall)
+
+**The wall.** Downstream of x3t0, the closed fdict set died at guard-5's
+sret_box MEMORY-ABI gate (`src/ir/ingest_body.jl`): `setindex!` calls
+`ht_keyindex2_shorthash!` with `ret_width = 64 ≠ 72 = sum([64,8])` — a call
+using the sret_box result-buffer ABI (an explicit local box the callee writes,
+whose fields the caller reads back), which BVM's value-ABI slot-family path
+cannot land. This was the LAST static wall.
+
+**Resolution is FRONT-END, not BVM.** The chosen design (Proposer A) reconciles
+the ABI in the Bennett extractor (`../Bennett.jl/src/extract/sret.jl`,
+`_collect_consumed_sret` + `_apply_consumed_sret_loads!`): a consumed sret-out
+box call is rewritten to the VALUE ABI at extraction — the box `alloca` is
+suppressed, the call becomes `IRCall(dest, callee, [h,key], [64,8], 72)`
+(`ret_width == sum(field widths)`), and the box field reads become
+`IRExtractValue` off the call's aggregate. BVM then ingests it through the
+EXISTING x3t0 value-ABI path (CallEnter lands the `_agg_slot_name` slot family,
+IRExtractValue slot-copies it) with ZERO new BVM lowering. Why front-end: the
+field byte offsets `{0,8}` are `{i64,i8}`'s SysV layout — front-end ground truth
+via `LLVMOffsetOfElement`. A BVM-side reconstruction would re-derive offsets from
+widths, but hetero structs have PADDING (offset ≠ Σwidths) → silent-miscompile-
+prone. Reconcile where the datalayout is live.
+
+**BVM changes (small).**
+1. `src/ir/ingest_body.jl` guard-5 message RETARGETED: was "DEFERRED … blocker-5
+   follow-up bead bennettvm-416r.16"; now defense-in-depth — "the front-end
+   consumed-sret reconciliation (Bennett extract/sret.jl, bennettvm-416r.16) did
+   not fire … unreconciled sret_box ABI (Rule 1 fail-loud)". Kept "sret_box" in
+   the text. The gate now catches an UNRECONCILED box-ABI call leaking to ingest
+   (a front-end bug), not a deferred feature. It no longer fires for the REAL
+   fdict set (the front-end rewrites it), but still trips on a hand-built
+   ret_width≠sum call (test_x3t0 (d)).
+2. Six wall-pin testsets FLIPPED from "advances to sret_box gate (blocker 5)" to
+   "lowers to a VMProgram (static-wall chain DONE)": test_5m1t (b), test_p81t
+   (f), test_416r14 (e), test_416r15 (e), test_x3t0 (f), test_416r12 (5)-comment.
+   Each now asserts `prog isa VMProgram`, `haskey(prog.functions,
+   :ht_keyindex2_shorthash!)`, and `length(...returns) == 2`.
+3. test_x3t0 (d) sret-ABI static-wall testset re-purposed as guard-5 DEFENSE-IN-
+   DEPTH (hand-built box-ABI call still trips it); its message asserts flipped
+   from "blocker-5" to "416r.16"/"did not fire".
+4. New synthetic test `test_416r16_consumed_sret_bridge.jl`: a hand-built 2-body
+   set — callee returning {i64,i8} by-value (IRInsertBits chain), caller reading
+   the value-ABI result's fields via IRExtractValue ACROSS THREE BLOCKS (field 0
+   in `top` and `mid`, field 1 in `fin`) — pins cross-block slot-family liveness,
+   full run!/unrun! round-trip vs oracle (104n+100).
+
+**lower_vm(fdict set) NOW COMPLETES → VMProgram.** THE CW-D STATIC-WALL CHAIN IS
+DONE. Verified: 4 functions (:fdict_d1b, :setindex!, :rehash!,
+:ht_keyindex2_shorthash!); ht_keyindex2 returns arity 2, ret_elem_widths [64,8].
+
+**The first RUNTIME wall is jl_global.** `run!` on the lowered program throws
+`KeyError: Symbol("jl_global#23403")` in Define.forward (const-global
+materialization) — reached quickly and deterministically. Pinned in test_x3t0
+(f). Successor beads: bennettvm-416r.13 / 416r.4 (const-global materialization).
+
+**SURPRISE (front-end): field 1 is read by a memcpy, not a load.** The design
+census said "5 box loads." Reality: field 0 read 4× via `load i64`, field 1 read
+by a 1-byte `llvm.memcpy` SOURCE (copying the shorthash byte into the Dict). The
+extractor's memcpy handler lowers it to `IRLoad + IRStore`, so at ParsedIR level
+it IS a load — but the front-end rewrite had to move to a by-NAME ParsedIR
+post-pass to catch it (a memcpy reader has no LLVM `load` ref). Full detail in
+the Bennett worklog chunk 094.
+
+---
+
 ## Session — 2026-07-10 — bennettvm-x3t0: multi-key aggregate RETURN (CW-D blocker 4)
 
 **The wall.** Downstream of 416r.15, the closed fdict set died at the

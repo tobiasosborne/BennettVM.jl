@@ -226,12 +226,15 @@ end
 end
 
 # ---------------------------------------------------------------------
-# (d) sret-ABI static wall (blocker 5 pinned).
+# (d) sret-ABI guard-5 defense-in-depth (bennettvm-416r.16).
 # ---------------------------------------------------------------------
-@testset "x3t0 (d) sret-ABI static wall (blocker 5)" begin
+@testset "x3t0 (d) sret-ABI guard-5 defense-in-depth" begin
     # Caller `bad(n)` calls mk_pair with ret_width = 64 ≠ 72 = sum([64,8]) — the
-    # sret_box MEMORY ABI (explicit result-buffer arg). Fails loud STATICALLY at
-    # guard-5 (blocker 5, out of x3t0 scope).
+    # sret_box MEMORY ABI (explicit result-buffer arg). Post-416r.16 the front-end
+    # rewrites REAL consumed sret-out box calls to the value ABI (ret_width ==
+    # sum) at extraction; this hand-built box-ABI call never gets that treatment,
+    # so guard-5 still fails loud on it — now as DEFENSE-IN-DEPTH (an unreconciled
+    # box-ABI call leaking to ingest is a front-end bug).
     bad_blk = _B.IRBasicBlock(:top,
         _B.IRInst[_B.IRCall(:v, mk_pair, _B.IROperand[_B.SSAOperand(:n)], Int[64], 64)],
         _B.IRRet(_B.SSAOperand(:v), 64))
@@ -245,7 +248,8 @@ end
     end
     @test threw
     @test occursin("sret_box", msg)
-    @test occursin("blocker-5", msg)
+    @test occursin("416r.16", msg)                        # the reconciliation bead
+    @test occursin("did not fire", msg)                   # defense-in-depth wording
     @test !occursin("returns aggregate SSA value", msg)   # NOT the acq wall
 end
 
@@ -298,20 +302,37 @@ end
 end
 
 # ---------------------------------------------------------------------
-# (f) the REAL fdict set walls at the sret gate (not the acq wall).
+# (f) the REAL fdict set LOWERS to a VMProgram (static-wall chain DONE); the
+#     first RUNTIME wall is jl_global const-global materialization.
 # ---------------------------------------------------------------------
-@testset "x3t0 (f) real fdict set walls at the sret gate" begin
+@testset "x3t0 (f) real fdict set lowers; runtime wall is jl_global" begin
     fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
     set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                               ptr_cells = true)
-    threw = false; msg = ""
+    # bead bennettvm-416r.16 (2026-07-11): the caller-side consumed-sret
+    # reconciliation cleared the LAST static wall. setindex!'s ht_keyindex2
+    # consumed sret-out box call is rewritten to the VALUE ABI (ret_width 72 ==
+    # sum([64,8]); box loads → IRExtractValue) at extraction, so guard-5 lands its
+    # slot family and lower_vm COMPLETES. The CW-D static-wall chain is DONE.
+    prog = _BV.lower_vm(set; entry = first(set).first)
+    @test prog isa _BV.VMProgram
+    @test haskey(prog.functions, :ht_keyindex2_shorthash!)
+    @test length(prog.functions[:ht_keyindex2_shorthash!].returns) == 2
+
+    # The first RUNTIME wall is jl_global const-global materialization (successor
+    # beads bennettvm-416r.13 / 416r.4) — a KeyError in Define.forward. Reached
+    # quickly and deterministically (verified 2026-07-11: `KeyError: jl_global#…`).
+    # Pins the successor bead's starting point.
+    entry_pir = first(set).second
+    inputs = Dict(n => Int64(v) for ((n, _w), v) in
+                  zip(entry_pir.args, (Int64(3), Int64(7))))
+    rthrew = false; rmsg = ""
     try
-        _BV.lower_vm(set; entry = first(set).first)
+        rs = _BV.initial_state(prog, inputs)
+        _BV.run!(rs, prog; max_steps = 500_000)
     catch e
-        threw = true; msg = sprint(showerror, e)
+        rthrew = true; rmsg = sprint(showerror, e)
     end
-    @test threw
-    @test !occursin("returns aggregate SSA value", msg)   # acq wall CLEARED
-    @test occursin("sret_box", msg)                       # the blocker-5 gate
-    @test occursin("blocker-5", msg)
+    @test rthrew
+    @test occursin("jl_global", rmsg)
 end
