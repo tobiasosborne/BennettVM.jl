@@ -138,6 +138,26 @@ function _cell_count(nbytes::Int64)::Int64
     return nbytes ÷ CELL_BYTES
 end
 
+"""
+    _byte_cells(nbytes::Int64) -> Int64
+
+Byte count → cell count for the BYTE-granular **Julia heap tier** (CW-D4, bead
+`bennettvm-9n3y`): one cell per BYTE of the object's address space, because
+Julia codegen addresses boxed-struct fields and GenericMemory headers/elements
+with BYTE-offset `i8` GEPs (`Dict.keys` @ `+8`, data-ptr @ `+8`, element `i` @
+`+i·elsize`) — contrast the C/clang tier's word-granular typed GEPs, which keep
+`_cell_count` (`÷8`) above. Fail-loud on a negative size (corrupts the arena
+bump cursor on round-trip; Rule 1). No divisibility check: byte cells have no
+sub-cell case.
+"""
+function _byte_cells(nbytes::Int64)::Int64
+    nbytes >= 0 ||
+        error("julia heap intrinsic: nbytes=", nbytes, " is NEGATIVE — an ",
+              "allocation / fill size must be >= 0 (a negative size corrupts ",
+              "the arena bump cursor on round-trip). Rule 1 fail-loud.")
+    return nbytes
+end
+
 # A cell whose every byte holds `byte` (the C `memset` fill): the low 8 bits of
 # `byte` smeared across all 8 cell bytes via the SWAR constant 0x0101…01.
 _cell_pattern(byte::Int64)::Int64 =
@@ -198,6 +218,29 @@ struct IntrinsicGCAlloc <: Instruction
                                           # read by forward/inverse/_alloc_cells.
 end
 
+# jl_alloc_genericmemory_unchecked(nbytes_data, tag): the Julia `Memory{T}`
+# backing allocation (CW-D4, bead `bennettvm-9n3y`). Unlike the bare bump
+# allocs above it materialises a REAL object — a byte-granular GenericMemory
+# {length@+0, data-ptr@+8, inline data@+16} whose data-ptr field the native
+# *runtime* (not emitted IR) sets, so this intrinsic's `forward` must write it.
+# The struct + `_ArenaAlloc` union membership live HERE (the union definition
+# below must see the type); the object model, the specialized `forward`, and
+# the full literate rationale live in `src/ir/intrinsics_genericmemory.jl`.
+struct IntrinsicGenericMemoryAlloc <: Instruction
+    dest::Symbol                          # pointer SSA name created — Int64 arena addr
+    nbytes_operand::Union{Symbol,Int64}   # DATA byte size = nelems×elsize (the
+                                          # lbot-fused smul product; EXCLUDES the
+                                          # 16-byte header — callee_rehash!.ll:716,734)
+    type_tag::Union{Symbol,Int64}         # ADR 0021 D3: METADATA ONLY — never
+                                          # read by forward/inverse/_alloc_cells.
+end
+
+# The GenericMemory header span in BYTE-cells: length@+0, data-ptr@+8, inline
+# data from +16 — the native 16-byte header layout, and the SAME layout the
+# 416r.13 `jl_global#NNN` empty-Memory singletons already ship (length@byte 0,
+# data-ptr@byte 8), so fresh Memories and singletons share one convention.
+const GM_HEADER_CELLS = Int64(16)
+
 # Resolve a malloc/calloc allocation to its cell count (the shared bytes→cells
 # step). `IntrinsicCalloc`'s byte size is `n * sz` (the C contract).
 _alloc_cells(instr::IntrinsicMalloc, s::IState)::Int64 =
@@ -206,10 +249,19 @@ _alloc_cells(instr::IntrinsicCalloc, s::IState)::Int64 =
     _cell_count(_resolve(instr.n_operand, s) * _resolve(instr.size_operand, s))
 # IntrinsicGCAlloc resolves to its cell count from `nbytes_operand` ALONE — the
 # `type_tag` field is NOT referenced here (ADR 0021 D3 floor: tag is metadata).
+# CW-D4 (bennettvm-9n3y): BYTE-granular — a Julia boxed struct's fields are
+# byte-offset `i8` GEPs (a 64-byte Dict addresses cells +0..+56), so the
+# reservation must cover `nbytes` cells, not `nbytes÷8` (the old defect D-b:
+# an 8-cell Dict reservation let the next Memory header land ON Dict.keys@+8).
 _alloc_cells(instr::IntrinsicGCAlloc, s::IState)::Int64 =
-    _cell_count(_resolve(instr.nbytes_operand, s))
+    _byte_cells(_resolve(instr.nbytes_operand, s))
+# GenericMemory: 16 header byte-cells + the data bytes (CW-D4; the full model
+# lives in `src/ir/intrinsics_genericmemory.jl`).
+_alloc_cells(instr::IntrinsicGenericMemoryAlloc, s::IState)::Int64 =
+    GM_HEADER_CELLS + _byte_cells(_resolve(instr.nbytes_operand, s))
 
-const _ArenaAlloc = Union{IntrinsicMalloc,IntrinsicCalloc,IntrinsicGCAlloc}
+const _ArenaAlloc = Union{IntrinsicMalloc,IntrinsicCalloc,IntrinsicGCAlloc,
+                          IntrinsicGenericMemoryAlloc}
 
 """
     predelta_payload(instr::_ArenaAlloc, s::IState) -> @NamedTuple{base, cells}

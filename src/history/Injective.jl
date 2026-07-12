@@ -576,6 +576,13 @@ is_injective(::Type{IntrinsicMemmove})::Bool = false
 # prior `dest`) AND opens a region; non-injective, reversed by its L2 (base,
 # cells) delta. The type tag is metadata only and plays no part in injectivity.
 is_injective(::Type{IntrinsicGCAlloc})::Bool = false
+# CW-D4 (bead `bennettvm-9n3y`): `IntrinsicGenericMemoryAlloc` is the same
+# shape again — pointer create + region open + ONE header cell write (the
+# data-ptr), all reversed by the inherited L2 (base, cells) region-delete.
+# `IntrinsicMemsetBytes` is the Julia-tier byte-exact memset — same row as
+# `IntrinsicMemset` (overwrite, reversed by its L2 per-cell delta).
+is_injective(::Type{IntrinsicGenericMemoryAlloc})::Bool = false
+is_injective(::Type{IntrinsicMemsetBytes})::Bool = false
 
 """
     is_injective(x::ArithmeticAssignment) -> Bool

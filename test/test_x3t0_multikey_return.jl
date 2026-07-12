@@ -302,49 +302,51 @@ end
 end
 
 # ---------------------------------------------------------------------
-# (f) the REAL fdict set LOWERS to a VMProgram (static-wall chain DONE); the
-#     jl_global const-global materialization RUNTIME wall is now CLEARED
-#     (bennettvm-416r.13), and the run advances to the NEXT (Dict-semantics) wall.
+# (f) the REAL fdict set LOWERS to a VMProgram AND runs END-TO-END.
+#
+# Chain history (each wall cleared in sequence, kept as the audit trail):
+#   * static walls — content-addressed '#' keys (5m1t), pgcstack/negative-GEP
+#     (p81t), const-cond select (416r.14), IRInsertBits sret (416r.15),
+#     aggregate return (x3t0 — THIS file's beads), consumed-sret value ABI
+#     (416r.16: ht_keyindex2's box call → ret_width 72 == sum([64,8]), box
+#     loads → IRExtractValue) — the CW-D static-wall chain DONE.
+#   * jl_global const-global materialization (first RUNTIME wall) — cleared by
+#     bennettvm-416r.13 (singleton headers seeded at GLOBAL_BASE).
+#   * Dict-SEMANTICS wall — the final `d[a]` lookup read `keys[slot]` through
+#     an uninitialized Memory data-ptr (absent = 0), slots/keys/vals collapsed
+#     onto ONE cell, the lookup missed → `__unreachable__`. Cleared by CW-D4
+#     (bennettvm-9n3y: IntrinsicGenericMemoryAlloc writes data-ptr@+8 in its
+#     forward; byte-granular Julia heap tier).
+#
+# This testset now asserts SUCCESS: fdict(3,7) == 7 + full round-trip
+# (test_cwd4_genericmemory holds the deeper battery — two input pairs,
+# disjointness pin, per-step inverse).
 # ---------------------------------------------------------------------
-@testset "x3t0 (f) real fdict set lowers; jl_global wall cleared" begin
+@testset "x3t0 (f) real fdict set runs end-to-end: fdict(3,7) == 7 + round-trip" begin
     fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
     set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                               ptr_cells = true)
-    # bead bennettvm-416r.16 (2026-07-11): the caller-side consumed-sret
-    # reconciliation cleared the LAST static wall. setindex!'s ht_keyindex2
-    # consumed sret-out box call is rewritten to the VALUE ABI (ret_width 72 ==
-    # sum([64,8]); box loads → IRExtractValue) at extraction, so guard-5 lands its
-    # slot family and lower_vm COMPLETES. The CW-D static-wall chain is DONE.
     prog = _BV.lower_vm(set; entry = first(set).first)
     @test prog isa _BV.VMProgram
     @test haskey(prog.functions, :ht_keyindex2_shorthash!)
     @test length(prog.functions[:ht_keyindex2_shorthash!].returns) == 2
 
-    # bead bennettvm-416r.13 (2026-07-12): the jl_global const-global
-    # materialization wall is CLEARED. The front-end models each `jl_global#NNN`
-    # empty-GenericMemory singleton as a zeroed 16-cell header in `.globals`
-    # (aliasing every dropped-load result to the canonical name); the VM seeds a
-    # module-wide read-only ROM at GLOBAL_BASE and binds each pointer via a
-    # prepended Define. The run now advances PAST Dict construction, past the
-    # GC-preamble pgcstack/ptls TLS read (the TLS-tier carve-out in the read-
-    # window trap), and INTO setindex!/rehash!/ht_keyindex2. The NEXT wall is a
-    # Dict-SEMANTICS gap: back in the root, the final `d[a]` lookup's key-index
-    # returns negative (not-found), driving the reversible program into the
-    # provably-dead `:__unreachable__` throw sink (the empty-singleton header +
-    # allocation model does not yet round-trip a stored key). Successor work: the
-    # rehash!/setindex! element-traffic semantics — NOT front-end global
-    # materialization. Reached deterministically (verified 2026-07-12).
     entry_pir = first(set).second
     inputs = Dict(n => Int64(v) for ((n, _w), v) in
                   zip(entry_pir.args, (Int64(3), Int64(7))))
-    rthrew = false; rmsg = ""
-    try
-        rs = _BV.initial_state(prog, inputs)
-        _BV.run!(rs, prog; max_steps = 500_000)
-    catch e
-        rthrew = true; rmsg = sprint(showerror, e)
-    end
-    @test rthrew
-    @test !occursin("jl_global", rmsg)              # old wall cleared
-    @test occursin("__unreachable__", rmsg)         # successor (Dict-semantics) wall
+    mc = _BV.compute_must_cache(prog)
+    rs = _BV.initial_state(prog, inputs)
+    init = deepcopy(rs.current)
+    _BV.run!(rs, prog; max_steps = 500_000, checkpoint_interval = 32,
+             must_cache_set = mc)
+    @test _BV.is_halted(rs)
+    entry_vm = _BV._vm_funcname(first(set).first)
+    ret = only(b.exit.returns for b in prog.blocks
+               if b.exit isa _BV.EndInstruction && b.exit.label === entry_vm &&
+                  !isempty(b.exit.returns))[1]
+    @test _BV.result(rs)[ret] == 7                  # stored value round-trips
+    _BV.unrun!(rs, prog; max_unsteps = 500_000)
+    @test rs.current == init                        # exact reverse
+    @test isempty(rs.history)
+    @test rs.step_count == 0
 end

@@ -9,26 +9,34 @@
 # Bennett emits it via the generic ptr_cells C-call arm as a bare Symbol-callee
 # IRCall carrying `[ptls, nbytes, typ]` (3 args, ptls NOT dropped upstream).
 #
-# BennettVM ingests that IRCall as a deterministic arena bump-allocation,
-# mirroring `IntrinsicGCAlloc` (⇐ `:gc_alloc_obj`) exactly: it DROPS a[1]=ptls
-# (a TLS pointer with no VM meaning), takes size=a[2] (the lbot-fused smul
-# product, bytes) and tag=a[3] (metadata, STRUCTURALLY UNREAD by any state
-# transition — ADR 0021 D3 floor). It inherits the `_ArenaAlloc`
-# forward/inverse/predelta machinery, so it reverses for free.
+# BennettVM ingests that IRCall as a deterministic arena allocation that
+# materialises a REAL GenericMemory object (CW-D4 / bead `bennettvm-9n3y` —
+# REPLACES the original 416r.12 bare-bump `IntrinsicGCAlloc` model this file
+# used to pin, which never wrote the data-ptr and collapsed slots/keys/vals
+# onto one cell): it DROPS a[1]=ptls (a TLS pointer with no VM meaning), takes
+# size=a[2] (the lbot-fused smul product, DATA bytes) and tag=a[3] (metadata,
+# STRUCTURALLY UNREAD — ADR 0021 D3 floor). `IntrinsicGenericMemoryAlloc`
+# reserves 16 header byte-cells + the data bytes, writes data-ptr@+8 = base+16
+# in its forward, and inherits the `_ArenaAlloc` inverse/predelta machinery
+# (the L2 region-delete restores the data-ptr cell to absent).
 #
 #   1. Ingest shape: `_lower_intrinsic_call` of the 3-arg IRCall yields
-#      `IntrinsicGCAlloc(:m, <sz>, <typ>)` — ptls dropped, size+tag carried.
+#      `IntrinsicGenericMemoryAlloc(:m, <sz>, <typ>)` — ptls dropped,
+#      size+tag carried.
 #   2. lower_vm end-to-end (single function): the Symbol-callee IRCall routes
 #      through `_HEAP_DISPATCH` (NO SoftCall allowlist reject) to the same
-#      `IntrinsicGCAlloc` inside the lowered block.
-#   3. forward / inverse: arena cursor round-trips (the IntrinsicMalloc idiom).
+#      `IntrinsicGenericMemoryAlloc` inside the lowered block.
+#   3. forward / inverse: header written, arena cursor + data-ptr cell
+#      round-trip (the IntrinsicMalloc idiom + the CW-D4 header write).
 #   4. Coupling: `Bennett._D1B_MODELED_HEAP_INTRINSICS == BennettVM._HEAP_DISPATCH`
 #      — the durable tolerate-here ⟺ ingest-there invariant, machine-checked.
 #
 # # Ref
 #   * `src/ir/ingest_call.jl` — the `:jl_alloc_genericmemory_unchecked` arm +
 #     `_HEAP_DISPATCH` membership.
-#   * `src/ir/intrinsics.jl` — `IntrinsicGCAlloc` (the shared arena instruction).
+#   * `src/ir/intrinsics.jl` + `src/ir/intrinsics_genericmemory.jl` —
+#     `IntrinsicGenericMemoryAlloc` (struct + the CW-D4 object model).
+#   * `test/test_cwd4_genericmemory.jl` — the CW-D4 model battery + fdict e2e.
 #   * `test/test_gc_alloc_obj_ingest.jl` — the sibling `:gc_alloc_obj` test this
 #     file mirrors.
 #   * `../Bennett.jl/src/extract/julia_set.jl` — `_D1B_MODELED_HEAP_INTRINSICS`.
@@ -42,21 +50,21 @@ const _BVm = BennettVM
 const _ABm = BennettVM.ARENA_BASE
 const _Bm  = Bennett
 
-@testset "jl_alloc_genericmemory_unchecked → IntrinsicGCAlloc arena ingest (CW-D2)" begin
+@testset "jl_alloc_genericmemory_unchecked → IntrinsicGenericMemoryAlloc ingest (CW-D2 + CW-D4)" begin
 
     # ------------------------------------------------------------------
-    # (1) Ingest shape: 3-arg IRCall [ptls, sz, typ] → IntrinsicGCAlloc,
+    # (1) Ingest shape: 3-arg IRCall [ptls, sz, typ] → IntrinsicGenericMemoryAlloc,
     #     ptls DROPPED, size=a[2], tag=a[3].
     # ------------------------------------------------------------------
-    @testset "ingest: IRCall([ptls, sz, typ]) → IntrinsicGCAlloc(:m, sz, typ) (ptls dropped)" begin
+    @testset "ingest: IRCall([ptls, sz, typ]) → IntrinsicGenericMemoryAlloc(:m, sz, typ) (ptls dropped)" begin
         # size=64 (const), tag=99 (const), ptls an SSA ref that MUST be dropped.
         call = _Bm.IRCall(:m, :jl_alloc_genericmemory_unchecked,
                           _Bm.IROperand[_Bm.ssa(:ptls), _Bm.iconst(64), _Bm.iconst(99)],
                           [64, 64, 64], 64)
         instr = _BVm._lower_intrinsic_call(call, :jl_alloc_genericmemory_unchecked)
-        @test instr isa _BVm.IntrinsicGCAlloc
+        @test instr isa _BVm.IntrinsicGenericMemoryAlloc
         @test instr.dest === :m
-        @test instr.nbytes_operand == Int64(64)     # a[2], the byte size
+        @test instr.nbytes_operand == Int64(64)     # a[2], the DATA byte size
         @test instr.type_tag == Int64(99)           # a[3], metadata only
         # ptls (a[1]) is dropped — it never becomes nbytes or tag.
         @test instr.nbytes_operand !== :ptls
@@ -70,7 +78,7 @@ const _Bm  = Bennett
                           _Bm.IROperand[_Bm.ssa(:ptls), _Bm.ssa(:sz), _Bm.ssa(:typ)],
                           [64, 64, 64], 64)
         instr = _BVm._lower_intrinsic_call(call, :jl_alloc_genericmemory_unchecked)
-        @test instr isa _BVm.IntrinsicGCAlloc
+        @test instr isa _BVm.IntrinsicGenericMemoryAlloc
         @test instr.nbytes_operand === :sz          # a[2] SSA ref preserved
         @test instr.type_tag === :typ               # a[3] SSA ref preserved (metadata)
     end
@@ -87,7 +95,7 @@ const _Bm  = Bennett
     # (2) lower_vm end-to-end (single function): the Symbol-callee IRCall
     #     routes through _HEAP_DISPATCH, NO SoftCall allowlist reject.
     # ------------------------------------------------------------------
-    @testset "lower_vm: single-function Memory-alloc lowers to IntrinsicGCAlloc" begin
+    @testset "lower_vm: single-function Memory-alloc lowers to IntrinsicGenericMemoryAlloc" begin
         # ptls / sz / typ are function params (defined at the boundary). The
         # entry block calls the allocator into :m, then returns :m.
         call = _Bm.IRCall(:m, :jl_alloc_genericmemory_unchecked,
@@ -98,10 +106,10 @@ const _Bm  = Bennett
         parsed = _Bm.ParsedIR(64, [(:ptls, 64), (:sz, 64), (:typ, 64)], [blk], [64])
 
         prog = _BVm.lower_vm(parsed)                 # MUST NOT throw (no allowlist reject)
-        # find the lowered IntrinsicGCAlloc for :m among the merged blocks.
-        allocs = _BVm.IntrinsicGCAlloc[]
+        # find the lowered IntrinsicGenericMemoryAlloc for :m among the merged blocks.
+        allocs = _BVm.IntrinsicGenericMemoryAlloc[]
         for b in prog.blocks, i in b.instructions
-            i isa _BVm.IntrinsicGCAlloc && push!(allocs, i)
+            i isa _BVm.IntrinsicGenericMemoryAlloc && push!(allocs, i)
         end
         @test length(allocs) == 1
         a = allocs[1]
@@ -111,20 +119,26 @@ const _Bm  = Bennett
     end
 
     # ------------------------------------------------------------------
-    # (3) forward / inverse round-trip through the arena path (reverses for free).
+    # (3) forward / inverse round-trip through the arena path. CW-D4: the
+    #     reservation is 16 header byte-cells + 64 DATA byte-cells, and the
+    #     forward WRITES data-ptr@+8 = base+16 (the field the native runtime
+    #     — not emitted IR — sets); the L2 region-delete restores it to absent.
     # ------------------------------------------------------------------
-    @testset "forward+inverse: arena cursor round-trips" begin
+    @testset "forward+inverse: header written, cursor + data-ptr cell round-trip" begin
         IS = _BVm.IState
         s = IS(1, Dict{Symbol,Int64}(), :running, Dict{Int64,Int64}())
         pre = deepcopy(s)
-        instr = _BVm.IntrinsicGCAlloc(:m, Int64(64), Int64(99))  # 64 bytes = 8 cells
+        instr = _BVm.IntrinsicGenericMemoryAlloc(:m, Int64(64), Int64(99))
         p = _BVm.predelta_payload(instr, s)          # PRE-forward L2 capture
         _BVm.forward(instr, s)
         @test _BVm.active_locals(s)[:m] == _ABm      # first alloc → ARENA_BASE + 0
-        @test s.arena_top == 8                        # 64 ÷ 8 = 8 cells
+        @test s.arena_top == 80                       # 16 header + 64 data byte-cells
+        @test s.memory[_ABm + 8] == _ABm + 16         # data-ptr → inline data base
+        @test !haskey(s.memory, _ABm + 0)             # length NOT written (program's store)
         _BVm.inverse(instr, s, p)
         @test s == pre                                # bit-identical to pre-forward
         @test s.arena_top == 0
+        @test isempty(s.memory)                       # data-ptr cell absent again
         @test !haskey(_BVm.active_locals(s), :m)
     end
 

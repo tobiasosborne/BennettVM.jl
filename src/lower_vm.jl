@@ -97,6 +97,11 @@ function lower_vm(parsed::Bennett.ParsedIR; opts=nothing)::VMProgram
               "into a caller's slot family); the entry-return ABI is a follow-on. ",
               "Rule 1 fail-loud.")
     prog = _lower_parsed_ir(parsed, routine)
+    # CW-D4 (bead `bennettvm-9n3y`): heap-tier enforcement — mixed C+Julia
+    # allocs fail loud; a Julia-tier program's word-granular memset is
+    # rewritten to the byte-exact `IntrinsicMemsetBytes`, and Julia-tier
+    # memcpy/memmove fail loud (`src/ir/intrinsics_genericmemory.jl`).
+    _enforce_julia_heap_tier!(prog.blocks)
 
     # Digest, computed from the lowered VMProgram (post-edge-split).
     # Gated behind `@debug` (ADR 0003 side-fix 0): `lower_vm` is the

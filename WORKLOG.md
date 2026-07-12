@@ -7,6 +7,83 @@
 
 ---
 
+## Session — 2026-07-12 — bennettvm-9n3y (CW-D4): faithful GenericMemory model + byte-granular Julia heap tier — **fdict WORKS e2e**
+
+**Bead:** bennettvm-9n3y. Implementer in a 3+1 (architecture = design-cwd4-A
+per the orchestrator's ruling; mechanics — blast-radius table, R3
+value-alongside-round-trip guard — from design-cwd4-B). Front-end half
+(header-GEP byte-stamp) in Bennett.jl worklog chunk 094. **SC9 Case B lands:
+fdict(3,7) == 7 AND fdict(5,9) == 9 with full round-trip to the exact initial
+state + EMPTY history + per-step inverse over the whole trajectory — the
+first end-to-end Julia Dict program through the reversible VM.**
+
+**The two interlocked defects (scout-cwd4-element-traffic.md).** (D-a)
+`jl_alloc_genericmemory_unchecked` lowered to a bare bump alloc that wrote
+NOTHING — but a GenericMemory's data-ptr is set by the native RUNTIME (no IR
+store site exists; rehash!.ll stores only the length, line 737). Every element
+access read data-ptr = absent = 0 → slots/keys/vals collapsed onto ONE cell →
+vals(7) overwrote keys(3) → lookup missed → `__unreachable__`. (D-b)
+`gc_alloc_obj` reserved `nbytes÷8` cells while Julia struct fields are
+BYTE-offset i8 GEPs — a 64-byte Dict reserved 8 cells, so the next Memory
+header landed ON Dict.keys@+8.
+
+**Decisive ground truth (why byte-granular, not cell+1).** The data-ptr is
+read through TWO shapes (callee_rehash!.ll:755-769): word-shaped `{i64,ptr}`
+field-1 GEP (→ cell +1 under the old stamp) AND byte-shaped `gep i8 %m, 8`
+(fill!/memset, runtime length, LIVE → cell +8). Design B's "write at +1, no
+front-end change" is refuted by the memset path (it would memset address 0).
+The 416r.13 singletons already fixed data-ptr@byte-cell 8 — byte-granular is
+the committed convention; the front-end re-stamps the `{i64,ptr}` header GEP
+to elem_width 8 (LITERAL-struct-scoped; named C structs keep 64).
+
+**Changes.** `src/ir/intrinsics.jl`: `_byte_cells` (no ÷8, no %8 check);
+`IntrinsicGenericMemoryAlloc` struct + `GM_HEADER_CELLS=16` + `_ArenaAlloc`
+union membership; `_alloc_cells(GCAlloc)` → byte-granular. NEW
+`src/ir/intrinsics_genericmemory.jl`: the specialized `forward` (reserve
+16+nbytes; write `M[base+8] = base+16`; fail-loud if the data-ptr cell is
+already present — the disjoint-window guard); `IntrinsicMemsetBytes` (byte-
+exact fill: `nbytes` cells each = the byte VALUE — the C SWAR memset is wrong
+twice in the byte tier: span ÷8 and smear); `_enforce_julia_heap_tier!`
+(mixed C+Julia allocs fail loud; Julia-tier memset REWRITTEN to MemsetBytes;
+Julia-tier memcpy/memmove fail loud — the grow-copy must arrive loudly).
+Wired into BOTH lower_vm entry points (lower_vm.jl + ingest_multi.jl, on the
+merged module — tier is a property of the ONE arena). `ingest_call.jl`: the
+genericmemory arm emits the new intrinsic. Trait rows in Injective.jl (false)
++ delta.jl (L2). Reversal: the inherited `_ArenaAlloc` L2 (base,cells)
+region-delete — the data-ptr cell was absent pre-alloc, so the unconditional
+delete restores absent-ness (IntrinsicCalloc precedent); verified by the unit
+round-trip (`isempty(s.memory)` — no phantom cell).
+
+**Length is NOT written by the alloc** — the program's own
+`store i64 nelems, {i64,ptr}#0` owns it. Pinned (`!haskey(memory, base+0)`).
+
+**Tests.** NEW test_cwd4_genericmemory.jl (RED→GREEN, 50/50): unit alloc
+round-trip, gc_alloc byte-span (next alloc lands at +64, NOT on Dict.keys@+8
+— the exact regression), MemsetBytes semantics, ingest shapes, mixed-tier /
+memcpy / negative-size fail-louds, the fdict e2e battery (two input pairs, R3
+value guard, 3-data-ptr disjointness pin, per-step inverse). Wall-pins
+FLIPPED to success: test_jlglobal_singleton (e) 28/28, test_x3t0 (f) 8/8 —
+comments keep the chain history (static chain → jl_global → CW-D4).
+test_416r12 re-pinned to the NEW model (26/26); test_gc_alloc_obj_ingest
+arena_top 8→64 (23/23).
+
+**Blast radius (per-fixture):** C tier BYTE-IDENTICAL — test_c_hashtable_e2e
+73/73 (~4.4 min), test_arena_roundtrip 54/54, test_global_array_vm 2375/2375,
+test_memory_floor 63/63, test_igr3 8/8, test_6bu3 28/28, test_416r16-bridge
+29/29. Legitimately changed: test_416r12 (pinned the OLD bare-bump model),
+test_gc_alloc_obj_ingest (pinned the ÷8 reservation — defect D-b), the two
+wall-pin flips (the deliverable).
+
+**Next walls (probed, NOT fixed):** (1) `Dict{Int64,Int64}` — EXTRACT wall in
+Bennett.jl (`smul.with.overflow` overflow bit not provably zero for elsize 8).
+(2) Dict GROWTH (14 inserts → rehash-grow copy loop) — RUN wall in the VM:
+`KeyError: key :__v96 not found` (undefined SSA on the grow path). Two-key
+fdict2 (no grow) already works e2e. Gotcha for future agents: the tier pass
+runs POST-merge, so a Julia-set function containing memset gets MemsetBytes
+even if the memset lives in a different function than the allocs.
+
+---
+
 ## Session — 2026-07-12 — bennettvm-416r.13: clear the `jl_global#NNN` runtime wall (VM half)
 
 **Bead:** bennettvm-416r.13 (+ tail of 416r.4). Implementer in a 3+1 (base

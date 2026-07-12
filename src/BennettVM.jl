@@ -412,6 +412,18 @@ include("ir/intrinsics.jl")
 # and BEFORE `history/Injective.jl` / `history/delta.jl` (which pin the
 # memset/memcpy/memmove traits). Not yet exported.
 include("ir/intrinsics_bulk.jl")
+# CW-D4 (bead `bennettvm-9n3y`) — the faithful reversible GenericMemory model
+# + the byte-granular Julia heap tier: `IntrinsicGenericMemoryAlloc`'s
+# specialized `forward` (writes the data-ptr header cell the native runtime —
+# not emitted IR — would set), the byte-exact `IntrinsicMemsetBytes`, and the
+# `_enforce_julia_heap_tier!` pass (mixed-tier fail-loud + Julia-tier memset
+# rewrite; called by BOTH `lower_vm` entry points). The struct itself + the
+# `_ArenaAlloc` union membership live in `intrinsics.jl` (the union definition
+# must see the type). Shares `intrinsics.jl`/`intrinsics_bulk.jl` helpers
+# (`_byte_cells` / `_range_deltas` / `_restore_deltas!` / `IntrinsicMemset`),
+# so MUST follow both, and MUST precede `history/Injective.jl` /
+# `history/delta.jl` (which pin the new traits). Not yet exported.
+include("ir/intrinsics_genericmemory.jl")
 # Bennett-utzc / CW-D (ADR 0017 §4) — `UnreachableHalt`, the reversible
 # `:__unreachable__` halt sink. A plain body `Instruction` (NOT a
 # ControlInstruction) whose `forward` sets `status = :error` and bumps pc

@@ -338,14 +338,27 @@ using BennettVM
     # and the tag-invariance soundness witness (vary tag → bit-identical IState).
     # Sits right after the arena floor it mirrors.
     include("test_gc_alloc_obj_ingest.jl")
-    # bennettvm-416r.12 (CW-D2) — julia `Memory{T}` backing-alloc ingest. Ingests
-    # Bennett.jl's bare Symbol-callee `IRCall(:jl_alloc_genericmemory_unchecked,
-    # [ptls, nbytes, typ])` as an arena bump-alloc mirroring `IntrinsicGCAlloc`:
-    # ptls DROPPED, size carried, type tag STRUCTURALLY UNREAD (ADR 0021 D3).
-    # Pins ingest shape, single-function lower_vm routing (no allowlist reject),
-    # forward/inverse arena round-trip, and the durable coupling invariant
-    # `Bennett._D1B_MODELED_HEAP_INTRINSICS == _HEAP_DISPATCH`.
+    # bennettvm-416r.12 (CW-D2; model CW-D4 / 9n3y) — julia `Memory{T}`
+    # backing-alloc ingest. Ingests Bennett.jl's bare Symbol-callee
+    # `IRCall(:jl_alloc_genericmemory_unchecked, [ptls, nbytes, typ])` as
+    # `IntrinsicGenericMemoryAlloc` — a real GenericMemory object (16 header
+    # byte-cells + data; forward writes data-ptr@+8 = base+16): ptls DROPPED,
+    # size carried, type tag STRUCTURALLY UNREAD (ADR 0021 D3). Pins ingest
+    # shape, single-function lower_vm routing (no allowlist reject), header
+    # write + forward/inverse arena round-trip, and the durable coupling
+    # invariant `Bennett._D1B_MODELED_HEAP_INTRINSICS == _HEAP_DISPATCH`.
     include("test_416r12_jl_alloc_genericmemory.jl")
+    # bennettvm-9n3y (CW-D4) — the faithful reversible GenericMemory model +
+    # the byte-granular Julia heap tier. Unit: IntrinsicGenericMemoryAlloc
+    # forward/inverse (data-ptr@+8 written, region-delete restores absent-ness);
+    # gc_alloc_obj BYTE-span reservation (a 64-byte Dict covers +0..+63, the
+    # next Memory header can't land on Dict.keys@+8 — the fdict clobber);
+    # IntrinsicMemsetBytes byte-exact fill; the Julia-tier memset rewrite; the
+    # mixed-tier / Julia-tier-memcpy / negative-size fail-louds. E2E: THE SC9
+    # Case B deliverable — fdict(3,7)==7 AND fdict(5,9)==9 with full round-trip
+    # to the exact initial state + EMPTY history, the slots/keys/vals data-
+    # region disjointness pin, and a per-step inverse over the whole trajectory.
+    include("test_cwd4_genericmemory.jl")
     # Bennett-igr3 — julia.gc_loaded data-ptr launder ingest (downstream of
     # Bennett-qmv7). Ingests Bennett.jl's `IRCall(Symbol("julia.gc_loaded"),
     # [mem, data])` — the GC-rooting launder that returns the data pointer — as

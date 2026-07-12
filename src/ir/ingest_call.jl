@@ -62,14 +62,21 @@ function _lower_intrinsic_call(inst::Bennett.IRCall, callee::Symbol)::Instructio
         _need(2)
         return IntrinsicGCAlloc(inst.dest, _lower_operand(a[1]), _lower_operand(a[2]))
     elseif callee === :jl_alloc_genericmemory_unchecked
-        # Julia Memory{T} backing alloc (CW-D2 / 416r.12). Bennett's generic
-        # C-call arm carries [ptls, nbytes, typ] (VERIFIED — 3 args, ptls NOT
-        # dropped upstream). Drop a[1]=ptls (TLS ptr, no VM meaning); size=a[2]
-        # (the lbot-fused smul product, bytes); tag=a[3] (metadata, structurally
-        # unread — ADR 0021 D3). IntrinsicGCAlloc-shaped deterministic arena bump
-        # → inherits _ArenaAlloc forward/inverse/predelta, reverses for free.
+        # Julia Memory{T} backing alloc (CW-D2 / 416r.12; model CW-D4 /
+        # bennettvm-9n3y). Bennett's generic C-call arm carries [ptls, nbytes,
+        # typ] (VERIFIED — 3 args, ptls NOT dropped upstream). Drop a[1]=ptls
+        # (TLS ptr, no VM meaning); size=a[2] (the lbot-fused smul product,
+        # DATA bytes = nelems×elsize, header-exclusive); tag=a[3] (metadata,
+        # structurally unread — ADR 0021 D3). CW-D4: a bare bump alloc is NOT
+        # enough — a GenericMemory is a self-describing {length, data-ptr}
+        # whose data-ptr the native RUNTIME sets (no IR store site exists), so
+        # this lowers to the dedicated `IntrinsicGenericMemoryAlloc`, which
+        # reserves 16 header byte-cells + the data bytes and writes the
+        # data-ptr in its forward (`src/ir/intrinsics_genericmemory.jl`).
+        # Reversal still inherits the _ArenaAlloc L2 region-delete.
         _need(3)
-        return IntrinsicGCAlloc(inst.dest, _lower_operand(a[2]), _lower_operand(a[3]))
+        return IntrinsicGenericMemoryAlloc(inst.dest, _lower_operand(a[2]),
+                                           _lower_operand(a[3]))
     elseif callee === :calloc
         _need(2)
         return IntrinsicCalloc(inst.dest, _lower_operand(a[1]), _lower_operand(a[2]))

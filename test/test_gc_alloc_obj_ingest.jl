@@ -15,7 +15,11 @@
 #   1. Ingest shape: `_lower_intrinsic_call` of the gc_alloc_obj IRCall yields
 #      an `IntrinsicGCAlloc(:obj, 64, <tag>)` (size+tag both lowered as values).
 #   2. forward: from a fresh IState, binds `:obj == ARENA_BASE + 0` and bumps
-#      `arena_top` by 64 ÷ CELL_BYTES = 8 cells (the IntrinsicMalloc semantics).
+#      `arena_top` by 64 BYTE-cells. (CW-D4 / bead `bennettvm-9n3y`: was
+#      `64 ÷ 8 = 8` word-cells — defect D-b. Julia boxed-struct fields are
+#      BYTE-offset `i8` GEPs (a 64-byte Dict addresses cells +0..+56), so the
+#      reservation must cover `nbytes` cells or the next allocation lands
+#      INSIDE the struct's field footprint — the fdict header clobber.)
 #   3. inverse round-trip: `inverse` restores `arena_top → 0`, removes `:obj`
 #      from active_locals, and the IState equals the pre-forward state.
 #   4. tag-invariance (THE soundness witness): the SAME alloc run with THREE
@@ -76,15 +80,16 @@ const _Bg  = Bennett
     end
 
     # ------------------------------------------------------------------
-    # (2) forward: binds :obj == ARENA_BASE + 0, bumps arena_top by 8 cells.
+    # (2) forward: binds :obj == ARENA_BASE + 0, bumps arena_top by 64
+    #     BYTE-cells (CW-D4 byte-granular Julia tier; was ÷8 = 8).
     # ------------------------------------------------------------------
-    @testset "forward: binds ARENA_BASE, bumps arena_top by 8 cells" begin
+    @testset "forward: binds ARENA_BASE, bumps arena_top by 64 byte-cells" begin
         IS = _BVg.IState
         s = IS(1, Dict{Symbol,Int64}(), :running, Dict{Int64,Int64}())
         instr = _BVg.IntrinsicGCAlloc(:obj, Int64(64), Int64(99))
         _BVg.forward(instr, s)
         @test _BVg.active_locals(s)[:obj] == _ABg        # first alloc → ARENA_BASE + 0
-        @test s.arena_top == 8                            # 64 bytes ÷ 8 = 8 cells
+        @test s.arena_top == 64                           # 64 bytes = 64 BYTE-cells (CW-D4)
         @test s.pc == 2                                   # pc bumped
         @test isempty(s.memory)                           # region stays absent (no zeroing)
     end
@@ -141,7 +146,7 @@ const _Bg  = Bennett
         # the alloc-relevant state (the :obj binding + arena_top) is identical.
         s_ssa = _forward_with_tag(:tagref)
         @test _BVg.active_locals(s_ssa)[:obj] == _ABg
-        @test s_ssa.arena_top == s0.arena_top == 8
+        @test s_ssa.arena_top == s0.arena_top == 64   # byte-cells (CW-D4)
         # The tag's junk value never leaked into the arena or the :obj address.
         @test _BVg.active_locals(s_ssa)[:obj] == _BVg.active_locals(s0)[:obj]
     end

@@ -213,6 +213,14 @@ function lower_vm(funcs::Vector{<:Pair{Symbol,Bennett.ParsedIR}};
         append!(merged, prog.blocks)
     end
 
+    # CW-D4 (bead `bennettvm-9n3y`): heap-tier enforcement over the WHOLE
+    # merged module — mixed C+Julia allocs fail loud; a Julia-tier module's
+    # word-granular memset is rewritten to the byte-exact
+    # `IntrinsicMemsetBytes`, and Julia-tier memcpy/memmove fail loud
+    # (`src/ir/intrinsics_genericmemory.jl`). Module-wide because the tier is
+    # a property of the ONE shared arena, not of any single function.
+    _enforce_julia_heap_tier!(merged)
+
     # (3) Merge into ONE flat stream + ONE LabelTable (ADR 0019 §2). The
     # entry function's qualified entry label is the module entry; the merged
     # LabelTable computes correct flat-stream addresses across all functions

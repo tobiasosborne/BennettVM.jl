@@ -140,10 +140,22 @@ end
     end
 
     # ---------------------------------------------------------------------
-    # (e) the REAL fdict set lowers AND run! gets PAST Dict construction. Names
-    #     are extracted PROGRAMMATICALLY (no literal #NNN pinned — drift-immune).
+    # (e) the REAL fdict set lowers AND runs END-TO-END. Names are extracted
+    #     PROGRAMMATICALLY (no literal #NNN pinned — drift-immune).
+    #
+    # Chain history: (1) the jl_global const-global materialization wall was
+    # the FIRST runtime wall (KeyError at Dict construction) — cleared by this
+    # bead's original scope (bennettvm-416r.13: singleton headers seeded at
+    # GLOBAL_BASE). (2) The successor wall was the Dict-SEMANTICS gap — the
+    # final `d[a]` lookup read `keys[slot]` through an uninitialized Memory
+    # data-ptr (absent = 0), slots/keys/vals collapsed onto one cell, the
+    # lookup missed, and the run fell into the provably-dead `__unreachable__`
+    # throw sink. CLEARED by CW-D4 (bennettvm-9n3y: IntrinsicGenericMemoryAlloc
+    # writes data-ptr@+8; byte-granular Julia tier). This testset now asserts
+    # SUCCESS: fdict(3,7) == 7 with a full round-trip (test_cwd4_genericmemory
+    # holds the deeper e2e battery — two input pairs + per-step inverse).
     # ---------------------------------------------------------------------
-    @testset "(e) real fdict set: lowers + run! past Dict construction" begin
+    @testset "(e) real fdict set: runs end-to-end, fdict(3,7) == 7 + round-trip" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                                   ptr_cells = true)
@@ -161,21 +173,21 @@ end
         entry_pir = first(set).second
         inputs = Dict(n => Int64(v) for ((n, _w), v) in
                       zip(entry_pir.args, (Int64(3), Int64(7))))
-        rmsg = ""
-        try
-            rs = _BV.initial_state(prog, inputs)
-            _BV.run!(rs, prog; max_steps = 500_000)
-        catch e
-            rmsg = sprint(showerror, e)
-        end
-        # The jl_global const-global materialization wall is CLEARED: the run
-        # advances PAST Dict construction, the GC-preamble TLS read, and INTO
-        # setindex!/rehash!/ht_keyindex2. The successor wall is a Dict-SEMANTICS
-        # gap: the final `d[a]` lookup returns not-found → the provably-dead
-        # `:__unreachable__` throw sink (the empty-singleton header + allocation
-        # model does not yet round-trip a stored key). Successor work: the
-        # rehash!/setindex! element-traffic semantics (NOT global materialization).
-        @test !occursin("jl_global", rmsg)          # old wall gone
-        @test occursin("__unreachable__", rmsg)     # new wall pinned
+        mc = _BV.compute_must_cache(prog)
+        rs = _BV.initial_state(prog, inputs)
+        init = deepcopy(rs.current)
+        _BV.run!(rs, prog; max_steps = 500_000, checkpoint_interval = 32,
+                 must_cache_set = mc)
+        @test _BV.is_halted(rs)
+        # The entry function's single return SSA name (result() keys by name).
+        entry_vm = _BV._vm_funcname(first(set).first)
+        ret = only(b.exit.returns for b in prog.blocks
+                   if b.exit isa _BV.EndInstruction && b.exit.label === entry_vm &&
+                      !isempty(b.exit.returns))[1]
+        @test _BV.result(rs)[ret] == 7              # the stored value round-trips
+        _BV.unrun!(rs, prog; max_unsteps = 500_000)
+        @test rs.current == init                    # exact reverse
+        @test isempty(rs.history)
+        @test rs.step_count == 0
     end
 end

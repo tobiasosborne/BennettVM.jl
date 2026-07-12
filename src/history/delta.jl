@@ -606,6 +606,15 @@ is_l2_capable(::Type{IntrinsicMemmove})::Bool = true
 # `predelta_payload` returning `(base, cells)`, + the union `inverse(::T, s,
 # ::NamedTuple)` (`src/ir/intrinsics.jl`). L2 path verified (Rule 3).
 is_l2_capable(::Type{IntrinsicGCAlloc})::Bool = true
+# CW-D4 (bead `bennettvm-9n3y`): `IntrinsicGenericMemoryAlloc` inherits the
+# arena L2 path via the `_ArenaAlloc` union exactly like `IntrinsicGCAlloc`
+# (its specialized `forward` adds the data-ptr header write, which the union's
+# unconditional region-delete inverse already covers — the cell was absent
+# pre-alloc). `IntrinsicMemsetBytes` is the Julia-tier byte-exact memset —
+# same L2 per-cell `(addr, old, was_present)` shape as `IntrinsicMemset`
+# (`src/ir/intrinsics_genericmemory.jl`). L2 paths verified (Rule 3).
+is_l2_capable(::Type{IntrinsicGenericMemoryAlloc})::Bool = true
+is_l2_capable(::Type{IntrinsicMemsetBytes})::Bool = true
 
 # CW-B2 (ADR 0019 §4 + hostile-review C2) — `ReturnExit`, the reversible
 # return transition. Same shape as `IntrinsicMalloc`: NO `make_delta` (the
