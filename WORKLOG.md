@@ -7,6 +7,62 @@
 
 ---
 
+## 🎯 MILESTONE — 2026-07-12 — bennettvm-7xa CLOSED: SC9 Case B (reversible Julia Dict) COMPLETE
+
+With `90l`/`klgz` landing below, EVERY dependency of the P0 e2e gate `7xa` is
+closed and the bead is closed: **`fdict(Int8(3),Int8(7))` from plain Julia
+source compiles, runs (==7; also (5,9) and a two-key no-grow variant), and
+round-trips to the exact initial state with EMPTY history + full-trajectory
+per-step inverse.** One session (2026-07-12, three orchestrated 3+1/2+1
+cycles) cleared the last three walls: jl_global singleton materialization
+(`416r.13`/`416r.4`), the GenericMemory element-traffic semantics +
+byte-granular Julia tier (`9n3y`), and the determinism guard (`90l`/`klgz`).
+Bounded successors: `bsng` (elsize>1), `san3` (Dict growth), `jb6w`
+(literalness-spill discriminator). Suites at close: BVM 9848/9848; Bennett.jl
+689671+ / 2 pre-existing broken.
+
+## Session — 2026-07-12 — bennettvm-90l: determinism-denylist mirror of the Bennett.jl klgz classifier
+
+**Bead:** bennettvm-90l (paired with Bennett.jl `Bennett-klgz`). Last open
+dependency of P0 `bennettvm-7xa`. Scoped as implementer + hostile-reviewer on
+the RATIFIED scout design (`scratchpad/scout-90l-determinism.md`, Q5), NOT a
+2-proposer pass — no new construct, no new lowering.
+
+**What landed.** Extended `_NONDETERMINISTIC_CALLEES`
+(`src/ir/ingest_call.jl`) with the RESOLVED identity-hash callee Symbols the
+Bennett.jl front-end classifier demangles from `@"jlplt_<callee>_<N>_got"`
+GOT stubs: `:ijl_object_id` (the live-verified stub name, 2026-07-12),
+`:jl_object_id`, `:object_id`, `:jl_pointer_from_objref`,
+`:ijl_pointer_from_objref` — alongside the pre-existing `:objectid` /
+`:pointer_from_objref`. `memhash_seed` is deliberately NOT added (deterministic
+content hash — in-scope for the reversible floor, walled front-end only as a
+not-yet-modeled MODELING GAP, not a determinism reason). This is the
+defense-in-depth MIRROR: an identity-hasher arriving as a raw `IRCall(Symbol)`
+hits the same specific "nondeterministic" reject as `:objectid`, never the
+generic SoftCall message.
+
+**Mirror test.** Extended `test_fail_loud_completeness.jl` F1 with a
+`bennettvm-90l mirror` testset iterating the new Symbols — asserts each rejects
+naming "nondeterministic" and its own name, and NOT the generic SoftFloat
+message. Keeps the two repos' identity-hash sets in sync (a front-end name added
+without the VM mirror, or vice versa, trips it).
+
+**OUT OF SCOPE (documented in the test + this log).** The bead's "inlined
+no-callee" extension — the `load ptr @jlplt_*_got` + INDIRECT-call-through-SSA
+shape — CANNOT reach VM ingest today: the Bennett.jl front-end 416r.13
+classifier walls the load before any `ParsedIR` is produced (scout Q4). No such
+`IRCall` is ever constructed, so there is nothing for the denylist to catch on
+that path. The indirect shape is blocked-by front-end runtime-callee GOT-stub
+modeling (depends-on, not do-now). Per ADR 0017 corollary, the guard's
+long-term home is the circuit-lowering boundary (address hashing is
+deterministic INSIDE the deterministic virtual heap); this VM denylist remains
+a worthwhile belt-and-suspenders at ingest.
+
+**Regression:** `test_fail_loud_completeness.jl`, `test_cwd4_genericmemory.jl`,
+`test_jlglobal_singleton.jl` green — the fdict e2e stays green + bit-identical.
+
+---
+
 ## Session — 2026-07-12 — bennettvm-9n3y (CW-D4): faithful GenericMemory model + byte-granular Julia heap tier — **fdict WORKS e2e**
 
 **Bead:** bennettvm-9n3y. Implementer in a 3+1 (architecture = design-cwd4-A

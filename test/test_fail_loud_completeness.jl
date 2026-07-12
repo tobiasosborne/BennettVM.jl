@@ -150,6 +150,40 @@ _faillow_ret_x() = Bennett.IRRet(Bennett.SSAOperand(:__x), 32)
         @test !occursin("recognised SoftFloat", e.msg)
     end
 
+    @testset "F1 bennettvm-90l mirror: resolved objectid GOT-stub names reject" begin
+        # bennettvm-90l: the Bennett.jl front-end determinism classifier
+        # (`_IDENTITY_HASH_GOT_CALLEES`, src/extract/constexpr.jl) demangles an
+        # `objectid`-hashed Dict key from its `@"jlplt_<callee>_<N>_got"` GOT
+        # stub to the RESOLVED runtime-callee Symbol (`ijl_object_id` was the
+        # live-verified name, 2026-07-12). This VM denylist is the defense-in-
+        # depth MIRROR: each resolved identity-hash name arriving as a raw
+        # `IRCall(Symbol)` must reach the SAME specific "nondeterministic" reject
+        # as `:objectid`, never the generic SoftCall message. Pinning them here
+        # keeps the two repos' identity-hash sets in sync (a front-end name added
+        # without the VM mirror — or vice versa — trips this test).
+        #
+        # OUT OF SCOPE (bead note): the bead's "inlined no-callee" extension —
+        # the `load ptr @jlplt_*_got` + INDIRECT-call-through-SSA-pointer shape —
+        # cannot reach ingest today: the Bennett.jl front-end 416r.13 classifier
+        # walls that load BEFORE any `ParsedIR` is produced (scout Q4), so no such
+        # `IRCall` is ever constructed. This mirror covers only the named-`IRCall`
+        # surface; the indirect-call shape is blocked-by front-end runtime-callee
+        # GOT-stub modeling and is filed as depends-on, not do-now.
+        for nm in (:ijl_object_id, :jl_object_id, :object_id,
+                   :jl_pointer_from_objref, :ijl_pointer_from_objref)
+            e = _faillow_raise(
+                [Bennett.IRCall(:__d, nm,
+                                Bennett.IROperand[Bennett.SSAOperand(:__x)],
+                                [64], 64)],
+                Bennett.IRRet(Bennett.SSAOperand(:__d), 64);
+                args=[(:__x, 64)], ret=[64])
+            @test e isa ErrorException
+            @test occursin("nondeterministic", e.msg)
+            @test occursin(String(nm), e.msg)
+            @test !occursin("recognised SoftFloat", e.msg)
+        end
+    end
+
     # =================================================================
     # F2 — IMPOSSIBLE-CFG/MEMORY belt-and-suspenders (each already in
     # place; PINNED here as the defensive mirror). Rule 4: each asserts

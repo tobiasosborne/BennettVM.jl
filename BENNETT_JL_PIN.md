@@ -16,13 +16,13 @@ Keeping `../Bennett.jl` at (or additively ahead of) the recorded commit is a
 convention, not a lockfile guarantee — the Manifest imposes no revision
 constraint.
 
-**Last validated against:** `e7454fd` (bennettvm-9n3y: byte-granular {i64,ptr} GenericMemory-header GEP stamp)
-**Validated date:** 2026-07-12 (previously `fd4afea` same day; before that `31b63a6` of 2026-06-05)
+**Last validated against:** `13ce767` (Bennett-klgz: determinism classifier at the JIT-global reject)
+**Validated date:** 2026-07-12 (previously `e7454fd`/`fd4afea` same day; before that `31b63a6` of 2026-06-05)
 **Bennett.jl HEAD commit summary at validation:**
-`bennettvm-9n3y (front-end): byte-granular {i64,ptr} GenericMemory-header GEP stamp`
-**Validation evidence:** BennettVM full `Pkg.test` **9828/9828** against this
-exact Bennett.jl tree (2026-07-12, fresh subprocess, 10m15s); Bennett.jl suite
-689671 Pass / 2 pre-existing Broken (`BENNETT_HEAVY_TESTS=0`, 34m07s).
+`Bennett-klgz: determinism classifier at the JIT-global reject — objectid keys fail loud by name`
+**Validation evidence:** BennettVM full `Pkg.test` **9848/9848** against this
+exact Bennett.jl tree (2026-07-12, fresh subprocess, 11m04s); Bennett.jl suite
+689699 Pass / 2 pre-existing Broken (`BENNETT_HEAVY_TESTS=0`, 36m44s).
 
 ## Repin rationale (2026-06-05)
 

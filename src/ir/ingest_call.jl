@@ -143,6 +143,15 @@ const _NONDETERMINISTIC_CALLEES = Set{Symbol}((
                                                     # these Julia callees, not
                                                     # a bare `rdrand` Function)
     :objectid, :pointer_from_objref,                # identity / pointer hash
+    # bennettvm-90l mirror of the Bennett.jl front-end determinism classifier
+    # (`_IDENTITY_HASH_GOT_CALLEES` in src/extract/constexpr.jl): the RESOLVED
+    # runtime-callee names an `objectid`-hashed Dict key demangles to from its
+    # `@"jlplt_<callee>_<N>_got"` GOT stub. `ijl_object_id` is the live-verified
+    # stub name (2026-07-12); the others are the `jl_`-prefixed / bare variants.
+    # These extend the SAME identity-hash family as `:objectid` above so the two
+    # repos' denylists stay in sync (test_fail_loud_completeness.jl pins it).
+    :ijl_object_id, :jl_object_id, :object_id,      # objectid family (address hash)
+    :jl_pointer_from_objref, :ijl_pointer_from_objref,  # pointer-identity variants
     :time, :time_ns, :getpid,                       # wall-clock / process id
 ))
 
