@@ -642,6 +642,16 @@ using BennettVM
     # arrays. clang-gated: emits fresh `.ll` + native golden in a tempdir,
     # self-skips if clang is absent (T5-corpus convention).
     include("test_global_array_vm.jl")
+    # bead `bennettvm-416r.13` (+ tail of 416r.4): `jl_global#NNN` empty-
+    # GenericMemory singleton-data globals as read-only VM segments + module-wide
+    # (multi-function) const-global segments. Hand-built singleton headers seed +
+    # Define-prepend + read length-0 + round-trip; two functions get DISJOINT
+    # module-wide windows (the ex-guard path); a store onto a singleton and a
+    # read past a modelled header fail loud (the read-window trap, with the
+    # pgcstack TLS-tier carve-out); and the REAL fdict set lowers AND `run!` gets
+    # PAST Dict construction (the jl_global wall cleared). Sits after the const-
+    # global fixture (its upstream GlobalROM machinery).
+    include("test_jlglobal_singleton.jl")
     # B1 (bd `bennettvm-zr7x`): `run!(...; record=false)` forward-only fast
     # mode — the Track-B framerate baseline
     # (`docs/design/emulator-on-bennettvm.md` §9.2). Fast == normal forward

@@ -7,6 +7,73 @@
 
 ---
 
+## Session — 2026-07-12 — bennettvm-416r.13: clear the `jl_global#NNN` runtime wall (VM half)
+
+**Bead:** bennettvm-416r.13 (+ tail of 416r.4). Implementer in a 3+1 (base
+Design B; adopted A's D2 fail-loud + A's D5 read-window trap). Front-end half in
+Bennett.jl's worklog (chunk 094).
+
+**The wall.** `run!` on the lowered fdict set threw `KeyError:
+Symbol("jl_global#NNN")` in `Define.forward` at Dict construction — the front-end
+dropped the empty-`GenericMemory` singleton load and left a dangling operand. The
+front-end now models each singleton as a zeroed 16-cell header in
+`ParsedIR.globals`; the VM half seeds it and lifts the multi-function guard.
+
+**VM change (this repo).** 3 files, ~55 LOC:
+- `src/ir/ingest.jl`: new `_referenced_global_names(inst, globals)` — reflects
+  over every field so a global referenced as an `IRPtrOffset.base`/`IRStore.val`
+  (the singleton shape) is detected, not just an `IRVarGEP.base` (D8). Generalises
+  the old scan; the `_j_const#N` memcpy-source literals stay excluded (never an
+  SSAOperand). `_global_segment` gains `base_offset` (module-wide cursor, D7);
+  `_lower_parsed_ir` threads `global_base_offset`.
+- `src/ir/ingest_multi.jl`: **DELETED** the single-function-only fail-loud guard;
+  replaced with a monotone `global_cursor` giving each function a DISJOINT window
+  + a merged module ROM carried into the merged VMProgram (D7; subsumes h6c3).
+- `src/ir/memory_floor.jl`: `MemoryLoad.forward` read-window trap (D5) — a
+  globals-tier read of an UNSEEDED cell now fails loud (was silent absent=0).
+
+**GROUND-TRUTH SURPRISE (the read-window trap vs the TLS tier).** Designs A/B
+assumed `>= GLOBAL_BASE` (2^48) cleanly identifies the globals ROM. It does NOT:
+the Julia GC preamble's `julia.get_pgcstack` walk lives in a SECOND tier at
+`TLS_BASE = 2^56` (`ingest_call.jl`), and its one `MemoryLoad` (`ptls_field ≈
+TLS_BASE+16`) is DESIGNED to read an absent cell → zero-init (structurally dead,
+ADR 0021 D3). My initial trap broke it (`rehash!` trapped at 2^56+16). Fix:
+carve out the TLS tier — added `_TLS_TIER_GUARD = 2^32`; a read `>= TLS_BASE -
+_TLS_TIER_GUARD` keeps serving 0. The tiers are 2^24× further apart than the
+guard, so no real globals read is swallowed. Mechanical adaptation, documented
+(contradiction clause). `test_p81t_pgcstack` 29/29 confirms.
+
+**CELL ADDRESSING (settled empirically).** The construction GEP is `i8, …, 8`
+→ 1-byte cells → data-ptr at **cell base+8**, length at base+0. 16-cell header
+correct. (Census Q1's `:add,1` was wrong; Design B's `:add,8` confirmed.)
+
+**POISON.** Fell back to 0 (documented): A's D5 poison needs either a VM address
+in the front-end (breaks the layer split) or a new channel (breaks B's "reuse
+.globals, no new field"). The data-ptr@8 read is inert anyway (len-0 memset).
+The read-window trap covers the miscompile class instead.
+
+**Tests.** `test/test_jlglobal_singleton.jl` (new, 25 assertions): hand-built
+single-function singleton (seed + Define-prepend + length-0 read + round-trip);
+two functions → DISJOINT module-wide windows (32 cells, the ex-guard path);
+store-onto-singleton fails loud; read-past-header fails loud; TLS read serves 0;
+the REAL fdict set lowers + `run!` gets PAST construction. `test_x3t0` (f)
+FLIPPED: the jl_global KeyError is gone; now pins `!jl_global` +
+`__unreachable__` (the successor wall). Registered after `test_global_array_vm`.
+
+**Regressions (default mode):** x3t0 all green incl. flipped (f); global_array
+2375/2375 (trap + TLS carve-out safe); 416r16 29/29; gc_alloc_obj 23/23; arena
+54/54; p81t 29/29.
+
+**NEXT WALL (successor bead).** fdict(3,7) now runs past construction + the TLS
+read + into setindex!/rehash!/ht_keyindex2, returns to the root, and the final
+`d[a]` lookup's key-index comes back NEGATIVE (not-found) → the provably-dead
+`:__unreachable__` throw sink (`fdict_d1b#__unreachable__`, pc≈233). A **Dict
+element-traffic SEMANTICS gap**: the empty-singleton header + genericmemory-alloc
+model does not yet round-trip a stored key. Successor: the rehash!/setindex!
+element traffic — NOT global materialization.
+
+---
+
 ## Session — 2026-07-11 — bennettvm-416r.16: caller-side consumed-sret reconciliation (CW-D blocker 5, LAST static wall)
 
 **The wall.** Downstream of x3t0, the closed fdict set died at guard-5's

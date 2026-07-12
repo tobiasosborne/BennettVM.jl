@@ -303,9 +303,10 @@ end
 
 # ---------------------------------------------------------------------
 # (f) the REAL fdict set LOWERS to a VMProgram (static-wall chain DONE); the
-#     first RUNTIME wall is jl_global const-global materialization.
+#     jl_global const-global materialization RUNTIME wall is now CLEARED
+#     (bennettvm-416r.13), and the run advances to the NEXT (Dict-semantics) wall.
 # ---------------------------------------------------------------------
-@testset "x3t0 (f) real fdict set lowers; runtime wall is jl_global" begin
+@testset "x3t0 (f) real fdict set lowers; jl_global wall cleared" begin
     fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
     set = _B.extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                               ptr_cells = true)
@@ -319,10 +320,20 @@ end
     @test haskey(prog.functions, :ht_keyindex2_shorthash!)
     @test length(prog.functions[:ht_keyindex2_shorthash!].returns) == 2
 
-    # The first RUNTIME wall is jl_global const-global materialization (successor
-    # beads bennettvm-416r.13 / 416r.4) — a KeyError in Define.forward. Reached
-    # quickly and deterministically (verified 2026-07-11: `KeyError: jl_global#…`).
-    # Pins the successor bead's starting point.
+    # bead bennettvm-416r.13 (2026-07-12): the jl_global const-global
+    # materialization wall is CLEARED. The front-end models each `jl_global#NNN`
+    # empty-GenericMemory singleton as a zeroed 16-cell header in `.globals`
+    # (aliasing every dropped-load result to the canonical name); the VM seeds a
+    # module-wide read-only ROM at GLOBAL_BASE and binds each pointer via a
+    # prepended Define. The run now advances PAST Dict construction, past the
+    # GC-preamble pgcstack/ptls TLS read (the TLS-tier carve-out in the read-
+    # window trap), and INTO setindex!/rehash!/ht_keyindex2. The NEXT wall is a
+    # Dict-SEMANTICS gap: back in the root, the final `d[a]` lookup's key-index
+    # returns negative (not-found), driving the reversible program into the
+    # provably-dead `:__unreachable__` throw sink (the empty-singleton header +
+    # allocation model does not yet round-trip a stored key). Successor work: the
+    # rehash!/setindex! element-traffic semantics — NOT front-end global
+    # materialization. Reached deterministically (verified 2026-07-12).
     entry_pir = first(set).second
     inputs = Dict(n => Int64(v) for ((n, _w), v) in
                   zip(entry_pir.args, (Int64(3), Int64(7))))
@@ -334,5 +345,6 @@ end
         rthrew = true; rmsg = sprint(showerror, e)
     end
     @test rthrew
-    @test occursin("jl_global", rmsg)
+    @test !occursin("jl_global", rmsg)              # old wall cleared
+    @test occursin("__unreachable__", rmsg)         # successor (Dict-semantics) wall
 end

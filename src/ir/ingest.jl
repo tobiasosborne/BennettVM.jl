@@ -223,7 +223,41 @@ original blocks, then all trampolines.
 # that binds each global-pointer SSA name in the entry block. A global present
 # in `parsed.globals` but never GEP'd contributes nothing (no cells, no Define)
 # — a `const` the program never reads costs zero VM state.
-function _global_segment(parsed::Bennett.ParsedIR)
+# The `parsed.globals` keys referenced by any `SSAOperand` of `inst`, in a
+# stable order (bead `bennettvm-416r.13`, Design B D8). GENERALISES the old
+# IRVarGEP-base-only detection: a const global is referenced not just as an
+# `IRVarGEP.base` (the C `rom[i]` shape) but ALSO as an `IRPtrOffset.base` /
+# `IRStore.val` / `IRCall.args` element (the `jl_global#N` empty-Memory
+# singleton shape — census Q2). We reflect over every field: an `SSAOperand`
+# (scalar field, or an element of a `Vector{IROperand}`) whose `.name` is a
+# `globals` key is a reference. Field-order-then-vector-order makes first-seen
+# base assignment deterministic. The IRVarGEP base is itself an `SSAOperand`,
+# so `test_global_array_vm.jl` (`:rom` GEP) still seeds byte-identically; the
+# `_j_const#N` memcpy-source literals never appear as an `SSAOperand` (they are
+# memcpy sources), so they stay excluded exactly as before.
+function _referenced_global_names(inst::Bennett.IRInst,
+        globals::Dict{Symbol,Tuple{Vector{UInt64},Int}})::Vector{Symbol}
+    out = Symbol[]
+    for fld in fieldnames(typeof(inst))
+        v = getfield(inst, fld)
+        if v isa Bennett.SSAOperand
+            haskey(globals, v.name) && push!(out, v.name)
+        elseif v isa AbstractVector
+            for e in v
+                e isa Bennett.SSAOperand && haskey(globals, e.name) &&
+                    push!(out, e.name)
+            end
+        end
+    end
+    return out
+end
+
+# `base_offset` (bead `bennettvm-416r.13`, Design B D7): the module-wide cursor
+# offset a MULTI-function lowering threads in so each function's globals occupy
+# a DISJOINT contiguous window (`GLOBAL_BASE + base_offset + local_offset`).
+# Defaults to 0 — the single-function path is byte-identical (every existing
+# fixture).
+function _global_segment(parsed::Bennett.ParsedIR; base_offset::Int64 = Int64(0))
     name_to_base = Dict{Symbol,Int64}()
     ordered = Symbol[]
     cells = Dict{Int64,Int64}()
@@ -231,11 +265,10 @@ function _global_segment(parsed::Bennett.ParsedIR)
     offset = Int64(0)
     for b in parsed.blocks
         for inst in b.instructions
-            if inst isa Bennett.IRVarGEP && inst.base isa Bennett.SSAOperand
-                gname = inst.base.name
-                if haskey(parsed.globals, gname) && !haskey(name_to_base, gname)
+            for gname in _referenced_global_names(inst, parsed.globals)
+                if !haskey(name_to_base, gname)
                     (data, _ew) = parsed.globals[gname]
-                    base = GLOBAL_BASE + offset
+                    base = GLOBAL_BASE + base_offset + offset
                     for k in 0:(length(data) - 1)
                         cells[base + Int64(k)] = reinterpret(Int64, data[k + 1])
                     end
@@ -275,7 +308,8 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
                           label_prefix::Union{Nothing,Symbol} = nothing,
                           functions::Dict{Symbol,FunctionEntry} =
                               Dict{Symbol,FunctionEntry}(),
-                          frame::Bool = true)::VMProgram
+                          frame::Bool = true,
+                          global_base_offset::Int64 = Int64(0))::VMProgram
     blocks = parsed.blocks
     # CW-B2 (ADR 0019 §2) — `#`-label qualifier for multi-function lowering.
     # `_q` prefixes every BLOCK-IDENTITY label (and every cross-block target,
@@ -417,7 +451,8 @@ function _lower_parsed_ir(parsed::Bennett.ParsedIR, routine::Symbol;
     # `initial_state`'s IState; `global_order` is first-seen order for the
     # prepended entry-block `Define`s below. Empty for any routine with no
     # const-array GEPs (every existing fixture) — the segment adds NOTHING then.
-    global_bases, global_rom, global_order = _global_segment(parsed)
+    global_bases, global_rom, global_order =
+        _global_segment(parsed; base_offset = global_base_offset)
 
     # Bump-allocator cursor for `IRAlloca` (ADR 0014 §D1). Monotone across
     # ALL blocks — every static alloca anywhere in the routine gets a fresh

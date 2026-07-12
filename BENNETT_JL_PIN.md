@@ -16,14 +16,13 @@ Keeping `../Bennett.jl` at (or additively ahead of) the recorded commit is a
 convention, not a lockfile guarantee — the Manifest imposes no revision
 constraint.
 
-**Last validated against:** `31b63a6` (xv0u: IRPtrOffset.elem_width for cell-addressed BennettVM)
-**Validated date:** 2026-06-05 (previously `231bde6` of 2026-06-04)
+**Last validated against:** `fd4afea` (bennettvm-416r.13: jl_global#N singleton globals as zeroed .globals headers)
+**Validated date:** 2026-07-12 (previously `31b63a6` of 2026-06-05)
 **Bennett.jl HEAD commit summary at validation:**
-`feat(xv0u): IRPtrOffset preserves elem_width for cell-addressed BennettVM (b5x)`
-**`../Bennett.jl` working-tree HEAD when this note was last refreshed (2026-07-07):**
-`cbddc32` — `416r.4 (front-end): Case C two-index array GEP arm (+ closes dzd) + fix doh6`
-(the working tree has advanced past the last-validated commit; this line is
-informational, not a re-validation)
+`bennettvm-416r.13 (front-end): jl_global#N singleton globals as zeroed .globals headers`
+**Validation evidence:** BennettVM full `Pkg.test` **9770/9770** against this
+exact Bennett.jl tree (2026-07-12, fresh subprocess, 10m07s); Bennett.jl suite
+689662 Pass / 2 pre-existing Broken (`BENNETT_HEAVY_TESTS=0`, 31m42s).
 
 ## Repin rationale (2026-06-05)
 

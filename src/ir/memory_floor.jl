@@ -248,8 +248,45 @@ function forward(instr::MemoryLoad, s::IState)::IState
     # loud (`MemoryStore.forward`), so a global address never lives in
     # `s.memory`. Every OTHER address (stack / arena / heap) reads `s.memory`
     # with the absent=0 convention, byte-identical to the pre-416r.4 behaviour.
-    val = a >= GLOBAL_BASE ? get(s.globals.cells, a, Int64(0)) :
-                             get(s.memory, a, Int64(0))
+    #
+    # Read-window trap (bead `bennettvm-416r.13`, Design B D5, adapted). A
+    # GLOBALS-tier read of a cell that was NOT seeded into the ROM fails loud
+    # rather than silently returning the absent=0 phantom. This BOUNDS the
+    # readable window: a `jl_global#N` empty-Memory singleton is modelled as a
+    # zeroed 16-cell header; a data read PAST that header (e.g. a mis-modelled
+    # non-empty singleton whose contents we seeded as empty) traps at the first
+    # out-of-window read instead of reading a phantom 0 and miscompiling.
+    # In-bounds const-array reads (`rom[i&mask]`) and the singleton's own
+    # length@0 / data-ptr@8 fields are all seeded, so they are unaffected.
+    #
+    # TLS-tier CARVE-OUT (ground truth vs Design B D5). `>= GLOBAL_BASE` (2^48)
+    # is NOT solely the globals ROM: the Julia GC-preamble `pgcstack` walk lives
+    # in a SECOND tier at `TLS_BASE = 2^56` (ingest_call.jl:175-185), whose ONE
+    # `MemoryLoad` (`ptls_field ≈ TLS_BASE + 16`) is DESIGNED to read an absent
+    # cell → zero-init (structurally dead — feeds only the DROPPED ptls arg of
+    # `jl_alloc_genericmemory_unchecked`, ADR 0021 D3). Designs A/B were unaware
+    # of this tier; the trap must fire for the GLOBALS tier ONLY. The tiers are
+    # 2^24× further apart than `_TLS_TIER_GUARD`, so `a >= TLS_BASE -
+    # _TLS_TIER_GUARD` cleanly selects the TLS band (which keeps serving 0)
+    # without ever swallowing a real globals-tier read (bead `bennettvm-416r.13`).
+    local val::Int64
+    if a >= GLOBAL_BASE
+        if haskey(s.globals.cells, a)
+            val = s.globals.cells[a]
+        elseif a >= TLS_BASE - _TLS_TIER_GUARD
+            val = Int64(0)   # TLS sentinel tier: absent read → zero-init (dead).
+        else
+            error("MemoryLoad: read of const-global address ", a,
+                  " (>= GLOBAL_BASE = ", GLOBAL_BASE, ") that was NOT seeded ",
+                  "into the read-only ROM — an out-of-window global read (past ",
+                  "a modelled `const`-array / `jl_global#N` singleton-header ",
+                  "segment). Silently returning the absent=0 phantom would ",
+                  "miscompile; fail loud at the read site (bead ",
+                  "`bennettvm-416r.13`; Rule 1 fail-loud).")
+        end
+    else
+        val = get(s.memory, a, Int64(0))
+    end
     active_locals(s)[instr.dest] = val
     s.pc += 1
     return s

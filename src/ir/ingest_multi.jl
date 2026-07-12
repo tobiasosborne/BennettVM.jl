@@ -187,28 +187,29 @@ function lower_vm(funcs::Vector{<:Pair{Symbol,Bennett.ParsedIR}};
     # `routine` + `#`-qualified `label_prefix`), so its qualified block labels
     # (`<vmname>#<label>`) match the `FunctionEntry.entry_label` a CallEnter
     # resolves through.
+    # Module-wide const-global segments (bead `bennettvm-416r.13`, Design B D7;
+    # subsumes `bennettvm-h6c3`). REPLACES the old single-function-only fail-loud
+    # guard. Each function's globals occupy a fresh CONTIGUOUS window based at
+    # `GLOBAL_BASE + global_cursor`; after lowering a function the cursor advances
+    # by that function's cell count, so windows are DISJOINT by construction — no
+    # cross-function base collision (the exact hazard the old guard deferred).
+    # The per-function `GlobalROM.cells` are merged into ONE module ROM carried
+    # into the merged `VMProgram` below (the old guard also warned the merged
+    # program DROPPED per-function globals → silent read-0; both closed here).
+    # Globals-free functions contribute zero cells (cursor unmoved), so every
+    # existing multi-function fixture (collatz / hashtable) is byte-identical.
     merged = BasicBlock[]
+    merged_global_cells = Dict{Int64,Int64}()
+    global_cursor = Int64(0)
     for (name, parsed) in funcs
         vmname = _vm_funcname(name)
         prog = _lower_parsed_ir(parsed, vmname; label_prefix = vmname,
-                                functions = table)
-        # Const-global segment in a MULTI-function module is deferred (bead
-        # `bennettvm-416r.4` lands single-function only). Per-function
-        # `_lower_parsed_ir` assigns each referenced global a base from
-        # `GLOBAL_BASE + 0`, so two functions referencing globals would COLLIDE;
-        # correct handling needs a module-wide single assignment (a follow-up
-        # bead). The merged `VMProgram` (§3) also drops per-function globals, so
-        # a referenced global would silently read 0. Fail loud rather than
-        # miscompile (Rule 1). Existing fixtures (collatz / hashtable) GEP no
-        # const globals, so `global_rom.cells` is empty and this never fires.
-        isempty(prog.globals.cells) ||
-            error("lower_vm(multi): function :", name, " references a const ",
-                  "global array, but module-wide const-global support is not ",
-                  "yet implemented (per-function bases would collide at ",
-                  "GLOBAL_BASE; the merged VMProgram drops per-function ",
-                  "globals). Single-function const globals work today (bead ",
-                  "`bennettvm-416r.4`); the multi-function module-wide segment ",
-                  "is a follow-up. Rule 1 fail-loud.")
+                                functions = table,
+                                global_base_offset = global_cursor)
+        for (addr, val) in prog.globals.cells
+            merged_global_cells[addr] = val
+        end
+        global_cursor += Int64(length(prog.globals.cells))
         append!(merged, prog.blocks)
     end
 
@@ -220,5 +221,5 @@ function lower_vm(funcs::Vector{<:Pair{Symbol,Bennett.ParsedIR}};
     return VMProgram(merged, LabelTable(merged), table[entry_internal].entry_label,
                      Int[w for (_n, w) in funcs[entry_idx].second.args],
                      copy(funcs[entry_idx].second.ret_elem_widths),
-                     table, entry_internal)
+                     table, entry_internal, GlobalROM(merged_global_cells))
 end

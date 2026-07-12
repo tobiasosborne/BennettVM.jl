@@ -184,6 +184,17 @@ const _HEAP_DISPATCH = Set{Symbol}((
 # construction.
 const TLS_BASE = Int64(1) << 56
 
+# The TLS sentinel tier's neighborhood radius (bead `bennettvm-416r.13`). The GC
+# preamble derives addresses OFF `TLS_BASE` by small signed cell offsets
+# (`current_task = TLS_BASE - 152`, `ptls_field = TLS_BASE + 16`), so a TLS-tier
+# read can land slightly BELOW `TLS_BASE`. `[TLS_BASE - _TLS_TIER_GUARD, ∞)` is
+# the TLS band; a `MemoryLoad` there reads an ABSENT cell → zero-init (the
+# structurally-dead pgcstack/ptls read, ingest_call.jl:175-184). `2^32` dwarfs
+# every GC-preamble offset (a few hundred cells) yet stays ~2^24× below the
+# `2^56 - 2^48` gap to the globals tier — so it never swallows a real globals-
+# tier read. Consumed by `MemoryLoad.forward`'s read-window trap (memory_floor.jl).
+const _TLS_TIER_GUARD = Int64(1) << 32
+
 const _BENIGN_CELL_DISPATCH = Set{Symbol}((
     Symbol("julia.gc_loaded"),      # data-ptr launder (Bennett-igr3): Define(dest, args[2])
     Symbol("julia.get_pgcstack"),   # TLS base (bennettvm-p81t): nullary fixed cell
