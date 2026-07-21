@@ -2,6 +2,51 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## ✅ SESSION 2026-07-21 — TRACKER TRUTH-UP; SC9 CASE B FORMALLY CLOSED; a70z design done, impl parked
+
+**No BVM source changes this session** — this was an orchestrated cross-repo
+reconciliation + design session (Fable orchestrator, serial subagents). NOTE:
+the sessions 2026-06-29 → 2026-07-12 (CW-D arc through SC9 Case B completion)
+never updated this HANDOFF — for that period read `WORKLOG.md` top-down from
+the 2026-07-12 milestone block, and Bennett.jl `worklog/090–095`.
+
+### State of the world
+
+- **SC9 Case B is COMPLETE and now closed in beads** (`bennettvm-7xa`):
+  fdict(3,7) from plain Julia extracts (4-body closed-world set), runs to 7,
+  round-trips to exact initial state, empty history. Re-verified live
+  2026-07-21: `test/test_dict_roundtrip.jl` 34/34. Epic `416r` closed 13/13.
+- **Tracker truth-up** (beads were ~5 weeks behind git): closed 7xa, 90l,
+  416r.11/.12/.13/.4, 6db/ehp (superseded by ADR 0017 — no recognized-op
+  vec lowering will ever exist), nm0 (stale umbrella), M13 chain
+  zg5/fu5/kl3/vw8 (shipped long ago; force-closed past stale dep edges).
+  `xkl` re-scoped to the closed-world route. Bennett.jl side: 44dg, eln6,
+  800b closed (see Bennett.jl worklog chunk 095, session 2026-07-21).
+- **The WORKLOG's unfiled successors are now real beads**: `bennettvm-rnhv`
+  (was "san3": Dict GROWTH — 14 inserts → rehash-grow copy loop dies at VM
+  run, `KeyError: :__v96` undefined SSA; first run-tier wall past SC9),
+  `Bennett-a70z` (was "bsng": Dict{Int64,Int64} EXTRACT wall — smul overflow
+  bit, elsize 8), `Bennett-zdd6` (was "jb6w": SysV coercion-spill mis-stamp
+  landmine).
+
+### In flight (Bennett.jl side): Bennett-a70z
+
+Scout + 2 blind proposers CONVERGED (exact constant-folded interval-test
+overflow-bit emission; designs in `../Bennett.jl/docs/design/a70z/`).
+Implementation parked **UNVERIFIED** on `../Bennett.jl` branch
+`wip/a70z-overflow-bit` (1f521d3d) — implementer was stopped mid-first-test-run.
+Next session: re-verify red-green from scratch. **BVM needs no changes for
+a70z** (emitted opcodes already ingestable; byte-granular heap ready for
+elsize>1). After a70z: `bennettvm-rnhv` (Dict growth) is the frontier.
+
+### Blockers / gotchas
+
+- `bd` dolt auto-push is broken in BOTH repos (`git-remote-cache/.../repo.git`
+  "not a git repository"). Local dolt state is correct; remote bead sync needs
+  repair.
+- Concurrent Julia runs corrupt the shared precompile cache — `pgrep -af julia`
+  before ANY julia invocation; this laptop runs single test files only.
+
 ## ✅ SESSION 2026-06-10 — OPTION C DECIDED + CW-A/B/C COMPLETE: C-on-the-VM story demo GREEN
 
 **The lead resolved e67u as OPTION C** (closed-world reversible execution,
