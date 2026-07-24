@@ -2,6 +2,65 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## ✅ SESSION 2026-07-24 — a70z LANDED AND VERIFIED BOTH SIDES; `Dict{Int64,Int64}` RUNS ON THE VM
+
+**Supersedes the "impl parked UNVERIFIED on `wip/a70z-overflow-bit`" note in the
+2026-07-21 section below — that is now STALE.** The parked WIP (`1f521d3d`) had
+never been observed green; it was re-verified from scratch, three defects were
+fixed, and it landed on Bennett.jl `main` (rebased to `6953ceb`/`d4b4fa1`; main
+now `e15ea23`). `origin/wip/a70z-overflow-bit` still exists but is the
+SUPERSEDED pre-rebase copy — its content is in `main`. Don't work from it.
+
+### State of the world
+
+- **`Bennett-a70z` is CLOSED and overshot its exit criterion.** It asked to clear
+  the `smul`-elsize-8 wall and *document the next wall*. **There is no next
+  extraction wall** — the whole `Dict{Int64,Int64}` closed-world set extracts
+  clean (4 bodies: `fdict64`, `setindex!`, `rehash!`, `ht_keyindex2_shorthash!`).
+- **`Dict{Int64,Int64}` RUNS AND REVERSES ON THE VM, with ZERO BVM source
+  changes.** Extract → `lower_vm` (552-block `VMProgram`) → 664 steps to
+  `fdict64(3,7) == 7` → `unrun!` to the exact initial state with empty history,
+  under **both** L2 and L3. Regression test
+  `test/test_a70z_dict64_roundtrip.jl` (347 assertions, mutation-proved,
+  registered at `runtests.jl:681`). Commit `571c54b`.
+- **Mechanism** (front-end, for context): when exactly one operand of
+  `llvm.{s,u}{mul,add}.with.overflow.iN` is a compile-time `ConstantInt`, the
+  overflow bit is now COMPUTED as a constant-folded admissible-interval test
+  `bit = (x<L)|(x>U)` — up to 2 `IRICmp` + 1 width-1 `IRBinOp(:or)`. **BVM
+  ingests these as ordinary `Define`s; nothing new was needed on this side.**
+- **Gates:** Bennett.jl full `Pkg.test` **690398 Pass / 3 Broken** (all
+  pre-existing), 28m37s, heavy tests ON. BVM full `Pkg.test` **7820/7820**.
+  Pin revalidated (`BENNETT_JL_PIN.md`, 2026-07-24).
+
+### Two things that will bite the next agent
+
+1. **`__vN` SSA names COLLIDE across bodies in a multi-body closed-world run.**
+   Reading a value by SSA name from a running closed-world trajectory is
+   FRAME-AMBIGUOUS. A probe for the fuse bit `__v152` returned `1099511628136`
+   = `ARENA_BASE (2^40) + 360` — a heap pointer belonging to a *different
+   frame's* identically-named value. Resolve `_instruction_at(prog, pc)` and
+   read frame-exactly instead.
+2. **This box has NO clang**, so the clang-gated e2e blocks self-skip and the
+   suite reports **7820** where the other box reported **9848**. A "full suite
+   green" here is ~20 % weaker and announces that only via two easily-missed
+   `@info` lines. Filed as **`bennettvm-5o86`** (install clang, and/or make the
+   suite print a loud end-of-run skipped-block banner).
+
+### NEXT — the frontier is `bennettvm-rnhv` (P1, Dict GROWTH)
+
+**Scope was corrected this session:** `rnhv` did NOT arrive early at i64, and it
+is NOT the same axis as a70z. **a70z is the element-SIZE axis (elsize 8 vs 1);
+`rnhv` is the element-COUNT axis (≥14 inserts → the rehash-grow copy loop).**
+They are orthogonal. Since single-insert `Dict{Int64,Int64}` now runs end-to-end,
+`rnhv` should be re-probed at **both** widths, not just the Int8 shape it was
+originally hit at. Original symptom to reproduce: 14 inserts → `KeyError:
+:__v96` undefined SSA at VM run.
+
+Also opened this session: **`Bennett-tl1l`** (P3, front-end) — a70z's
+*one-sided* and *both-constant* emission shapes remain unproven downstream (the
+real Dict corpus only produces the two-sided shape), and
+`_ovf_admissible_range` is total-swept only at N=8.
+
 ## ✅ SESSION 2026-07-21 — TRACKER TRUTH-UP; SC9 CASE B FORMALLY CLOSED; a70z design done, impl parked
 
 **No BVM source changes this session** — this was an orchestrated cross-repo
