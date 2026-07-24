@@ -2,7 +2,69 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
-## ✅ SESSION 2026-07-24 — a70z LANDED AND VERIFIED BOTH SIDES; `Dict{Int64,Int64}` RUNS ON THE VM
+## ✅ SESSION 2026-07-24 (part 2) — `bennettvm-rnhv` FIXED: φ-edge is a non-destructive BIND; Dict GROWTH runs
+
+**This is the newer half of 2026-07-24. Part 1 (a70z) is the section below it.**
+
+`bennettvm-rnhv` is **CLOSED** (commit `c8ff59f`). A 14-insert `Dict` died at VM
+RUN with `KeyError` because the φ-edge args→params transfer
+(`_rename_args_to_params!` in `src/interpreter/Interpreter.jl`) **destructively
+deleted** the sender's edge args — Mogensen RSSA note 2 — but LLVM-derived
+φ-incomings legally have uses that outlive the edge, so `rehash!`'s grow loop
+orphaned a live SSA. **Fix: remove the `delete!`, making the transfer a
+non-destructive BIND** (`_bind_args_to_params!`). This is the exact MOVE→COPY
+decision **ADR 0019 A.1** already ratified at the `CallEnter` boundary; we were
+inconsistent, not undecided. New **ADR 0022**.
+
+### State of the world
+
+- **Dict GROWTH runs and reverses.** 14-insert `Dict{Int8,Int8}` AND
+  `Dict{Int64,Int64}` (straight-line inserts): extract → `lower_vm` → run to
+  the native-oracle result → `unrun!` to empty history under L2 and L3.
+  Regression test `test/test_rnhv_phi_multiuse.jl`.
+- **The bug was LATENT** — the same 32 static hazards sit in the 1-insert Dicts
+  the suite already asserted green; 14 inserts only made the grow branch
+  reachable. A green suite did NOT prove this fix unnecessary. The test guards
+  the invariant with a trajectory-independent static hazard scan on the cheap
+  1-insert fixture, not only the 14-insert e2e.
+- **Gate: full `Pkg.test` 8071/8071** (was 7820 + 251 new). Trajectory
+  step/checkpoint counts byte-identical on collatz/matrix_sum/matrix_tri (only
+  the bounded residual-locals count grew — a dead arg lingers until its frame
+  pops). Hostile reviewer ACCEPT: hand-built adversarial live-param-overwrite
+  VMPrograms all round-trip under L2+L3, because reversal is checkpoint+replay
+  (an injective exit suppresses only the per-step log, never invertibility).
+- **`bennettvm-35yn` also CLOSED** (shipped alongside): the bare `KeyError` from
+  `_resolve` is now a context-bearing error naming the SSA, instruction, pc and
+  frame stack (`src/ir/unbound_ssa.jl`) — mitigates the one real risk of the
+  relaxation (a malformed lowering reading stale instead of crashing).
+
+### NEXT — pick one
+
+1. **`bennettvm-0fw7` (P2)** — a `for`-LOOP multi-insert Dict dies EARLIER, at
+   *lowering*, on `CallEnter: duplicate arg names` (the `allunique(args)` guard,
+   `call_transitions.jl:108`). Separate pre-existing wall, NOT touched by rnhv.
+   This is the loop analogue of ADR 0019 A.2 on the *arg* side, and it is the
+   next Dict-growth wall if loop-lowered inserts are in scope. Diagnosis-first.
+2. **`bennettvm-axfr` (P2, Core)** — the deferred SSA-**dominance validator**
+   (`validate(::VMProgram)`, M2.18): make an unbound-operand read a build-time
+   error. ADR 0022 defers it with a Rule-9 forcing condition; it is the proper
+   permanent fix for the stale-read risk and is now EXPRESSIBLE (it was
+   unsatisfiable under the old destructive semantics).
+3. **Still open from part 1: `Bennett-tl1l` (P3, Bennett.jl)** — a70z's
+   one-sided + both-constant emission shapes unproven downstream; widths 16/32
+   unswept.
+
+### Watch out for (carried from this session)
+
+- **`__vN` SSA names COLLIDE across bodies in a multi-body closed-world run.**
+  Name-only inspection of a running trajectory is frame-ambiguous (a probe read
+  a *different frame's* heap pointer). Resolve `_instruction_at(prog, pc)` and
+  read frame-exactly. This is what let the rnhv diagnosis correctly rule out a
+  cross-frame collision and localise a genuine live-then-deleted SSA.
+- **No clang on this box** → the suite reports ~2000 fewer assertions than the
+  pinned-machine number (clang-gated e2e self-skips). Tracked `bennettvm-5o86`.
+
+## ✅ SESSION 2026-07-24 (part 1) — a70z LANDED AND VERIFIED BOTH SIDES; `Dict{Int64,Int64}` RUNS ON THE VM
 
 **Supersedes the "impl parked UNVERIFIED on `wip/a70z-overflow-bit`" note in the
 2026-07-21 section below — that is now STALE.** The parked WIP (`1f521d3d`) had

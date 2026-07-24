@@ -183,7 +183,10 @@ from a reversible-by-construction source language) and the same fix.
 
 **Residual locals.** A genuinely dead arg name now lingers in `active_locals`
 until its frame pops, inflating L3 snapshots and L2 residuals. Measured at
-halt on the pinned fixtures:
+halt on the acceptance fixtures (these counts are a one-time MEASUREMENT, not a
+suite-pinned invariant — `test_collatz_roundtrip.jl` asserts only
+`step_count>0`/`==0`, so a future trajectory-shape drift would not trip a
+test; see `bennettvm-axfr` for the note that a step-count pin is optional):
 
 | fixture | locals before | after | Δ |
 |---|---|---|---|
@@ -214,8 +217,9 @@ Mitigations:
    `VMProgram`: every operand read must be dominated by a definition on every
    path reaching it. That turns the stale-read class into a construction-time
    error and is the proper fix; it is the natural companion to M2.18's
-   `validate(::VMProgram)` pass. Not filed as blocking: no such lowering bug
-   is known today, and the diagnostic above localises one in one run.
+   `validate(::VMProgram)` pass. Filed as `bennettvm-axfr` (P2) with the Rule-9
+   forcing condition. Not blocking: no such lowering bug is known today, and
+   the diagnostic above localises one in one run.
 
 Note the risk is *bounded by SSA discipline*: a stale read can only find a
 name that (a) collides exactly and (b) is in the same frame. Per-body `__vN`

@@ -9,6 +9,49 @@
 
 ## 2026-07-24 — `bennettvm-rnhv`: the φ-edge stops destroying its args (ADR 0022)
 
+**Orchestrator/reviewer note (added at session close).** This landed through a
+full Core-tier cycle: a diagnosis scout (classified the wall (C) BVM-ingest, not
+front-end, by watching the SSA's lifetime frame-exactly rather than by name — the
+name-collision trap from the a70z session made a name-only read untrustworthy),
+then **two independent design proposers who DIVERGED**, then orchestrator
+adjudication, then implementer, then a mandatory hostile reviewer (Rule 6).
+
+The divergence is the part worth remembering. Proposer 1 wanted to PRESERVE
+linearity by inserting an explicit duplicating `Define` at every non-linear
+φ-incoming (generalising the e4l hatch). Proposer 2 wanted to RELAX the transfer
+(delete the `delete!`). The adjudication turned on two things proposer 2 proved
+that proposer 1 missed: (i) inserting a duplication **does not actually restore
+linearity** — the original is still never destroyed by anything, so it just
+launders the non-linearity while paying a step + an instruction; and (ii) it
+would rewrite the lowering of collatz/matrix_tri/matrix_sum (2 hazards each),
+i.e. perturb currently-green fixtures to fix a bug they don't have. The decisive
+evidence was **ADR 0019 Amendment A.1** — the project had already hit this exact
+bug at the `CallEnter` boundary (multi-use LLVM SSA, MOVE deleted a live caller
+value, `KeyError`), already chosen COPY over MOVE, and already hostile-ratified
+that "the zero-history claim is *stronger* under COPY — nothing is erased." rnhv
+is that same decision at the φ-edge; we were inconsistent, not undecided.
+
+Hostile reviewer verdict: **ACCEPT**, 2 non-blocking. The reviewer hand-built two
+adversarial VMPrograms specifically to open a reversibility hole — an injective
+`UnconditionalExit` overwriting a *live* param with no history entry, and a
+name-collision survivor read after the join — and both round-tripped exactly
+under L2 and L3. The reason the attack can't work, worth internalising: reversal
+here is **checkpoint + deterministic forward replay**, so `is_injective=true`
+suppresses only the per-step *log*, never the invertibility — a clobbered value
+is always reconstructed by replaying forward from the nearest checkpoint. Two
+accuracy fixes from the review applied to ADR 0022: the collatz/matrix count
+table is a one-time MEASUREMENT, not a suite-pinned invariant (nothing asserts
+exact step counts today), and the deferred dominance validator is now filed as
+`bennettvm-axfr` rather than described in prose only.
+
+The single most important fact for a future agent: **this bug was LATENT in
+programs the suite already asserted green.** The identical 32 static hazards live
+in the 1-insert `Dict{Int8,Int8}` and `Dict{Int64,Int64}` (both green e2e); 14
+inserts only made the grow branch reachable so the fatal use executed. A green
+suite is not proof a φ-edge relaxation is unnecessary — `test_rnhv_phi_multiuse.jl`
+§(5) therefore guards the invariant with a trajectory-INDEPENDENT static hazard
+scan on the cheap 1-insert fixture, not only the expensive 14-insert e2e.
+
 Core-tier change to `src/interpreter/Interpreter.jl`. Design phase was 2
 independent analyses (they DIVERGED) + reviewer adjudication; this session is
 the implementation of the adjudicated design.
