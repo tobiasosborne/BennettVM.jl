@@ -7,6 +7,48 @@
 
 ---
 
+## 2026-07-24 — beads sync: the local dolt DB had silently rolled back the 7xa close
+
+Operational session, no source change. `git` was already at `origin/master`
+(0 ahead / 0 behind) — but that says **nothing** about bead state in this repo,
+and this session is the cleanest demonstration yet of why.
+
+**Symptom.** `bd stats` read **216 issues / 129 closed / 2 in_progress**, while
+the git-tracked `.beads/issues.jsonl` (committed 2026-07-21 in `4ca1f1f`) held
+**217 issues + 1 memory / 143 closed**. Concretely, `bd show bennettvm-7xa`
+printed **OPEN** — the local DB still believed the P0 SC9-Case-B gate was open,
+five weeks after the milestone entry below records it CLOSED. An agent trusting
+`bd` over the jsonl would have re-litigated finished work.
+
+**Cause — the sync model, working as designed.** BennettVM is **jsonl-ONLY**:
+`.beads/embeddeddolt/` is not git-tracked (`git ls-files .beads/` lists exactly
+9 files, none under `embeddeddolt/`), so the dolt DB is per-machine scratch and
+bead state crosses machines *only* through `.beads/issues.jsonl`. `git pull`
+moves the jsonl and leaves the DB untouched. This differs from Bennett.jl, where
+the dolt store itself is committed and the jsonl is the secondary export — so
+the two repos fail in **opposite** directions and need opposite fixes.
+
+**Fix.** `bd import` → "Imported 217 issues and 1 memories"; DB now 217 / 143
+closed / 74 open, `7xa` CLOSED, `case-b-closed-world-settled` memory intact.
+Nothing to commit — `git status .beads/` was clean afterwards. (Note: bd did NOT
+auto-re-export and re-dirty the jsonl this time, unlike the 2026-06-25 session;
+don't assume — check `git status` after every import.)
+
+**Rule for future agents in this repo: after any `git pull`, run `bd import`
+before trusting `bd ready` / `bd show`.** It is load-bearing, not cosmetic.
+
+Sibling side, same session: Bennett.jl had the mirror-image problem — its dolt
+store was current (595 issues + 9 memories) but its `issues.jsonl` was 5 weeks
+stale, missing `Bennett-a70z`/`zdd6` and three closes. Refreshed and committed
+there (`73b796c`). Full write-up in `Bennett.jl/worklog/095`.
+
+Left untouched: the eight untracked `references/*` literature directories
+(ad-and-checkpointing, foundational, implementations, quantum-uncomputation,
+reverse-debugging, reversible-ir, reversible-isa, reversible-languages) — owner's
+call whether they belong in git.
+
+---
+
 ## 🎯 MILESTONE — 2026-07-12 — bennettvm-7xa CLOSED: SC9 Case B (reversible Julia Dict) COMPLETE
 
 With `90l`/`klgz` landing below, EVERY dependency of the P0 e2e gate `7xa` is
