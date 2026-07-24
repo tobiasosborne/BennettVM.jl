@@ -7,6 +7,73 @@
 
 ---
 
+## 2026-07-24 — `Dict{Int64,Int64}` runs and reverses on the VM (Bennett-a70z, downstream half)
+
+Cross-repo verification session. Bennett.jl branch `a70z-overflow-bit` @ `d4b4fa1`
+checked out (BennettVM's `Manifest.toml` path-deps `../Bennett.jl`, so BVM built
+against it automatically). **BVM needed ZERO source changes** — the prediction in
+the 2026-07-21 HANDOFF ("BVM needs no changes for a70z; emitted opcodes already
+ingestable") held exactly. One new test file, one `runtests.jl` registration.
+
+**The result: `Dict{Int64,Int64}` is end-to-end green.** `fdict64(a,b) = (d =
+Dict{Int64,Int64}(); d[a]=b; d[a])` extracts as a 4-body closed-world set
+(`fdict64`, `setindex!`, `rehash!`, `ht_keyindex2_shorthash!`), lowers to a
+552-block / 4-function `VMProgram`, runs in **664 steps** to `fdict64(3,7) == 7`
+and `fdict64(5,9) == 9`, and `unrun!`s to the exact initial state with empty
+history under BOTH the L2 and L3 regimes. Per-step inverse holds across the whole
+trajectory. i8 non-regression re-verified first: `test_dict_roundtrip.jl` 34/34,
+`test_x3t0_multikey_return.jl` 100/100, both `--check-bounds=yes`.
+
+New gate: `test/test_a70z_dict64_roundtrip.jl` (347 assertions,
+`--check-bounds=yes`), registered after `test_jlglobal_singleton.jl`. ~45 s,
+dominated by the one-time closed-world extraction (done once at module scope and
+shared across the five testsets — the sibling files re-extract per testset, which
+we deliberately did not copy).
+
+### What surprised us / what a future agent should know
+
+* **The i64 path went further than the i8 path did on its first day.** No new
+  wall at all: extract → lower → run → round-trip on the first attempt. The
+  known next frontier, `bennettvm-rnhv` (Dict GROWTH, ≥14 inserts → the
+  rehash-grow copy loop, `KeyError: :__v96`), did **not** arrive early — a
+  single-insert `Dict{Int64,Int64}` never enters the grow-copy path. i64-vs-i8 is
+  purely an *element-size* axis (elsize 8 vs 1); `rnhv` is an orthogonal
+  *element-count* axis. Don't conflate them.
+
+* **`__vN` SSA names COLLIDE across the four extracted bodies.** The first probe
+  scanned `active_locals` by name and reported the a70z fuse bit `__v152` taking
+  the value `1099511628136` — which is `ARENA_BASE (2^40) + 360`, i.e. a *heap
+  pointer* held by a different frame's identically-named SSA value, not a
+  corrupt i1. Any per-name inspection of a multi-body closed-world run is
+  frame-ambiguous. The fix, and the idiom the new test uses: resolve
+  `_instruction_at(prog, rs.current.pc)` **before** `step!`, and only then read
+  `active_locals` — that pins the record to the executing frame.
+
+* **The a70z sites really execute, and only 2 of 4 do.** On the single-insert
+  trajectory the fuse fires twice inside `rehash!` with `%value_phi == 16` (the
+  `Dict{Int64,Int64}()` initial slot count → `16*8 = 128` bytes, no overflow);
+  the other two sites sit on `rehash!` paths this program never takes. The
+  overflow bit is 0 at both, so `Dict` control flow takes the no-overflow arm.
+
+* **Consequence for the runtime check: the only operand value ever observed is
+  16.** Asserting `(v < -2^60) | (v > 2^60-1) == mul_with_overflow(v,8)[2]` on
+  the observed values is therefore nearly vacuous — 16 is 57 binades from either
+  boundary. The overflowing arm is *unreachable* from any terminating `Dict`
+  program (a Dict with > 2^60 slots cannot be allocated), so it can never be
+  covered dynamically. The test covers the bounds **arithmetically** instead
+  (testset (d0): both boundaries, the adjacent rejects, the type extremes, a
+  256-value random sweep, and tightness on both sides). Mutation-proof: `_A70Z_HI
+  + 1` turns testsets (a), (b), (d0) and (d) RED (11 failures) — the a70z
+  assertions are load-bearing, not decorative.
+
+* **`Define` carries the icmp predicate; `IRICmp.width` is the OPERAND width.**
+  The a70z compares ingest as `Define(dest, %value_phi, :slt, -2^60, 64)` —
+  width 64, not 1, because the i1 result is never masked (ADR 0012 R1 / §D2).
+  The fuse ingests as `Define(bit, lo, :or, hi, 1)`. Both are pre-existing arms
+  in `src/ir/ingest_body.jl`; nothing new was needed.
+
+---
+
 ## 2026-07-24 — beads sync: the local dolt DB had silently rolled back the 7xa close
 
 Operational session, no source change. `git` was already at `origin/master`

@@ -665,6 +665,20 @@ using BennettVM
     # PAST Dict construction (the jl_global wall cleared). Sits after the const-
     # global fixture (its upstream GlobalROM machinery).
     include("test_jlglobal_singleton.jl")
+    # Bennett.jl bead `Bennett-a70z`, DOWNSTREAM half: `Dict{Int64,Int64}`
+    # end-to-end. Upstream replaced the lbot overflow-bit prover with the exact
+    # constant-operand no-overflow interval, so `rehash!`'s
+    # `llvm.smul.with.overflow.i64(%value_phi, 8)` (elsize 8 — the i64 value
+    # type) now extracts as `IRICmp(:slt, -2^60) | IRICmp(:sgt, 2^60-1)` fused
+    # by a width-1 `IRBinOp(:or)`. This file proves BVM INGESTS and RUNS that
+    # shape: the a70z opcodes become `Define`s, `fdict64(3,7) == 7` /
+    # `(5,9) == 9` vs the native oracle, full round-trip under L2 and L3, the
+    # bounds are exactly the no-overflow set of `v*8`, the executed sites
+    # compute it correctly at runtime, and per-step inverse holds over the
+    # whole trajectory. The i64 sibling of the i8 `test_x3t0` (f) /
+    # `test_cwd4` (iv) gates; sits with the other real-closed-world-set tests.
+    # ~45 s (dominated by the one-time set extraction).
+    include("test_a70z_dict64_roundtrip.jl")
     # B1 (bd `bennettvm-zr7x`): `run!(...; record=false)` forward-only fast
     # mode — the Track-B framerate baseline
     # (`docs/design/emulator-on-bennettvm.md` §9.2). Fast == normal forward
