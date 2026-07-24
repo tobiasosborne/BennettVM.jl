@@ -17,12 +17,39 @@ convention, not a lockfile guarantee — the Manifest imposes no revision
 constraint.
 
 **Last validated against:** `13ce767` (Bennett-klgz: determinism classifier at the JIT-global reject)
-**Validated date:** 2026-07-12 (previously `e7454fd`/`fd4afea` same day; before that `31b63a6` of 2026-06-05)
+**Validated date:** 2026-07-24 (previously `13ce767` of 2026-07-12; `e7454fd`/`fd4afea` same day; before that `31b63a6` of 2026-06-05)
 **Bennett.jl HEAD commit summary at validation:**
-`Bennett-klgz: determinism classifier at the JIT-global reject — objectid keys fail loud by name`
-**Validation evidence:** BennettVM full `Pkg.test` **9848/9848** against this
-exact Bennett.jl tree (2026-07-12, fresh subprocess, 11m04s); Bennett.jl suite
-689699 Pass / 2 pre-existing Broken (`BENNETT_HEAVY_TESTS=0`, 36m44s).
+`Bennett-a70z: exact constant-operand overflow bit — Dict{Int64,Int64} extracts and runs`
+**Validation evidence:** BennettVM full `Pkg.test` **7820/7820** against this
+exact Bennett.jl tree (2026-07-24, 3m33s); Bennett.jl suite **690398 Pass /
+3 Broken** (all pre-existing — `@test_broken` counts byte-identical to the
+pre-merge `main`), 28m37s, **heavy tests ON** (a strictly stronger gate than
+the previous entry's `BENNETT_HEAVY_TESTS=0`).
+
+> ⚠️ **Read the BVM number carefully — it went DOWN (9848 → 7820) and that is
+> environmental, not a regression.** The 2026-07-12 validation ran on the
+> `/home/tobias` box; this one ran on `/home/tobiasosborne`, where **clang is
+> not installed** (rustc is). The clang-gated e2e blocks therefore self-skip
+> per the documented T5-corpus convention (`test_global_array_vm.jl:81`
+> `Sys.which("clang")`, `runtests.jl:656`), and `test_fast_mode.jl`'s E0 MVP
+> sub-testset is opt-in (`BENNETTVM_MVP_TESTS=1`). a70z only ADDED a test file
+> (+347) and cannot reduce counts. **Consequence: a "full suite green" from
+> this box is ~20 % weaker than one from the pinned box, and only two easily
+> missed `@info` lines say so.** Tracked as `bennettvm-5o86` (install clang
+> and/or make the suite print a loud skipped-block banner).
+
+**Repin rationale (2026-07-24).** `Bennett-a70z` made the front-end emit a new
+instruction *combination* on the `ptr_cells` path — up to 2 `IRICmp`
+(`:slt`/`:sgt`/`:ult`/`:ugt`) fused by a width-1 `IRBinOp(:or)` — where it
+previously either emitted a constant-zero bit or failed loud. No new IR node
+type and no BVM source change was required: the shapes ingest as ordinary
+`Define`s. Verified end-to-end rather than argued — `Dict{Int64,Int64}` lowers
+to a 552-block `VMProgram`, runs 664 steps to `fdict64(3,7) == 7`, and
+`unrun!`s to the exact initial state with empty history under both L2 and L3
+(`test/test_a70z_dict64_roundtrip.jl`, 347 assertions, mutation-proved).
+Residual: the *one-sided* and *both-constant* emission shapes are not yet
+exercised downstream (the real Dict corpus only produces the two-sided shape)
+— tracked as `Bennett-tl1l`.
 
 ## Repin rationale (2026-06-05)
 
