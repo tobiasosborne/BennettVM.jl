@@ -679,6 +679,19 @@ using BennettVM
     # `test_cwd4` (iv) gates; sits with the other real-closed-world-set tests.
     # ~45 s (dominated by the one-time set extraction).
     include("test_a70z_dict64_roundtrip.jl")
+    # bead `bennettvm-rnhv` (+ `bennettvm-35yn`): a φ-incoming whose use
+    # OUTLIVES the edge must survive the edge. The cross-block args→params
+    # transfer used to `delete!` the sender's args (Mogensen RSSA §4 p. 210
+    # note 2), a rule whose block-parameterization precondition BennettVM's
+    # flat per-frame register file does not satisfy; ADR 0022 relaxes it to a
+    # non-destructive BIND. Two hand-built witnesses (straight-line + loop,
+    # both RED at 2efd6bc), a no-second-use control, the real 14-insert
+    # `Dict{Int8,Int8}` AND `Dict{Int64,Int64}` acceptance gate, a
+    # trajectory-INDEPENDENT static hazard scan proving the bug was LATENT in
+    # the already-green ONE-insert fixture, and the Rule-1 unbound-SSA
+    # diagnostic. Sits after the a70z gate (its i64-Dict sibling).
+    # ~55 s (dominated by three one-time closed-world set extractions).
+    include("test_rnhv_phi_multiuse.jl")
     # B1 (bd `bennettvm-zr7x`): `run!(...; record=false)` forward-only fast
     # mode — the Track-B framerate baseline
     # (`docs/design/emulator-on-bennettvm.md` §9.2). Fast == normal forward

@@ -7,6 +7,126 @@
 
 ---
 
+## 2026-07-24 — `bennettvm-rnhv`: the φ-edge stops destroying its args (ADR 0022)
+
+Core-tier change to `src/interpreter/Interpreter.jl`. Design phase was 2
+independent analyses (they DIVERGED) + reviewer adjudication; this session is
+the implementation of the adjudicated design.
+
+**The one-line fix.** `_rename_args_to_params!` ran `delete!(locals, a)` for
+every cross-block edge arg. Removed. Renamed `_bind_args_to_params!`; two-phase
+capture-then-assign and the arity guard kept.
+
+**RED, verbatim, at `2efd6bc`.** 14-insert `Dict{Int8,Int8}` — extracts (4
+bodies), lowers (552 blocks), dies at step 4603 of ~10790:
+
+```
+KeyError: key :__v327 not found
+instruction: Define(:__v76, :value_phi135, :sub, :__v327, 64)
+frames:      [(:__entry), (:setindex!), (:rehash!)]
+```
+
+and the 2-block hand-built witness dies with `KeyError: key :v not found`.
+Both green after. `Dict{Int64,Int64}` at 14 inserts failed identically — the
+wall is width-INDEPENDENT.
+
+### The three things worth knowing
+
+**1. The bug was LATENT in programs the suite already asserted GREEN.** This is
+the headline. A static scan of the *lowered* `VMProgram` finds the identical
+hazard shape (an exit arg with a use that outlives the edge) in the ONE-insert
+`Dict{Int8,Int8}` / `Dict{Int64,Int64}` fixtures — including inside `rehash!`,
+the exact body that died — and 2 each in collatz, matrix_tri, matrix_sum.
+Fourteen inserts merely make the grow branch REACHABLE. So the natural test
+("run a 14-insert Dict") is trajectory-dependent and stops discriminating the
+moment the front-end changes which edge runs.
+`test/test_rnhv_phi_multiuse.jl` §(5) therefore asserts the hazard count
+statically on the CHEAP one-insert fixture. If you ever touch φ lowering, that
+is the assertion that will tell you.
+
+**2. Mogensen note 2 was imported without its precondition.** Opened the local
+PDF (`references/reversible-ir/mogensen-2016-rssa.pdf`, §4 p. 210 — verified,
+not recalled). Note 2 says "uses of variables as parameters to labels in exit
+points also destroy these variables". That is well-typed **because RSSA blocks
+are parameterized**: p. 209 — "we just add a parameter to the labels in the
+join point and in the jumps to the join point" — every value live across a
+boundary is threaded through the param list, so exit-arg ⟺ last-use. BennettVM's
+register file is a flat `Dict{Symbol,Int64}` per FRAME; non-φ values cross
+blocks *implicitly*, by dict persistence, and never appear in any args/params
+list. So an exit arg carries zero information about deadness. Note 3 on the same
+page corroborates that RSSA is not fully linear anyway: in `x := y ⊕ R1 ⊙ R2`
+only `y` is destroyed — `R1`/`R2` must survive for the inverse.
+
+Generalise the lesson: **an imported rule from a reversible-by-construction
+source language needs its precondition checked against our IR, every time.**
+This is now the SECOND instance of the same class — ADR 0019 Amendment A.1
+(2026-06-10) hit it at the CALL edge (`KeyError: :found`) and replaced
+`CallEnter`'s MOVE with a COPY for exactly this reason. `rnhv` is that bug one
+boundary over. If a third shows up, look for a MOVE.
+
+**3. Conservativity was MEASURED, not argued.** The `π ∘ N` factoring proves
+injectivity can only strengthen (`D = π ∘ N`, so `D` injective ⟹ `N`
+injective), but the reviewer asked for byte-identical trajectory shapes.
+Probed collatz {1,2,3,6,7,11} / matrix_sum {0..4} / matrix_tri {0..4} with the
+`delete!` in and out: **steps, history length, checkpoint count and delta count
+are identical in every row**. The ONLY delta is the residual local count —
+collatz 13→16, matrix_sum 10→15, matrix_tri 22→30 — which is the predicted
+bounded cost (one per distinct φ-edge arg name per frame; NOT a function of
+trip count). All three fixtures record zero `DeltaEntry`s, so today that cost
+lands only on L3 checkpoint size.
+
+### Also landed
+
+* **`bennettvm-35yn`** — `src/ir/unbound_ssa.jl`. `_resolve` no longer lets a
+  bare `KeyError` out; it names the symbol, the full instruction, the pc, the
+  frame stack as `fname@pc=N` per activation, and a bound-name sample. This is
+  not a nicety: it is the mitigation for this change's one real risk (a
+  malformed lowering can now find a STALE binding and read it silently instead
+  of failing loud). `ctx` is threaded from `Define` and `ArithmeticAssignment`
+  only — the ~25 other `_resolve` sites pass `nothing` and get symbol + pc +
+  frames, which the pc already localises. Threading the rest is mechanical and
+  was deliberately not bundled into a correctness fix.
+  Gotcha for whoever writes the next assertion against that message: the bottom
+  frame is named **`:__entry`**, not the routine name — only a `CallEnter`-pushed
+  frame carries the callee's `fname`.
+* **The deferred optimization is real work, not a hedge.** Liveness-gated MOVE:
+  restore `delete!` for args a backward liveness pass proves dead. That is the
+  same tier ADR 0019 §7 already promises for call args, so they should land as
+  ONE liveness pass. Trigger condition recorded in ADR 0022.
+
+### Traps hit while writing the test
+
+* A `for i in Int8(1):Int8(14); d[i] = i; end` loop does NOT reach the runtime
+  wall — it dies at LOWERING with `CallEnter: duplicate arg names in
+  [new::Dict, :value_phi, :value_phi]` (Julia passes one SSA value twice to
+  `setindex!`). That is a genuinely separate wall; the fixture writes the 14
+  inserts out straight-line to avoid conflating them. Worth a bead if anyone
+  wants loop-driven Dict fills.
+* The static hazard scanner's first version keyed blocks by their `func#label`
+  prefix and mapped an UNQUALIFIED label to itself — which put every hand-built
+  test block in its own "function" and made the scan silently blind. Testset (1)
+  caught it. Unqualified labels now map to one shared sentinel.
+* Mutation-proof needs the file included INSIDE an outer `@testset`, otherwise
+  the first failing top-level testset throws and you never see whether the
+  control stayed green.
+
+**Mutation-proof result** (Rule 5): re-inserting `delete!` → §(1) straight-line
+witness, §(2) loop witness and §(4) the 14-insert Dict gate all ERROR with
+`unbound SSA name`; the §(3) control stays **41/41 green**, which is what makes
+the three failures attributable to the hazard rather than the harness. §(5) and
+§(6) stay green by design (structural claim; diagnostic).
+
+**Files**: `src/interpreter/Interpreter.jl` (the fix + docstring),
+`src/ir/unbound_ssa.jl` (new), `src/ir/arithmetic_assignment.jl` (`_resolve`),
+`src/ir/define_instruction.jl`, `src/history/Injective.jl` (comment),
+`src/BennettVM.jl` (include), `docs/adr/0022-phi-edge-binding.md` (new),
+`test/test_rnhv_phi_multiuse.jl` (new, 251 assertions), `test/test_interpreter.jl`
+(4 testsets renamed + the `!haskey(:m)` assertion flipped to `haskey`),
+`test/runtests.jl`. `src/ir/ingest.jl` / `ingest_phi.jl`: **untouched, on
+purpose** — that is what keeps the pinned Define counts byte-identical.
+
+---
+
 ## 2026-07-24 — `Dict{Int64,Int64}` runs and reverses on the VM (Bennett-a70z, downstream half)
 
 Cross-repo verification session. Bennett.jl branch `a70z-overflow-bit` @ `d4b4fa1`

@@ -181,8 +181,11 @@ checkpoint-replay layer's responsibility (see this file's top-of-module
 docstring "The cross-iteration crux").
 """
 function forward(instr::Define, s::IState)::IState
-    lv = _resolve(instr.lhs, s)
-    rv = _resolve(instr.rhs, s)
+    # `instr` is threaded into `_resolve` purely so an unbound operand fails
+    # loud WITH the instruction in the message (`bennettvm-35yn`;
+    # `src/ir/unbound_ssa.jl`). No effect on the happy path.
+    lv = _resolve(instr.lhs, s, instr)
+    rv = _resolve(instr.rhs, s, instr)
     # Width-aware: `_apply_binop` computes in i`width` semantics (ADR 0012
     # R1, bead bennettvm-bgc). `width == 64` (the default) is a no-op, so a
     # synthetic / hand-built Int64 Define is byte-identical to before.

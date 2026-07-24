@@ -1157,12 +1157,13 @@ end
 #      where `target` is `UnconditionalExit.target` or, for the
 #      conditional case, `target_true` / `target_false` selected by
 #      `s.locals[condition]`.
-#   2. Performs the args→params positional rename: the sender's `args`
-#      are removed from `locals` and re-inserted under the receiver's
-#      `params` names. The rename is two-phase (capture-then-assign) so
-#      that the identity case `args == params` is a structural no-op
-#      rather than a delete-then-fail KeyError. See
-#      `_rename_args_to_params!`.
+#   2. Performs the args→params positional BIND: the value currently
+#      bound to each sender `arg` is copied to the receiver's matching
+#      `param` name. The bind is two-phase (capture-then-assign) so that
+#      the permutation case (`args = [:x,:y]`, `params = [:y,:x]`) does
+#      not stomp itself. The sender's `args` keys SURVIVE the edge — the
+#      destructive variant broke real programs; see
+#      `_bind_args_to_params!` and ADR 0022.
 #   3. Sets `s.current.pc = target_entry.fwd_address + 1` — i.e., one
 #      past the destination block's entry marker. The marker itself is
 #      a no-op-on-data (its `forward()` only bumps pc — see M2.9 / M2.10
@@ -1194,7 +1195,7 @@ end
 #
 # ## Args/params arity mismatch is a Rule-1 failure
 #
-# `_rename_args_to_params!` errors loudly if `length(args) != length(params)`.
+# `_bind_args_to_params!` errors loudly if `length(args) != length(params)`.
 # At Phase 2 a cross-block arity mismatch must not exist in a well-formed
 # IR — M2.18's `validate(::VMProgram)` pass (when it lands) will catch
 # it at construction time. But UNTIL that pass exists, the dispatch
@@ -1310,9 +1311,9 @@ function _dispatch_to_block!(s::RState, prog::VMProgram, target::Symbol,
     # activation's dict (cross-FUNCTION call/return — which pushes/pops frames —
     # is `CallEnter`/`ReturnExit`'s job, a later CW-B2 chunk).
     if entry_instr isa UnconditionalEntry
-        _rename_args_to_params!(active_locals(s.current), args, entry_instr.params)
+        _bind_args_to_params!(active_locals(s.current), args, entry_instr.params)
     elseif entry_instr isa ConditionalEntry
-        _rename_args_to_params!(active_locals(s.current), args, entry_instr.params)
+        _bind_args_to_params!(active_locals(s.current), args, entry_instr.params)
     elseif entry_instr isa BeginInstruction
         # Begin's params are the subroutine's formals; cross-block
         # dispatch arriving here is the main-routine call (the M2.14
@@ -1321,7 +1322,7 @@ function _dispatch_to_block!(s::RState, prog::VMProgram, target::Symbol,
         # on a Begin block — e.g., a main-rooted CFG where main was
         # encoded with a BeginInstruction rather than an
         # UnconditionalEntry — must also bind positionally).
-        _rename_args_to_params!(active_locals(s.current), args, entry_instr.params)
+        _bind_args_to_params!(active_locals(s.current), args, entry_instr.params)
     else
         error("_dispatch_to_block!: target block :", target,
               " has unexpected entry type ", typeof(entry_instr),
@@ -1341,45 +1342,136 @@ function _dispatch_to_block!(s::RState, prog::VMProgram, target::Symbol,
 end
 
 """
-    _rename_args_to_params!(locals::Dict{Symbol,Int64},
-                            args::Vector{Symbol},
-                            params::Vector{Symbol})
+    _bind_args_to_params!(locals::Dict{Symbol,Int64},
+                          args::Vector{Symbol},
+                          params::Vector{Symbol})
 
-Positional rename: for `i` in `1:length(args)`, the value at
-`locals[args[i]]` is moved to `locals[params[i]]`. Two-phase
-(capture all values, delete all args, then assign all params) so
-that the identity case `args == params` is a no-op rather than a
-delete-then-fail KeyError, AND so that renames that re-use names
-across the boundary (e.g., `args=[:x,:y]`, `params=[:y,:x]`) work
-correctly without intermediate stomping.
+Positional **bind** across a cross-block edge: for `i` in
+`1:length(args)`, the value at `locals[args[i]]` is copied to
+`locals[params[i]]`. The sender's `args` keys are left **bound** —
+this is a non-destructive transfer, not a move.
+
+The implementation is two-phase (capture ALL values, then assign ALL
+params) because the permutation case must not stomp itself: with
+`args = [:x,:y]`, `params = [:y,:x]`, a naive in-order loop would
+write `locals[:y] = locals[:x]` and then read the already-clobbered
+`:y`. The identity case (`args == params`) is a structural no-op.
 
 Arity mismatch (`length(args) != length(params)`) raises an
 `ErrorException` (Rule 1 — until M2.18's `validate(::VMProgram)`
 pass lands, the dispatch layer is the last line of defense).
 
+# Why this is NOT the destructive RSSA transfer (bead `bennettvm-rnhv`)
+
+Until 2026-07 this function was named `_rename_args_to_params!` and
+ran `delete!(locals, a)` for every arg, implementing Mogensen RSSA §4
+p.210 note 2:
+
+> "uses of variables as parameters to labels in exit points also
+>  destroy these variables"
+
+**That rule presupposes a precondition BennettVM does not satisfy.**
+RSSA blocks are *parameterized*: every value live across a block
+boundary is threaded through the label parameter list, so "the exit
+arg is the value's last use in this block" is true by construction,
+and that is what makes destroy-on-exit well-typed. BennettVM's
+register file is a flat `Dict{Symbol,Int64}` **per frame**
+(`active_locals`); non-φ values cross blocks *implicitly*, by dict
+persistence, and are never mentioned in any `args`/`params` list. The
+destructive half of note 2 was imported without the block
+parameterization that grounds it. (Note also that RSSA is not fully
+linear even in Mogensen: in `x := y ⊕ R1 ⊙ R2` only `y` is
+destroyed — `R1` and `R2` must survive, or the inverse cannot run.)
+
+The observable consequence: ordinary, verifier-legal LLVM SSA where a
+φ-incoming has another use that outlives the edge —
+
+```llvm
+load133:  %__v327 = add %__v326, 1              ; preheader: initial probe index
+L117:     %value_phi135 = phi [ %__v327, %load133 ], [ ..., latch ]
+L131:     %__v76 = sub %value_phi135, %__v327   ; probe DISTANCE — second use
+```
+
+— deleted `%__v327` on the `load133 → L117` edge and then died with a
+`KeyError` at the *legitimate* later read in `L131`. This is the shape
+Julia emits for every loop whose preheader value is re-read in the
+body; it was reproduced on a 14-insert `Dict{Int8,Int8}` and
+`Dict{Int64,Int64}` (width-independent), and a static scan finds the
+same hazard **latent** in `collatz`, `matrix_tri`, `matrix_sum` and in
+the ONE-insert Dict fixtures the suite already asserts green — those
+merely never execute the offending edge.
+
+# No-harm proof (why relaxing cannot weaken injectivity)
+
+The old destructive transfer `D` factors as `π ∘ N`, where `N` is this
+non-destructive bind and `π : locals ↦ locals ∖ args` drops the arg
+keys. If `D` is injective then so is `N`: `N(a) = N(b) ⟹ D(a) = π(N(a))
+= π(N(b)) = D(b) ⟹ a = b`. So the `is_injective(::UnconditionalExit) =
+true` claim in `src/history/Injective.jl` can only be preserved or
+strengthened, never weakened, and Landauer-wise we erase strictly less.
+
+Behaviourally the change is **conservative**: under `N` every name
+binds the same value at every step; the only difference is extra
+surviving keys. Any instruction reading a key present under both
+regimes gets the same value; an instruction reading a key present only
+under `N` would have thrown `KeyError` under `D`. Every previously
+passing program therefore keeps a bit-identical trajectory — same step
+counts, same checkpoints, same results. This was verified: the pinned
+step/checkpoint counts for collatz / matrix_tri / matrix_sum did not
+move.
+
+# In-project precedent
+
+This is the *same* decision the project already ratified at the
+sibling boundary. `docs/adr/0019-reversible-calls.md` Amendment A.1:
+the §3 MOVE (delete the arg from the caller frame) broke real programs
+(`KeyError: :found`), so `CallEnter` now COPIES arg values into the
+fresh callee frame — "the L1-injective / zero-history claim is
+stronger under COPY — nothing is erased." `bennettvm-rnhv` is that bug
+at the φ-edge instead of the call edge, and takes the same fix.
+
+# Residual cost, and the deferred optimization
+
+The bounded cost is that a genuinely dead arg name now lingers in
+`active_locals` until its frame pops, which slightly inflates L3
+snapshots and L2 residuals. The fix is a **liveness-gated MOVE**:
+restore `delete!(locals, a)` for exactly those args a backward
+liveness pass proves dead after the edge. That is the same
+optimization ADR 0019 §7 already promises for call args, and it is
+deferred until L3-snapshot / L2-residual size becomes the dominant
+history cost. See `docs/adr/0022-phi-edge-binding.md`.
+
 # Ref
 
+  * `references/reversible-ir/mogensen-2016-rssa.pdf` §4 ("Combining SSA
+    and RIL to RSSA"), p. 210, note 2 — the destructive rule, and the
+    block-parameterization precondition it assumes (same page, note 1:
+    "a parameter to a label in an entry point" *introduces* a variable;
+    note 3: `x := y ⊕ R1 ⊙ R2` destroys `y` only).
+  * `docs/adr/0022-phi-edge-binding.md` — the full decision record.
+  * `docs/adr/0019-reversible-calls.md` Amendment A.1 — the identical
+    call-edge decision, hostile-review-ratified 2026-06-10.
+  * `src/history/Injective.jl` — the `is_injective` claim the `π ∘ N`
+    proof protects.
   * CLAUDE.md Rule 1 — fail loud on arity mismatch.
   * M2.18 (not yet landed) — the cross-block invariant pass that
     will catch the same mismatch at construction time.
 """
-function _rename_args_to_params!(locals::Dict{Symbol,Int64},
-                                 args::Vector{Symbol},
-                                 params::Vector{Symbol})
+function _bind_args_to_params!(locals::Dict{Symbol,Int64},
+                               args::Vector{Symbol},
+                               params::Vector{Symbol})
     length(args) == length(params) ||
-        error("_rename_args_to_params!: args/params arity mismatch — ",
+        error("_bind_args_to_params!: args/params arity mismatch — ",
               "args=", args, " (length ", length(args), ") vs ",
               "params=", params, " (length ", length(params), "). ",
               "A cross-block edge with mismatched sender/receiver ",
               "arity is malformed RSSA; M2.18's validate pass will ",
               "catch this at construction time once it lands.")
-    # Two-phase: capture, delete, assign. Necessary for the identity
-    # case (args == params) and for the cross-permutation case
-    # (args = [:x,:y], params = [:y,:x]).
+    # Two-phase: capture ALL, then assign ALL. Required for the
+    # permutation case (args = [:x,:y], params = [:y,:x]), which an
+    # in-order single loop would stomp. NOT destructive: the arg keys
+    # survive the edge — see this docstring's rnhv section and ADR 0022.
     values = Int64[locals[a] for a in args]
-    for a in args
-        delete!(locals, a)
-    end
     for (p, v) in zip(params, values)
         locals[p] = v
     end

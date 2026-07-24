@@ -517,14 +517,16 @@ end
 #      to `tbr` if the condition is nonzero and `fbr` otherwise.
 #      Run twice with the predicate set to each value; verify the
 #      correct branch's body is the one executed.
-#   3. **`_rename_args_to_params!` identity case** — args == params
-#      passes through unchanged. The two-phase rename's capture-
-#      delete-assign is exactly the discipline that makes this work
-#      (a one-phase implementation would silently lose values when
-#      the same Symbol appears on both sides).
-#   4. **`_rename_args_to_params!` rename case** — args != params
-#      destroys old names and creates new ones with the same values.
-#   5. **`_rename_args_to_params!` arity mismatch** — Rule 1 raise
+#   3. **`_bind_args_to_params!` identity case** — args == params
+#      passes through unchanged.
+#   4. **`_bind_args_to_params!` distinct case** — args != params
+#      creates the receiver's names with the same values, and LEAVES
+#      the sender's names bound (`bennettvm-rnhv` / ADR 0022: the
+#      transfer is a non-destructive BIND, not a MOVE).
+#   5. **`_bind_args_to_params!` permutation case** — args = [:x,:y],
+#      params = [:y,:x] swaps without stomping; this is the case the
+#      two-phase capture-then-assign shape exists for.
+#   6. **`_bind_args_to_params!` arity mismatch** — Rule 1 raise
 #      on `length(args) != length(params)`.
 #
 # Per CLAUDE.md Rule 4, every test asserts an invariant against a
@@ -557,9 +559,17 @@ end
     # :m → :m_in across the cross-block edge, then :m_in → :r via
     # bb2's body (xor identity again). Final result preserves 99.
     @test BennettVM.active_locals(rs.current)[:r] == 99 ⊻ (99 ⊻ 0)
+    # `:n` and `:m_in` were destroyed by `ArithmeticAssignment.forward`
+    # (Mogensen note 2's *assignment* half, which BennettVM DOES implement:
+    # the first RHS variable is destroyed by the use).
     @test !haskey(BennettVM.active_locals(rs.current), :n)
-    @test !haskey(BennettVM.active_locals(rs.current), :m)
     @test !haskey(BennettVM.active_locals(rs.current), :m_in)
+    # `:m` SURVIVES the cross-block edge. `bennettvm-rnhv` / ADR 0022: the
+    # args→params transfer is a non-destructive BIND, not a MOVE — Mogensen
+    # note 2's *exit-point* half assumes RSSA's parameterized blocks, a
+    # precondition BennettVM's flat per-frame register file does not satisfy.
+    # This line was `!haskey(..., :m)` before that change.
+    @test BennettVM.active_locals(rs.current)[:m] == 99 ⊻ (99 ⊻ 0)
 end
 
 @testset "cross-block ConditionalExit — true and false branches (M3.6)" begin
@@ -622,44 +632,45 @@ end
     @test BennettVM.active_locals(rs_f.current)[:c] == 0
 end
 
-@testset "_rename_args_to_params! identity case (M3.6)" begin
-    # args == params: net-no-op on the dict's key set, values
-    # preserved. The two-phase capture-delete-assign discipline is
-    # what makes this work (a one-phase delete-then-assign would
-    # KeyError because the values are gone before the assign reads
-    # them).
+@testset "_bind_args_to_params! identity case (M3.6)" begin
+    # args == params: net-no-op on the dict, values preserved.
     locals = Dict(:x => Int64(1), :y => Int64(2))
-    BennettVM._rename_args_to_params!(locals, [:x, :y], [:x, :y])
+    BennettVM._bind_args_to_params!(locals, [:x, :y], [:x, :y])
     @test locals == Dict(:x => Int64(1), :y => Int64(2))
 end
 
-@testset "_rename_args_to_params! rename case (M3.6)" begin
-    # Distinct args/params: old names destroyed, new names created
-    # with values preserved positionally.
+@testset "_bind_args_to_params! distinct case — args SURVIVE (M3.6 / rnhv)" begin
+    # Distinct args/params: new names created with the values, and the
+    # sender's names STAY BOUND. `bennettvm-rnhv` / ADR 0022 — the transfer
+    # is a non-destructive BIND. Before that change these two names were
+    # `delete!`d here, which destroyed φ-incomings that had a second, later
+    # use (Julia's canonical loop shape: a preheader value re-read in the
+    # body) and killed the 14-insert Dict programs with a bare `KeyError`.
     locals = Dict(:a => Int64(7), :b => Int64(11))
-    BennettVM._rename_args_to_params!(locals, [:a, :b], [:x, :y])
-    @test locals == Dict(:x => Int64(7), :y => Int64(11))
-    @test !haskey(locals, :a)
-    @test !haskey(locals, :b)
+    BennettVM._bind_args_to_params!(locals, [:a, :b], [:x, :y])
+    @test locals == Dict(:a => Int64(7), :b => Int64(11),
+                         :x => Int64(7), :y => Int64(11))
+    @test haskey(locals, :a)          # was `!haskey` pre-rnhv
+    @test haskey(locals, :b)
 end
 
-@testset "_rename_args_to_params! permutation case (M3.6)" begin
-    # Cross-permutation (args = [:x,:y], params = [:y,:x]) is the
-    # case the two-phase rename specifically protects: a one-phase
-    # implementation would stomp :x when params[1] = :y is assigned
-    # because :y was already a key. The capture-then-assign shape
-    # avoids the stomp.
+@testset "_bind_args_to_params! permutation case (M3.6)" begin
+    # Cross-permutation (args = [:x,:y], params = [:y,:x]) is the case the
+    # two-phase capture-then-assign shape specifically protects: an in-order
+    # single loop would write locals[:y] = locals[:x] and then read the
+    # already-clobbered :y. This is why the two-phase shape SURVIVES the
+    # rnhv relaxation even though the `delete!` did not.
     locals = Dict(:x => Int64(10), :y => Int64(20))
-    BennettVM._rename_args_to_params!(locals, [:x, :y], [:y, :x])
+    BennettVM._bind_args_to_params!(locals, [:x, :y], [:y, :x])
     @test locals == Dict(:y => Int64(10), :x => Int64(20))
 end
 
-@testset "_rename_args_to_params! arity mismatch (M3.6)" begin
+@testset "_bind_args_to_params! arity mismatch (M3.6)" begin
     # Rule 1: arity mismatch fails loud, not silent. M2.18's
     # validate pass (when it lands) will catch this at construction
     # time; until then, the dispatch layer is the last line of
     # defense.
     locals = Dict(:a => Int64(1))
-    @test_throws ErrorException BennettVM._rename_args_to_params!(
+    @test_throws ErrorException BennettVM._bind_args_to_params!(
         locals, [:a], [:x, :y])
 end

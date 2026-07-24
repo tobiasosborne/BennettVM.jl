@@ -150,8 +150,27 @@ end
 
 # Resolve an RValue against the current locals. `Symbol` => lookup;
 # `Int64` => literal.
-_resolve(x::Symbol, s::IState) = active_locals(s)[x]
-_resolve(x::Int64,  ::IState)  = x
+#
+# The optional third argument `ctx` is the `Instruction` performing the read,
+# used ONLY to enrich the Rule-1 failure message when the name is unbound
+# (`bennettvm-35yn`; `src/ir/unbound_ssa.jl`). It is threaded from the two
+# generic arithmetic carriers — `Define` and `ArithmeticAssignment` — which is
+# where operand reads overwhelmingly land, including every `bennettvm-rnhv`
+# failure. Other call sites (revmap / select / array_index / memory_floor)
+# pass nothing and get symbol + pc + frame stack + bound-name sample; the pc
+# in that message locates the instruction exactly. Threading `ctx` through all
+# ~25 remaining sites is mechanical and deliberately deferred rather than
+# bundled into a correctness fix.
+#
+# `get(..., nothing)` keeps this to ONE dict probe: the happy path returns a
+# `Union{Nothing,Int64}` that Julia union-splits, and all message building
+# lives behind the `@noinline _unbound_ssa_error` call.
+function _resolve(x::Symbol, s::IState, ctx = nothing)::Int64
+    v = get(active_locals(s), x, nothing)
+    v === nothing && _unbound_ssa_error(x, s, ctx)
+    return v
+end
+_resolve(x::Int64, ::IState, ctx = nothing) = x
 
 # Apply a binary operator to two `Int64` values at a given bit `width`,
 # returning an `Int64`. Julia's native Int64 arithmetic gives wraparound
@@ -290,10 +309,12 @@ Execute `x := y ⊕ (lhs op rhs)` in-place on `s`. Reads `active_locals(s)` for
 `target`; bumps `pc`.
 """
 function forward(instr::ArithmeticAssignment, s::IState)::IState
-    lv = _resolve(instr.lhs, s)
-    rv = _resolve(instr.rhs, s)
+    # `instr` threaded for the Rule-1 unbound-operand message only
+    # (`bennettvm-35yn`; `src/ir/unbound_ssa.jl`).
+    lv = _resolve(instr.lhs, s, instr)
+    rv = _resolve(instr.rhs, s, instr)
     e  = _apply_binop(instr.op, lv, rv)
-    yval = active_locals(s)[instr.source]
+    yval = _resolve(instr.source, s, instr)
     xval = _apply_modop(instr.modop, yval, e)
     delete!(active_locals(s), instr.source)
     active_locals(s)[instr.target] = xval
@@ -314,10 +335,10 @@ Inverts the role of `source` and `target`: reads `active_locals(s)[target]`,
 deletes `target`, writes `source`; decrements `pc`.
 """
 function inverse(instr::ArithmeticAssignment, s::IState, prev)::IState
-    lv = _resolve(instr.lhs, s)
-    rv = _resolve(instr.rhs, s)
+    lv = _resolve(instr.lhs, s, instr)
+    rv = _resolve(instr.rhs, s, instr)
     e  = _apply_binop(instr.op, lv, rv)
-    xval = active_locals(s)[instr.target]
+    xval = _resolve(instr.target, s, instr)
     yval = _apply_modop(dual_modop(instr.modop), xval, e)
     delete!(active_locals(s), instr.target)
     active_locals(s)[instr.source] = yval

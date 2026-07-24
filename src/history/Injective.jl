@@ -287,6 +287,13 @@ is_injective(::Type{UnreachableHalt})::Bool  = true
 # M2.9 — basic-block entry/exit (RC3 `l(x,...) <-` / `-> l(y,...)`).
 # Mogensen-RSSA paired entry/exit (ADR 0001 §Observations
 # Structural-Pattern point 1); pc-only at this dispatch layer.
+#
+# `bennettvm-rnhv` / ADR 0022 made the args→params transfer at these edges
+# NON-destructive (`_bind_args_to_params!` no longer `delete!`s the sender's
+# args). That can only STRENGTHEN these two claims: the old destructive
+# transfer `D` factors as `π ∘ N`, with `N` the new bind and `π` the arg-key
+# drop, so `D` injective ⟹ `N` injective. Nothing is erased at the edge any
+# more, so there is still nothing to log.
 is_injective(::Type{UnconditionalEntry})::Bool = true
 is_injective(::Type{UnconditionalExit})::Bool  = true
 

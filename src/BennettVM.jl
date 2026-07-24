@@ -111,6 +111,15 @@ include("ir/instructions.jl")
 # downstream consumer is the `ArithmeticAssignment` concrete subtype.
 # Not yet exported.
 include("ir/operators.jl")
+# `bennettvm-35yn` — the Rule-1 diagnostic for an unbound SSA read.
+# Defines `_unbound_ssa_error`, the context-bearing replacement for the
+# bare `KeyError` that `Dict` `getindex` raised out of `_resolve`. Depends
+# on `IState` / `active_locals` (from `IState.jl` / `call_frames.jl`), so
+# MUST follow both; ordered immediately before its only caller,
+# `arithmetic_assignment.jl`'s `_resolve`. See
+# `docs/adr/0022-phi-edge-binding.md` §Risks for why it matters more after
+# the `bennettvm-rnhv` relaxation. Not exported.
+include("ir/unbound_ssa.jl")
 # M2.6 — first concrete RSSA instruction: `ArithmeticAssignment`
 # (`bennettvm-lff`). Implements RC3's `x := y ⊕ (lhs op rhs)` form with
 # the three-element modop set {:xor, :add, :sub} locked in ADR 0001.
