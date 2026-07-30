@@ -98,6 +98,51 @@ the (c') / ADR 0019 A.2 supersession pattern already established in
 rationale inline. Do not delete a superseded assertion silently — the
 replacement is what tells the next reader the change was intentional.
 
+### Follow-through the same day — `bennettvm-p3j2`: the sibling guard STAYS (ADR 0023 §Amendment)
+
+0fw7's follow-up list filed `bennettvm-p3j2` on the sentence "the `t in args`
+guard carries the same stale MOVE-era rationale; `x = g(x)` is routine at
+`-O0`." The first clause was right. **The second was wrong, and it is the more
+interesting error.**
+
+`x = g(x)` is routine at *source* level and **never survives into IR**. SSA
+renames every definition (`%x.1 = call @g(%x.0)`), and more strongly the LLVM
+verifier's **dominance rule forbids a call being its own operand** — an operand
+must be dominated by its definition, and an instruction does not dominate
+itself. So `dest ∉ operands` is not a lucky property of our front-end; it is a
+property of well-formed LLVM. The diagnosis measured it rather than asserting
+it: **135/135 raw call sites** and **105/105 extracted `IRCall`s** across the
+C / Rust / Julia corpora, plus sret synthesis and the `_agg_*` / `_callconst_*`
+name-minting namespaces, which allocate fresh names by construction.
+
+Empirically the overlap would ALSO round-trip if allowed — A.1 copies the arg
+before anything lands, A.2's `target_olds` restores the clobbered pre-call
+value — so the printed rationale ("cannot be simultaneously moved-out and
+landed-into") was just as false as the dup-arg one. But **relaxing buys zero
+capability**, because no reachable program has the shape, and it would spend a
+check with a *measured* zero false-positive rate. **F2: keep the behaviour,
+delete the false story.** Bead downgraded P2 → P3. Permanent successor is the
+dominance validator (`bennettvm-axfr`), now annotated with the `_agg_*`
+fresh-name invariant this sweep established. Also filed: `bennettvm-xl1q`, and
+`Bennett-ms0o` upstream (stale `.ll` fixtures found during the sweep).
+
+**The rule these two beads jointly establish — write it on the wall:**
+*a guard whose rationale is obsolete is not automatically a guard whose
+behaviour is wrong.* 0fw7's guard blocked reachable programs and had to go;
+p3j2's blocks nothing and stays. The common defect is the **sentence**, not the
+`error()`. Diagnose reachability before reaching for the previous bead's fix
+shape — "same family" is a hypothesis about the rationale, not about the
+verdict.
+
+Two mechanical notes for whoever touches this next. (a) The message pin in
+`test_0fw7_dup_call_args.jl` §(4') asserts `occursin("appears in BOTH", …)`;
+that clause is the FACTUAL half and was deliberately preserved through the
+rewrite, so no test needed updating and the assertion counts are unchanged.
+(b) **Do not generalise ADR 0023's `structural_inverse` asymmetry.** For
+duplicate ARGS the `targets` ↔ `args` swap maps dup-arg → dup-target (rejected;
+a real asymmetry). For the OVERLAP case the same swap maps overlap → overlap,
+so the guard fires identically in both directions — no asymmetry at all.
+
 ## 2026-07-24 — `bennettvm-rnhv`: the φ-edge stops destroying its args (ADR 0022)
 
 **Orchestrator/reviewer note (added at session close).** This landed through a

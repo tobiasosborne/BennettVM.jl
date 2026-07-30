@@ -117,10 +117,19 @@ construction time:
      single-assignment-within-receiver rule as the M2.9
      `UnconditionalEntry.params` and M2.7 `SwapInstruction.target1/2`
      constraints.
-  3. Any symbol appears in BOTH `targets` and `args` — an SSA name
-     cannot be simultaneously created and destroyed by one
-     instruction. Same rule as M2.7 `SwapInstruction`'s
-     target/source overlap check.
+  3. Any symbol appears in BOTH `targets` and `args`. Retained as a
+     TRIPWIRE, not as a semantic necessity — the RC3 rationale ("an
+     SSA name cannot be simultaneously created and destroyed by one
+     instruction") is a MOVE-model claim, and this machine COPIEs its
+     args (ADR 0019 A.1) and OVERWRITEs its targets with a
+     `target_olds` capture (A.2), so an overlapping call would in
+     fact round-trip. It is rejected because it is UNREACHABLE from
+     LLVM-derived IR: SSA dominance forbids a call being its own
+     operand (bead `bennettvm-p3j2`, 2026-07-30; ADR 0023
+     §Amendment). Zero false positives ⇒ a cheap Rule-1 net for
+     hand-built programs. Mirrors the live `CallEnter` guard
+     (`src/ir/call_transitions.jl`) exactly, per the lockstep rule
+     below.
   4. `callee` appears in `targets` or `args` — the callee label
      shadows an SSA name; the dispatch would be ambiguous (does the
      `callee` Symbol refer to the label being called, or to the
@@ -251,12 +260,20 @@ struct CallInstruction <: Instruction
         # Duplicate args are legal under COPY-args (ADR 0019 Amendment A.1);
         # they were only ill-formed under the superseded MOVE model. Kept in
         # lockstep with `CallEnter` so the two constructors cannot diverge.
+        # Target/arg OVERLAP. RETAINED, behaviour unchanged (bead
+        # `bennettvm-p3j2`, 2026-07-30) — rationale rewritten in lockstep with
+        # `CallEnter` (`src/ir/call_transitions.jl`). It is a TRIPWIRE against
+        # hand-built programs, not a semantic necessity: under COPY-args /
+        # OVERWRITE-targets an overlapping call round-trips, but SSA dominance
+        # forbids a call being its own operand, so the shape is unreachable
+        # from LLVM-derived IR and the check is zero-false-positive.
         for t in targets
             if t in args
                 error("CallInstruction: symbol $(t) appears in BOTH ",
-                      "targets $(targets) and args $(args) — an SSA name ",
-                      "cannot be simultaneously created and destroyed by ",
-                      "one instruction (RSSA single-assignment rule)")
+                      "targets $(targets) and args $(args) — unreachable from ",
+                      "LLVM-derived IR (SSA dominance forbids a call being its ",
+                      "own operand), so this is a hand-built program or a ",
+                      "front-end name-synthesis bug; ADR 0023 §Amendment (p3j2)")
             end
         end
         if callee in targets

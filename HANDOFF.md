@@ -42,18 +42,41 @@ language failed to survive contact with irreversible-source LLVM IR.
   `test_call_roundtrip.jl` (162 together) all green individually. Full
   `Pkg.test()` is the orchestrator's gate.
 
+### `bennettvm-p3j2` — same session, OPPOSITE verdict (F2: keep behaviour, fix rationale)
+
+The sibling guard (`t in args`) was diagnosed straight after 0fw7 and
+**downgraded P2 → P3**. Its rationale was stale in exactly the same way
+("cannot be simultaneously moved-out and landed-into" — false under A.1 COPY +
+A.2 `target_olds`; the overlap empirically round-trips). But the follow-up's
+premise, "`x = g(x)` is routine at `-O0`", was **WRONG**: routine at *source*
+level, never in IR — SSA renames every dest, and the verifier's dominance rule
+forbids a call being its own operand. Measured: **135/135 raw call sites and
+105/105 extracted `IRCall`s** across the C / Rust / Julia corpora have
+`dest ∉ operands`; sret synthesis and the `_agg_*` / `_callconst_*` namespaces
+preserve it by construction. Relaxing therefore buys **zero capability** while
+giving up a check with a measured zero false-positive rate. **F2 landed:
+behaviour unchanged; rationale rewritten** in `CallEnter`, in the mirrored
+`CallInstruction` stub, in the §(4) test comments, and in a new ADR 0023
+Amendment section. Beads filed: `bennettvm-xl1q`; `Bennett-ms0o` (stale `.ll`
+fixtures, upstream); `bennettvm-axfr` annotated with the `_agg_*` fresh-name
+invariant. Docs/comments only — the only executable lines touched are two
+`error()` string literals.
+
+**The transferable rule: a guard whose rationale is obsolete is not
+automatically a guard whose behaviour is wrong.** 0fw7's blocked reachable
+programs and had to go; p3j2's blocks nothing and stays. Fix the sentence.
+
 ### NEXT — pick one
 
-1. **`bennettvm-p3j2` (P2, bug)** — the `t in args` guard is the SAME family:
-   it still says "cannot be simultaneously moved-out and landed-into", stale
-   under COPY-args + OVERWRITE-targets. `x = g(x)` is routine at `-O0`.
-   Deliberately NOT folded into 0fw7; needs its own diagnosis + red-green.
-2. **`bennettvm-axfr` (P2, Core)** — the deferred SSA-dominance validator
+1. **`bennettvm-axfr` (P2, Core)** — the deferred SSA-dominance validator
    (`validate(::VMProgram)`, M2.18). It is the proportionate replacement for
-   the construction-time strictness both 0022 and 0023 gave up.
-3. **`bennettvm-guyl` (P3)** — one arg NAME can now carry TWO widths at one
+   the construction-time strictness both 0022 and 0023 gave up, and p3j2 just
+   handed it a corpus-measured invariant to assume.
+2. **`bennettvm-guyl` (P3)** — one arg NAME can now carry TWO widths at one
    call site (`[64, 8, 8]` in the i8 loop-Dict fixture). Benign today (no VM
    width masking exists); a future masking pass must key on POSITION, not name.
+3. **`bennettvm-xl1q` / `Bennett-ms0o`** — filed out of the p3j2 corpus sweep
+   (the latter is upstream: stale `.ll` fixtures).
 
 ### Watch out for (carried from this session)
 
@@ -61,7 +84,9 @@ language failed to survive contact with irreversible-source LLVM IR.
   dup-arg instance inverts to a dup-TARGET one and is (correctly) rejected. A
   dup-arg call is constructible but not structurally invertible in that class.
   Dead path today; noted in the docstring so a revival does not do a naive list
-  swap.
+  swap. **Do not generalise that asymmetry**: for the *overlap* case the same
+  swap maps overlap → overlap, so the guard fires identically in both
+  directions (ADR 0023 §Amendment).
 - **A guard that states a model must be deleted WITH the model.** A.1 changed
   the transfer and the docstrings but not the constructor, and six weeks later
   the constructor was still teaching readers the MOVE. When superseding a

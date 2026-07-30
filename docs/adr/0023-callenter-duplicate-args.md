@@ -5,7 +5,9 @@
 > round-trip verified under L2 and L3) before any fix was written; the
 > orchestrator adjudicated F1 (relax) over F2 (duplicating `Define` at ingest)
 > and F3 (front-end renaming), on the direct precedent of ADR 0022. Sibling
-> beads filed, not folded in: `bennettvm-p3j2` (the `t in args` guard),
+> beads filed, not folded in: `bennettvm-p3j2` (the `t in args` guard —
+> **resolved 2026-07-30 by the Amendment at the end of this ADR: keep the
+> behaviour, fix the rationale**),
 > `bennettvm-guyl` (per-position widths), `bennettvm-4iet` (`_callconst_*`
 > residual).
 
@@ -110,10 +112,11 @@ Kept unchanged, and pinned by `test/test_0fw7_dup_call_args.jl` §(4):
 - `allunique(targets)` — an SSA name still cannot receive two returns. This one
   is a genuine write-side conflict and survives the MOVE→COPY change untouched.
 - the **`t in args` target/arg overlap** guard — behaviour deliberately
-  untouched here, because `x = g(x)` needs its own diagnosis, its own
-  round-trip evidence and its own review. Filed as `bennettvm-p3j2`; a
-  cross-reference comment now sits on the guard so the next reader does not
-  mistake this ADR for having settled it.
+  untouched here, pending its own diagnosis and evidence. Filed as
+  `bennettvm-p3j2`; a cross-reference comment sits on the guard so the next
+  reader does not mistake this ADR for having settled it. *(Settled since, by
+  the Amendment at the end of this ADR: the guard STAYS, as a tripwire; only
+  its stated rationale was wrong.)*
 - both **callee-shadow** guards (dispatch ambiguity).
 - the run-time `_handle_call_dispatch!` checks: closed-world callee resolution
   (ADR 0019 §6a), **arity** (§6b — now load-bearing for the duplicated case),
@@ -196,8 +199,9 @@ ADR 0022, which had a measurable residual-locals cost.)
 **Follow-ups, filed not folded:**
 
 - `bennettvm-p3j2` (P2, bug) — the `t in args` guard carries the same stale
-  MOVE-era rationale; `x = g(x)` is routine at `-O0`. Needs its own
-  diagnosis + red-green + hostile review.
+  MOVE-era rationale. **Filed with the premise "`x = g(x)` is routine at
+  `-O0`"; that premise was WRONG — see the Amendment below, which resolves
+  this follow-up.**
 - `bennettvm-guyl` (P3) — one arg NAME can now carry TWO widths at one call
   site (the i8 loop-`Dict` fixture passes `:value_phi` at `arg_widths`
   `[64, 8, 8]`). Benign today (no VM-side width masking exists — ADR 0012 R1 /
@@ -245,3 +249,80 @@ at the call edge), ADR 0019 A.2 (fail-loud → OVERWRITE for live targets),
 ADR 0022 (destroy → bind at the φ-edge). This is the fourth member of one
 family: an ISA rule imported from a reversible-BY-CONSTRUCTION source language
 does not survive contact with irreversible-source LLVM IR.
+
+---
+
+## Amendment / follow-through (`bennettvm-p3j2`, 2026-07-30)
+
+> **Decision F2: the `t in args` overlap guard KEEPS its behaviour; only its
+> stated rationale changes.** Diagnosis-first, orchestrator-ratified the same
+> day this ADR was accepted. Bead downgraded P2 → P3.
+
+### The premise this ADR shipped with was wrong
+
+The follow-up list above filed `bennettvm-p3j2` on the claim that
+"`x = g(x)` is routine at `-O0`". It is routine **at source level** and never
+survives into IR. LLVM SSA renames every definition, so the assignment becomes
+`%x.1 = call @g(%x.0)` — a *fresh* dest. More strongly, the **verifier's
+dominance rule forbids** a call being its own operand: an operand must be
+dominated by its definition, and an instruction does not dominate itself. So
+`dest ∉ operands` is not a happy accident of our front-end; it is a property of
+well-formed LLVM.
+
+Measured, not assumed (p3j2 diagnosis): **135/135 raw call sites** and
+**105/105 extracted `IRCall`s**, across the C, Rust and Julia corpora, satisfy
+`dest ∉ operands`. The synthesis paths preserve it by construction as well —
+sret out-parameter synthesis, and the `_agg_*` / `_callconst_*` name-minting
+namespaces, all allocate fresh names.
+
+### Would it break if allowed?
+
+**No.** The empirical check confirmed what A.1 + A.2 already imply: with the
+guard bypassed, an overlapping call round-trips. Args are COPY-read (A.1), so
+the arg value is taken before anything lands; the target overwrite is captured
+in the `target_olds` payload (A.2) and restored on the inverse. The MOVE-era
+rationale printed in the error — "cannot be simultaneously moved-out and
+landed-into" — was therefore **false**, in exactly the same way the dup-arg
+message was.
+
+### F2, and why F1 was declined
+
+Relaxing (F1, the 0fw7 move) buys **zero capability**: no reachable program is
+unblocked, because no reachable program has the shape. What relaxing *costs* is
+the loss of a check with a measured **zero false-positive rate** — precisely
+the kind of cheap Rule-1 net that catches hand-built `VMProgram`s and future
+front-end name-synthesis bugs. So: keep the behaviour, delete the false story.
+The permanent successor is the SSA **dominance validator**
+(`bennettvm-axfr`), which subsumes this check and several others at build time;
+`axfr` is annotated with the `_agg_*`-namespace invariant this diagnosis
+established.
+
+The general rule this pair of beads establishes: **a guard whose rationale is
+obsolete is not automatically a guard whose behaviour is wrong.** 0fw7's guard
+blocked reachable programs and had to go; p3j2's blocks nothing and stays. The
+common defect is the *sentence*, not the `error()`.
+
+### Do NOT misapply 0023's `structural_inverse` asymmetry
+
+The main text records that `structural_inverse(::CallInstruction)` swaps
+`targets` ↔ `args`, so a duplicate-**arg** instance inverts to a
+duplicate-**target** one and is (correctly) rejected. The overlap case is
+different and symmetric: swapping the two lists maps an overlap to an overlap,
+so an overlapping `CallInstruction` inverts to another overlapping one — the
+guard fires identically in both directions and no asymmetry arises.
+
+### Beads filed with this amendment
+
+- `bennettvm-xl1q` — follow-up from the p3j2 corpus sweep.
+- `Bennett-ms0o` (upstream Bennett.jl) — stale `.ll` fixtures found while
+  sweeping the corpora.
+- `bennettvm-axfr` — annotated with the `_agg_*` fresh-name invariant, which is
+  part of what the dominance validator will be able to assume.
+
+### Validation
+
+Documentation/comment change only: **no executable line is modified except the
+two `error()` string literals.** `test/test_0fw7_dup_call_args.jl` and
+`test/test_call_instruction.jl` re-run individually and stay green with
+unchanged assertion counts (the §(4') message pin asserts `"appears in BOTH"`,
+a factual clause deliberately preserved in the new message).

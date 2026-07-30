@@ -93,11 +93,20 @@ payload). `targets` is carried HERE (not only on the matching
 `CallEnter` is what writes `Frame.targets` at push time.
 
 Constructor validation (Rule 1; ADR 0019 §6): no duplicate targets, no
-symbol in BOTH `args` and `targets` (an SSA name cannot be simultaneously
-read-as-an-arg and landed-into by one logical call), and the callee name
-cannot shadow an arg/target (dispatch ambiguity). Inherits the
-`CallInstruction` checks (`src/ir/call_instruction.jl`), the instruction it
-supersedes.
+symbol in BOTH `args` and `targets`, and the callee name cannot shadow an
+arg/target (dispatch ambiguity). Inherits the `CallInstruction` checks
+(`src/ir/call_instruction.jl`), the instruction it supersedes.
+
+The **args/targets overlap** check is a TRIPWIRE, not a semantic necessity
+(bead `bennettvm-p3j2`, 2026-07-30; ADR 0023 §Amendment). Under COPY-args
+(A.1) plus OVERWRITE-targets-with-`target_olds` (A.2) an overlapping call
+would round-trip perfectly well; it is rejected because it is
+**unreachable** from LLVM-derived IR — SSA dominance forbids a call being
+its own operand, so `dest ∉ operands` holds by construction across the
+whole corpus — which makes the check zero-false-positive and therefore a
+cheap Rule-1 net for hand-built programs and future front-end
+name-synthesis bugs. Its permanent successor is the SSA dominance
+validator (`bennettvm-axfr`).
 
 **Duplicates in `args` are LEGAL** — `CallEnter(:g, [:x, :x], [:r])` is a
 well-formed call (ADR 0023, bead `bennettvm-0fw7`). The guard that used to
@@ -128,14 +137,35 @@ struct CallEnter <: Instruction
         allunique(targets) ||
             error("CallEnter: duplicate target names in ", targets,
                   " (an SSA name cannot receive two returns).")
-        # Target/arg overlap. RETAINED, behaviour unchanged by ADR 0023 — but
-        # under COPY args its stated rationale ("moved-out") is stale, and
-        # whether it should also be relaxed is tracked separately as bead
-        # `bennettvm-p3j2`. Do not fold it into the 0fw7 relaxation.
+        # Target/arg OVERLAP. RETAINED — behaviour unchanged by ADR 0023 and by
+        # the `bennettvm-p3j2` follow-up (2026-07-30); only the RATIONALE is
+        # rewritten, because the old one was false. It said the name "cannot be
+        # simultaneously moved-out and landed-into", which is a MOVE-model
+        # claim: under Amendment A.1 COPY-args nothing is moved out, and A.2's
+        # `target_olds` already captures and restores a clobbered pre-call
+        # value — so an overlapping call would in fact round-trip.
+        #
+        # The guard survives because the shape is UNREACHABLE from any real
+        # front-end path, NOT because it would break. LLVM SSA dominance
+        # forbids a call being its own operand, so `dest ∉ operands` holds by
+        # construction; the p3j2 diagnosis measured it (135/135 raw call sites,
+        # 105/105 extracted `IRCall`s, across the C / Rust / Julia corpora),
+        # and source-level `x = g(x)` always receives a FRESH SSA dest. The
+        # sret synthesis and the `_agg_*` / `_callconst_*` name-minting
+        # namespaces preserve the property by construction too.
+        #
+        # So this is a ZERO-false-positive Rule-1 tripwire: it can only fire on
+        # a hand-built program or on a future front-end name-synthesis bug —
+        # exactly what Rule 1 exists to catch. Relaxing it was DECLINED (it
+        # unblocks no reachable program). Its permanent successor is the SSA
+        # dominance validator, bead `bennettvm-axfr`. See ADR 0023
+        # §"Amendment / follow-through (p3j2)".
         for t in targets
             t in args && error("CallEnter: symbol ", t, " appears in BOTH ",
                 "args ", args, " and targets ", targets,
-                " — cannot be simultaneously moved-out and landed-into.")
+                " — unreachable from LLVM-derived IR (SSA dominance forbids a ",
+                "call being its own operand), so this is a hand-built program ",
+                "or a front-end name-synthesis bug; ADR 0023 §Amendment (p3j2).")
         end
         (callee in args || callee in targets) &&
             error("CallEnter: callee :", callee, " shadows an arg/target ",
