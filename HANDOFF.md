@@ -2,6 +2,41 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## 📌 SESSION CLOSE 2026-07-30 (orchestrator) — where to pick up
+
+Three beads landed this session, gated and pushed: `bennettvm-0fw7`
+(BVM `0c6b1e4`, full suite 8299/8299), `bennettvm-p3j2` (BVM `87dc572`,
+8299/8299 — includes the FIXUP for `test_0fw7_dup_call_args.jl`, which
+`0c6b1e4` registered in runtests.jl but never staged), and `Bennett-tl1l`
+(both repos; BVM full suite 9448/9448 with the new
+`test_tl1l_a70z_shapes.jl`). **Gate caveat for tl1l's Bennett.jl half:** the
+Bennett.jl full `Pkg.test` was CUT SHORT at the user's request (~20 min in,
+all green to that point); the change there is test-only
+(`test_a70z_overflow_const_bit.jl` 206→348) and is per-file green under
+`--check-bounds=yes` in two independent runs (implementer + hostile
+reviewer). First agent to run the full Bennett.jl suite: treat any failure
+in that file as unverified-tail risk from this session. Orchestration
+shape: Opus diagnosis/implementation, Sonnet hostile review (caught 1
+MAJOR: the missing uadd bit=1 both-constant fixture), strictly serial Julia.
+
+**Next-frontier ranking (orchestrator's read, not binding):**
+1. **`bennettvm-axfr`** (P2, Core) — the SSA-dominance validator, now MORE
+   load-bearing: it is the named successor of both relaxed/retained guards
+   (ADR 0023 + p3j2 Amendment) and should also assert the
+   `_agg_`/`_callconst_`/`_phi_` synthetic-namespace invariant (bead notes).
+   Core ⇒ design pass + hostile review.
+2. **`bennettvm-m9i`** (P1) — M_DYN.7 Memory recognizer, the long-standing
+   linchpin for the P0 `xkl` (push!-built Vector) chain.
+3. **`bennettvm-xl1q` / `Bennett-ms0o` / `Bennett-qt6o`** (P3) — stale `.ll`
+   fixtures + the undef-aggregate return wall blocking from-source
+   checked-arithmetic fixtures (tl1l residual; tripwired in
+   `test_tl1l_a70z_shapes.jl` testset (0)).
+
+Watch-outs carried forward: no clang on this box (suite undercounts ~2000
+assertions, `bennettvm-5o86`); `__vN` names are frame-ambiguous in
+multi-body runs; one Julia process at a time; gate on a `Pkg.test()` you
+run yourself.
+
 ## ✅ SESSION 2026-07-30 — `bennettvm-0fw7` FIXED: duplicate `CallEnter` args are legal; for-LOOP Dict inserts run
 
 `bennettvm-0fw7` is **CLOSED**. A `for`-loop multi-insert `Dict` died at
@@ -65,6 +100,74 @@ invariant. Docs/comments only — the only executable lines touched are two
 **The transferable rule: a guard whose rationale is obsolete is not
 automatically a guard whose behaviour is wrong.** 0fw7's blocked reachable
 programs and had to go; p3j2's blocks nothing and stays. Fix the sentence.
+
+### `Bennett-tl1l` — same session, TEST-ONLY: the two a70z shapes the Dict corpus never emits
+
+Upstream `Bennett-a70z` left three argued-not-proven residuals; the downstream
+two are now closed by **`test/test_tl1l_a70z_shapes.jl`** (1149 assertions,
+~20 s, registered right after `test_a70z_dict64_roundtrip.jl`). No `src/`
+change, no defect found.
+
+**The finding worth carrying forward:** `_fuse_overflow_extractvalue`
+(`../Bennett.jl/src/extract/instructions.jl:2523`) has **three** emission
+shapes, and `test_a70z_dict64_roundtrip.jl` only reaches ONE of them —
+
+* **TWO-SIDED** (2 `IRICmp` + width-1 `IRBinOp(:or)`) — the only shape the real
+  `Dict{Int64,Int64}` corpus emits, because `rehash!`'s `smul(%value_phi, 8)`
+  is a *signed mul* and signed mul is the only generically two-sided arm;
+* **ONE-SIDED** (a SINGLE `IRICmp` carrying the extractvalue's own dest, no
+  `:or`, zero `__vN` churn) — the **MAJORITY** shape in general: every unsigned
+  op drops the low arm (`L = 0` is the unsigned floor) and every `sadd`/`uadd`
+  drops exactly one arm;
+* **BOTH-CONSTANT** (`IRBinOp(:o,:add,bit,0,1)`, no `IRICmp` at all).
+
+**Both plain-Julia source routes to the latter two are CLOSED today** (probed
+2026-07-30; pinned as tripwires in the new file's testset (0)):
+
+1. `Base.Checked.add_with_overflow` / `checked_add` does NOT extract — it dies
+   on the **`Bennett-bjdg` / U80** `{iN,i8} undef` wall, because Julia builds
+   the `Tuple{T,Bool}` RETURN by `insertvalue` into an undef aggregate. That
+   wall is upstream of the overflow bit entirely, which is why the Dict corpus
+   (intrinsic consumed in-body) never meets it. Reproduced at i16/i32/i64,
+   add and mul, signed and unsigned.
+2. A both-constant call is folded away by **Julia's own inference** — the
+   extracted body has ZERO instructions.
+
+So the fixtures are hand-written `.ll` driven through the REAL front-end
+(`Bennett.extract_parsed_ir_from_ll` → `_fuse_overflow_extractvalue`) and then
+`lower_vm` → `run!` → `unrun!` — deliberately NOT hand-built `ParsedIR`, so the
+shape under test is whatever `instructions.jl` emits today. Widths 64/32/16,
+shape pinned at BOTH the `ParsedIR` and the `Define` level, values vs the native
+`Base.Checked` oracle under L2 and L3, per-step inverse.
+
+**Hostile review caught one MAJOR here, worth internalising:** the first cut had
+`uadd` in the both-constant table at **bit 0 only**. The `bit == 0` emission is
+byte-identical to the pre-existing lbot fold-to-zero shape, so an arm present at
+bit 0 alone would pass unchanged **even if `_ovf_const_bit` were deleted** — it
+was coverage in name only. All four arms now carry a `bit == 1` fixture (added
+`uadd i16 65534+3` and `uadd i64 (2^64-1)+1`), and the coverage rule itself is
+asserted in the testset so a future edit that drops an arm fails loudly. The
+expected bit is also no longer a hand-computed literal: `_tl1l_cbit` recomputes
+it from the fixture's own `.ll` constants through `Base.Checked` at the
+fixture's native width and signedness, cross-checked against the table's stated
+intent. **General rule: when two code paths emit the SAME bytes for one value of
+a flag, only the other value is a test.**
+
+**Two BVM facts this surfaced, useful beyond a70z:**
+
+* `result(rs)` returns the **whole** halted frame's locals, not just the
+  declared returns — so a derived flag like the a70z bit can be asserted
+  directly, and a fixture that returns from both arms of a `br i1` needs no
+  return-symbol disambiguation.
+* At `W < 64`, `_apply_binop` masks results to the low `W` bits (ADR 0012 R1 /
+  `bennettvm-bgc`), so an i32 `x + 5` reads back as a **non-negative** `Int64`
+  in `[0, 2^32)`, not a sign-extended `Int32`. Any test asserting narrow-width
+  arithmetic must write its oracle in that convention
+  (`reinterpret(UInt32, ·)`); the new file says so in its honest boundary.
+
+Upstream half (Bennett.jl, test-only): `test_a70z_overflow_const_bit.jl`
+206 → 348 assertions — N=16 curated-constant × all-65536-input sweeps, N=32
+boundary + seeded-random sweeps, and full-extraction-path i16/i32 shape pins.
 
 ### NEXT — pick one
 

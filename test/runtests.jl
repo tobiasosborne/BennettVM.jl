@@ -679,6 +679,24 @@ using BennettVM
     # `test_cwd4` (iv) gates; sits with the other real-closed-world-set tests.
     # ~45 s (dominated by the one-time set extraction).
     include("test_a70z_dict64_roundtrip.jl")
+    # Bennett.jl bead `Bennett-tl1l` (residual a70z coverage), DOWNSTREAM half.
+    # `_fuse_overflow_extractvalue` has THREE emission shapes; the file above
+    # only reaches the TWO-SIDED one, because that is all the real `Dict` corpus
+    # emits. This file proves the other two: the ONE-SIDED shape (a SINGLE
+    # `IRICmp` carrying the extractvalue's own dest, no width-1 `:or`, zero
+    # `__vN` churn — the MAJORITY shape, since every unsigned op and every
+    # `sadd`/`uadd` is one-sided) and the BOTH-CONSTANT literal fold
+    # (`IRBinOp(:o,:add,bit,0,1)`, no `IRICmp` at all). Fixtures are hand-written
+    # `.ll` driven through the REAL Bennett front-end
+    # (`extract_parsed_ir_from_ll`), NOT hand-built `ParsedIR`, because both
+    # from-source routes are closed today — `Base.Checked.*_with_overflow` dies
+    # on the `Bennett-bjdg`/U80 `{iN,i8} undef` tuple-return wall, and a
+    # both-constant call is folded away by Julia's own inference; testset (0)
+    # pins both as tripwires so a future agent knows when to switch. Widths
+    # 64/32/16, both bit polarities, `run!` value vs the native `Base.Checked`
+    # oracle + `unrun!` under L2 and L3, plus per-step inverse. Sits immediately
+    # after its a70z sibling. ~20 s.
+    include("test_tl1l_a70z_shapes.jl")
     # bead `bennettvm-rnhv` (+ `bennettvm-35yn`): a φ-incoming whose use
     # OUTLIVES the edge must survive the edge. The cross-block args→params
     # transfer used to `delete!` the sender's args (Mogensen RSSA §4 p. 210

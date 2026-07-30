@@ -7,6 +7,104 @@
 
 ---
 
+## 2026-07-30 (part 2) — `Bennett-tl1l`: the two a70z emission shapes the Dict corpus never produces
+
+**Test-only, both repos. No `src/` change, no defect found — this was a coverage
+bead and it stayed one.** New file `test/test_tl1l_a70z_shapes.jl` (1149
+assertions, ~20 s), registered right after `test_a70z_dict64_roundtrip.jl`.
+Upstream half: `../Bennett.jl/test/test_a70z_overflow_const_bit.jl` 206 → 348
+assertions (N ∈ {16, 32} sweeps).
+
+**The lesson: "the real corpus exercises it" answers a narrower question than it
+looks like.** `test_a70z_dict64_roundtrip.jl` runs the genuine
+`Dict{Int64,Int64}` closed-world set and was written as *the* downstream proof
+of a70z. It is — of ONE of the front-end's THREE emission shapes.
+`_fuse_overflow_extractvalue` emits two `IRICmp` + a width-1 `:or` only when
+BOTH interval bounds land strictly inside the iN domain. Drop one bound and it
+emits a **single `IRICmp` carrying the extractvalue's own dest, with no `:or`
+and zero `__vN` counter consumption**; make both operands constant and it emits
+`IRBinOp(:o,:add,bit,0,1)` with no comparison at all. The Dict corpus hits only
+the two-sided shape, for a reason that is easy to state and was nobody's
+intention: `rehash!`'s site is `smul(%value_phi, 8)`, and **signed mul is the
+only generically two-sided arm**. `_ovf_admissible_range` drops the low arm for
+*every* unsigned op (`L = 0` is the unsigned floor) and drops exactly one arm
+for *every* `sadd`/`uadd`. The shape the corpus never reaches is the shape most
+programs would produce.
+
+**Research step (Bennett.jl Rule 9) — both from-source routes are CLOSED, and
+the reason is instructive.** The obvious one-sided Julia fixture is
+`Base.Checked.add_with_overflow(x, 5)` / `checked_add`. It does not extract:
+
+```
+ir_extract.jl: UndefValue operand: { i64, i8 } undef
+```
+
+That is the **`Bennett-bjdg` / U80** wall, and it fires on the `Tuple{T,Bool}`
+**return** — Julia builds it by `insertvalue` into an undef aggregate — not on
+anything to do with the overflow bit. Which is precisely why the Dict corpus
+never meets it: there the intrinsic's fields are consumed in-body and the tuple
+is never materialised. Reproduced at i16/i32/i64, `add` and `mul`, signed and
+unsigned. The both-constant route is closed one stage earlier still: Julia's own
+inference constant-folds `add_with_overflow(Int64(3), Int64(4))[2]` away, so the
+extracted body has **zero instructions** and no intrinsic ever reaches LLVM.
+Both are now pinned as tripwires in testset (0) — if either route opens, the
+test goes RED and the next agent knows to switch to from-source fixtures.
+
+**Fallback chosen: hand-written `.ll` through the REAL front-end, not hand-built
+`ParsedIR`.** The bead offered a hand-built `ParsedIR` as the cheap option, with
+a docstring argument that it byte-matches the emitter. Driving `.ll` through
+`Bennett.extract_parsed_ir_from_ll` → `_fuse_overflow_extractvalue` costs the
+same and removes the argument entirely: the shape under test is whatever
+`instructions.jl` emits *today*, so a front-end drift fails the shape pin
+instead of silently invalidating a transcription. Same fixture shapes as the
+upstream `_a70z_fixture` / `_a70z_fixture_cc`, continued one stage further.
+Widths 64/32/16; all three one-sided causes (`sadd` c>0 → `sgt`; `smul` c=-1 →
+`slt`, the `x == typemin` bit; `uadd` i16 → `ugt` with the SEXT-encoded bound
+`-2` for `0xFFFE`); six both-constant fixtures in both bit polarities.
+
+**Two BVM facts this surfaced, worth reusing:**
+
+* **`result(rs)` returns the whole halted frame's locals**, not just the declared
+  returns. So the a70z bit `:o` can be asserted DIRECTLY rather than inferred
+  from which arm the control flow took — the strongest available downstream
+  statement of the contract, and it sidesteps the two-`EndInstruction`
+  ambiguity of a fixture that returns from both arms of a `br i1 %o`.
+* **At `W < 64`, `_apply_binop` masks results to the low `W` bits** (ADR 0012 R1
+  / `bennettvm-bgc`). An i32 `x + 5` at `x = 2147483643` reads back as
+  `2147483648` — a NON-NEGATIVE `Int64` in `[0, 2^32)`, not the sign-extended
+  `Int32` value `-2147483648`. Any narrow-width value oracle must be written in
+  that convention (`reinterpret(UInt32, ·)`). This is a storage choice, not a
+  bug, and the new file states it as an honest boundary rather than quietly
+  encoding it.
+
+**Hostile review found one MAJOR, and the generalisation is worth keeping.** The
+first cut of the both-constant table carried `uadd` at **bit 0 only**. But the
+`bit == 0` emission is BYTE-IDENTICAL to the pre-existing Bennett-lbot
+fold-to-zero shape (a70z D3, deliberately) — so a `uadd` fixture at bit 0 would
+have passed unchanged **even with `_ovf_const_bit` deleted**. It was coverage in
+name only, and the file's own honest-boundary paragraph had *stated* the
+principle while the table violated it. **When two code paths emit the same bytes
+for one value of a flag, only the other value is a test.** Fixed: all four arms
+(`sadd`/`smul`/`umul`/`uadd`) now appear at BOTH polarities — added
+`uadd i16 65534+3 → 1`, `uadd i64 (2^64-1)+1 → 1`, `umul i16 200*300 → 0` — and
+the coverage rule is now itself an assertion in the testset, so a future edit
+that drops an arm fails loudly instead of silently shrinking the discriminating
+half. Also strengthened per the same review: the expected bit was a
+hand-computed literal; `_tl1l_cbit` now recomputes it from the fixture's own
+`.ll` constants through `Base.Checked` at the fixture's native width and
+signedness (unsigned arms re-decode by masking, exactly as `_ovf_const_bit`
+does), with the table's stated intent cross-checked against it so a typo in
+either cannot agree with itself.
+
+**Honest residual.** Nothing here claims a Julia program emitting these shapes
+exists — testset (0) pins the opposite.
+
+**Gate:** `test_tl1l_a70z_shapes.jl` 1149/1149 and
+`test_a70z_dict64_roundtrip.jl` 347/347 green individually. Full `Pkg.test()` is
+the orchestrator's gate.
+
+---
+
 ## 2026-07-30 — `bennettvm-0fw7`: duplicate `CallEnter` args are legal (ADR 0023)
 
 **The bead's own title was wrong, and that is the lesson.** It was filed as
