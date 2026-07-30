@@ -6,6 +6,13 @@
 > **Amendment A (CW-C3, bead `416r.10`, hostile-review-ratified): the call
 > ABI adapts to LLVM-derived IR — see the Amendment A section at the end;
 > where it conflicts with §3/§6, Amendment A controls.**
+> **AMENDED AGAIN 2026-07-30 by [ADR 0023](0023-callenter-duplicate-args.md)
+> (bead `bennettvm-0fw7`): A.1 changed the arg transfer to a COPY but left the
+> `CallEnter` constructor's `allunique(args)` guard stating the superseded
+> MOVE ("an SSA name cannot be moved into a callee twice"), which blocked
+> ordinary IR — `g(x, x)`, and `d[i] = i` → `setindex!(d, i, i)`. That guard is
+> REMOVED; duplicate `args` are legal. Read §3's MOVE pseudocode and the §6
+> guard family through A.1 + ADR 0023.**
 > Implements ADR 0017 §Decision 2 under the constraints of ADR 0018 §C.
 > Synthesized from two independent design proposals (proposer A: ISA-faithful
 > minimal-history; proposer B: explicit frame stack; both archived in the
@@ -323,6 +330,17 @@ Cost: copied params land in the ReturnExit residual (sound, wasteful —
 the §7 liveness tier now also covers "args provably dead after call →
 restore MOVE"). The Vieri 1995 p. 22 exchange discipline now grounds ONLY
 the return side (retvals still MOVE callee→caller).
+
+**Follow-through (ADR 0023, 2026-07-30, bead `bennettvm-0fw7`).** A.1 changed
+the transfer and the docstrings but NOT the `CallEnter` constructor, which kept
+rejecting `args` with duplicates — "an SSA name cannot be moved into a callee
+twice", a sentence only true under the MOVE this amendment superseded. Under
+COPY the arg list is a READ list: reading one caller key twice erases nothing,
+and the two values land under two distinct `FunctionEntry.params` keys. It also
+contradicted `src/ir/ingest.jl`, which already let duplicate CONSTANT args
+through via per-position `_callconst_*` renaming. The guard is removed by
+ADR 0023; `allunique(targets)`, the `t in args` overlap check (bead
+`bennettvm-p3j2`), the callee-shadow checks and §6a/§6b/§6f all stand.
 
 ### A.2 ReturnExit OVERWRITES live targets (supersedes §6c's fail-loud)
 

@@ -395,10 +395,22 @@ end
 
 # 14 inserts is the threshold at which `Dict`'s load factor forces the
 # `rehash!` GROW branch — the branch that carries the hazard on an EXECUTED
-# edge. Written out straight-line rather than as a loop because a `for` loop
-# over the inserts makes Julia pass the same SSA value twice to one callee,
-# which `CallEnter`'s `allunique(args)` guard rejects at LOWERING time — a
-# genuinely separate wall, deliberately not conflated with this one.
+# edge. Written out straight-line rather than as a loop because, when this file
+# was written, `CallEnter`'s `allunique(args)` guard rejected the loop form at
+# LOWERING time — a genuinely separate wall, deliberately not conflated with
+# this one.
+#
+# CORRECTION (bead `bennettvm-0fw7`, 2026-07-30 — this note used to blame the
+# LOOP, and that was wrong). The 0fw7 diagnosis showed the loop is INCIDENTAL:
+# the trigger is ONE call passing the same SSA value in two ARGUMENT POSITIONS.
+# `d[i] = i` lowers to `setindex!(d, i, i)` (LLVM CSEs the key and the value
+# onto one `%value_phi`); a straight-line `g(x, x)` with no loop at all trips
+# it identically, while a loop body `d[i] = v` — two distinct names — does not.
+# The guard encoded the pre-Amendment-A MOVE semantics of ADR 0019 §3 and is
+# REMOVED by ADR 0023; the loop form is now gated by
+# `test/test_0fw7_dup_call_args.jl` §(3). The straight-line phrasing is KEPT
+# here so this file's fixtures stay byte-identical to the ones its hazard
+# counts and RED evidence were measured against.
 function _rnhv_fdict14_i8(a::Int8, b::Int8)
     d = Dict{Int8,Int8}()
     d[Int8(1)]  = Int8(1);  d[Int8(2)]  = Int8(2);  d[Int8(3)]  = Int8(3)

@@ -7,6 +7,97 @@
 
 ---
 
+## 2026-07-30 — `bennettvm-0fw7`: duplicate `CallEnter` args are legal (ADR 0023)
+
+**The bead's own title was wrong, and that is the lesson.** It was filed as
+"for-loop multi-insert Dict dies at LOWERING", and everyone (including the rnhv
+session that filed it, and the comment it left at
+`test_rnhv_phi_multiuse.jl:398`) read the loop as the cause. The 0fw7 diagnosis
+scout reproduced the failure with **no loop at all**:
+
+```julia
+@noinline g(a, b) = 3a + b
+f(x) = g(x, x)     # CallEnter: duplicate arg names in [x::Int64, x::Int64]
+```
+
+`d[i] = i` lowers to `setindex!(d, i, i)`: LLVM CSEs the key and the value onto
+one `%value_phi`, so ONE call passes one value in TWO argument positions. A loop
+body `d[i] = v` — two distinct names — does not trip it. The loop was
+incidental; it merely made `d[i] = i` the natural way to write 14 inserts.
+Whenever a wall is first seen through an expensive fixture, reduce it to the
+cheapest program that still fails BEFORE theorising about the fixture's
+distinguishing feature.
+
+**The guard outlived its semantics by six weeks.** The message —
+"an SSA name cannot be moved into a callee twice" — is a correct statement about
+ADR 0019 §3's MOVE. But ADR 0019 **Amendment A.1** (2026-06-10,
+hostile-review-ratified) had already replaced that MOVE with a COPY, for exactly
+the same reason (multi-use LLVM SSA). A.1 changed the transfer and updated the
+docstrings; it did not touch the constructor, and the constructor is what runs.
+So the codebase carried a check whose error text taught every reader a model the
+project had abandoned. **When superseding a design, grep for the RATIONALE TEXT,
+not only the code that implements it.**
+
+**It was also self-inconsistent, which is the tell.** `g(3, 3)` — duplicate
+CONSTANT args — passed, because `src/ir/ingest.jl` mints a fresh per-position
+`_callconst_<callee>_<n>` name for every constant operand. `g(m, m)` was
+rejected. Identical program shape, opposite verdicts, decided by whether the
+front-end happened to have renamed. A guard that fires on the SSA form of a
+program but not its constant form is not enforcing an invariant of the machine.
+
+**Decision (F1, orchestrator-adjudicated before implementation).** Remove
+`allunique(args)` from `CallEnter`; mirror it on the superseded
+`CallInstruction` stub so the two constructors cannot diverge. Rejected: F2, an
+ingest-side duplicating `Define` per repeated arg (ADR 0022 already adjudicated
+this trade at the φ-edge — a duplicating `Define` does not restore linearity, it
+launders it, and here it would also cost an L3-reversed non-injective create
+plus a `ReturnExit` residual entry per duplication); F3, front-end renaming in
+Bennett.jl (violates the LLVM-transcription discipline, breaks the guyl
+width-per-position contract, and needs a Rule-14 exception to edit
+`../Bennett.jl/src/`).
+
+**Empirics came before the fix, not after.** With the guard bypassed and nothing
+else changed, the 14-insert for-loop `Dict{Int8,Int8}` lowered to 334 blocks,
+ran to the native-oracle value and `unrun!`ed to empty history + exact initial
+state under BOTH L2 and L3, `rehash!` GROW path included. That is what turned
+"relax the guard" from a hypothesis into a decision.
+
+**Guard-family audit (the part that keeps this surgical).** Four sites carry the
+MOVE-model guard family; only one was touched.
+
+| site | verdict |
+|---|---|
+| `call_transitions.jl` `allunique(args)` | **REMOVED** (this bead) |
+| `call_transitions.jl` `t in args` overlap | retained; stale rationale filed as `bennettvm-p3j2` |
+| `call_instruction.jl` `allunique(args)` | removed in lockstep (dead path, but must not diverge) |
+| `control_instructions.jl` exit `allunique(args)` | retained — DIFFERENT list (block-exit args); ingest dedups upstream and removal would perturb pinned `Define` counts (ADR 0022) |
+
+Both retained sites now carry a one-line cross-reference explaining why they are
+NOT this bead, so the next reader does not assume 0023 settled them.
+
+**One asymmetry, deliberate.** `structural_inverse(::CallInstruction)`
+(`basic_block.jl`) swaps `targets` ↔ `args`, so a dup-arg instance inverts to a
+dup-TARGET one and is rejected by `allunique(targets)` — correctly: two returns
+cannot land on one name. A dup-arg call is therefore constructible but not
+structurally invertible *in that class*. Harmless (dead path; `CallEnter` /
+`ReturnExit` do not use `structural_inverse`), recorded in the docstring.
+
+**RED-GREEN, and the RED had to be staged.** `test/test_0fw7_dup_call_args.jl`
+was written and run against unmodified `src/` first. Note for future test
+authors: a top-level `@testset` that ERRORS aborts the file, so the first RED
+run showed only §(1). Re-running the file from a driver script that wraps the
+include in an outer `@testset` collects all five sections — that is how the
+"(1),(2),(3),(4') RED with the exact message / (4) 13-13 GREEN" split was
+captured, and that split is what makes the RED attributable to the guard rather
+than to the harness. GREEN: 76/72/56/13/8 = 225 assertions.
+
+**Two neighbour test files asserted the OLD behaviour** and were dead-lettered
+in place (`test_call_roundtrip.jl` (e'), `test_call_instruction.jl`), following
+the (c') / ADR 0019 A.2 supersession pattern already established in
+`test_call_roundtrip.jl`: keep the line, invert the assertion, write the
+rationale inline. Do not delete a superseded assertion silently — the
+replacement is what tells the next reader the change was intentional.
+
 ## 2026-07-24 — `bennettvm-rnhv`: the φ-edge stops destroying its args (ADR 0022)
 
 **Orchestrator/reviewer note (added at session close).** This landed through a

@@ -411,8 +411,18 @@ end
     @test_throws ErrorException _BV.forward(re, s1)
 
     # CallEnter constructor SSA checks.
-    @test_throws ErrorException _BV.CallEnter(:f, Symbol[:a, :a], Symbol[])       # dup args
+    # (e') DUPLICATE ARGS used to be rejected here. ADR 0023 (bead
+    # `bennettvm-0fw7`) REMOVED that guard: its message ("an SSA name cannot be
+    # moved into a callee twice") stated the MOVE semantics of ADR 0019 §3,
+    # which Amendment A.1 had already replaced with a COPY — the arg list is
+    # READ, the values land under distinct params, nothing is erased. Ordinary
+    # IR emits it (`g(x, x)`; `d[i] = i` → `setindex!(d, i, i)`). Same
+    # dead-lettering pattern as (c') above; the replacement assertion pins the
+    # NEW behaviour, and the e2e gates live in `test_0fw7_dup_call_args.jl`.
+    @test _BV.CallEnter(:f, Symbol[:a, :a], Symbol[]) isa _BV.CallEnter        # dup args LEGAL
+    @test _BV.CallEnter(:f, Symbol[:a, :a], Symbol[]).args == Symbol[:a, :a]
     @test_throws ErrorException _BV.CallEnter(:f, Symbol[:a], Symbol[:a])         # both
+    @test_throws ErrorException _BV.CallEnter(:f, Symbol[:a], Symbol[:t, :t])     # dup targets
     @test_throws ErrorException _BV.CallEnter(:a, Symbol[:a], Symbol[])           # callee shadow
 
     # `#` in incoming label / function name + duplicate function names (§2).

@@ -92,11 +92,27 @@ payload). `targets` is carried HERE (not only on the matching
 `ReturnExit`) because the `ReturnExit` reads it off the suspended frame —
 `CallEnter` is what writes `Frame.targets` at push time.
 
-Constructor validation (Rule 1; ADR 0019 §6): no duplicate args, no
-duplicate targets, no symbol in BOTH (an SSA name cannot be simultaneously
-moved-out and landed-into by one logical call), and the callee name cannot
-shadow an arg/target (dispatch ambiguity). Inherits the `CallInstruction`
-checks (`src/ir/call_instruction.jl`), the instruction it supersedes.
+Constructor validation (Rule 1; ADR 0019 §6): no duplicate targets, no
+symbol in BOTH `args` and `targets` (an SSA name cannot be simultaneously
+read-as-an-arg and landed-into by one logical call), and the callee name
+cannot shadow an arg/target (dispatch ambiguity). Inherits the
+`CallInstruction` checks (`src/ir/call_instruction.jl`), the instruction it
+supersedes.
+
+**Duplicates in `args` are LEGAL** — `CallEnter(:g, [:x, :x], [:r])` is a
+well-formed call (ADR 0023, bead `bennettvm-0fw7`). The guard that used to
+reject it ("an SSA name cannot be moved into a callee twice") stated the
+pre-Amendment-A MOVE of ADR 0019 §3, under which naming one value in two
+argument positions really was ill-formed: you cannot consume it twice.
+Amendment A.1 replaced that MOVE with a COPY, and `_handle_call_dispatch!`
+(`src/interpreter/Interpreter.jl`) now only READS the caller's args and zips
+the values onto `FunctionEntry.params` — which are already distinct — so
+reading one caller key twice erases nothing and lands nothing twice. The
+shape is ordinary, not exotic: `d[i] = i` lowers to `setindex!(d, i, i)`, so
+every `for i in 1:N; d[i] = i; end` hits it, as does a straight-line
+`g(x, x)`. The guard was self-inconsistent besides — duplicate CONSTANT args
+already passed, because `src/ir/ingest.jl` mints a fresh per-position
+`_callconst_*` name for each of them.
 """
 struct CallEnter <: Instruction
     callee::Symbol               # function name — resolved in VMProgram.functions
@@ -105,12 +121,17 @@ struct CallEnter <: Instruction
 
     function CallEnter(callee::Symbol, args::Vector{Symbol},
                        targets::Vector{Symbol})
-        allunique(args) ||
-            error("CallEnter: duplicate arg names in ", args,
-                  " (an SSA name cannot be moved into a callee twice).")
+        # NO `allunique(args)` check: duplicates in `args` are LEGAL under the
+        # COPY semantics of ADR 0019 Amendment A.1 (ADR 0023, bead
+        # `bennettvm-0fw7`). See the docstring above for the full story — do
+        # not re-add it from the MOVE model.
         allunique(targets) ||
             error("CallEnter: duplicate target names in ", targets,
                   " (an SSA name cannot receive two returns).")
+        # Target/arg overlap. RETAINED, behaviour unchanged by ADR 0023 — but
+        # under COPY args its stated rationale ("moved-out") is stale, and
+        # whether it should also be relaxed is tracked separately as bead
+        # `bennettvm-p3j2`. Do not fold it into the 0fw7 relaxation.
         for t in targets
             t in args && error("CallEnter: symbol ", t, " appears in BOTH ",
                 "args ", args, " and targets ", targets,

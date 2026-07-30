@@ -23,14 +23,16 @@
 #      bumps `pc` by 1 and leaves `locals` untouched; `inverse`
 #      decrements `pc` by 1 and round-trips the IState content-
 #      equality.
-#   3. **Constructor validation** (Rule 1): six degenerate cases
+#   3. **Constructor validation** (Rule 1): five degenerate cases
 #      raise `ErrorException` — invalid direction symbol, duplicate
-#      targets, duplicate args, symbol overlapping targets and args,
-#      callee shadowing a target, callee shadowing an arg. Empty
-#      `targets` / `args` are explicitly accepted (no-arg / no-return
-#      subroutine legal under RSSA, mirroring M2.9
-#      `UnconditionalEntry` / `UnconditionalExit` empty-list
-#      acceptance).
+#      targets, symbol overlapping targets and args, callee shadowing
+#      a target, callee shadowing an arg. Empty `targets` / `args` are
+#      explicitly accepted (no-arg / no-return subroutine legal under
+#      RSSA, mirroring M2.9 `UnconditionalEntry` /
+#      `UnconditionalExit` empty-list acceptance) — and so are
+#      DUPLICATE `args`, since ADR 0023 (bead `bennettvm-0fw7`)
+#      removed that guard from `CallEnter` and from this superseded
+#      stub in lockstep.
 #   4. **`effective_call_direction` truth table** — the four
 #      `(instr.direction, vm_direction)` combinations produce the
 #      XOR-of-directions composition documented in the source
@@ -113,9 +115,17 @@ end
     # Duplicate target — SSA single-assignment-within-receiver violation.
     @test_throws ErrorException BennettVM.CallInstruction(
         [:x, :x], :foo, [:y], :call)
-    # Duplicate arg — SSA single-assignment-within-sender violation.
-    @test_throws ErrorException BennettVM.CallInstruction(
-        [:x], :foo, [:y, :y], :call)
+    # Duplicate arg — used to be an "SSA single-assignment-within-sender
+    # violation"; LEGAL since ADR 0023 (bead `bennettvm-0fw7`). That rule
+    # presupposed MOVE-args (ADR 0019 §3), which Amendment A.1 replaced with a
+    # COPY: a call READS its args and leaves the caller's bindings intact, so
+    # naming one value in two positions destroys nothing twice. Relaxed in
+    # LOCKSTEP with the live `CallEnter` (`src/ir/call_transitions.jl`) so the
+    # two constructors cannot diverge, even though this class is dead on the
+    # lowering path. e2e gates: `test/test_0fw7_dup_call_args.jl`.
+    @test BennettVM.CallInstruction([:x], :foo, [:y, :y], :call) isa
+        BennettVM.CallInstruction
+    @test BennettVM.CallInstruction([:x], :foo, [:y, :y], :call).args == [:y, :y]
     # Symbol in both targets AND args — cannot simultaneously create
     # and destroy one SSA name.
     @test_throws ErrorException BennettVM.CallInstruction(

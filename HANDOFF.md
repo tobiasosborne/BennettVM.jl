@@ -2,6 +2,71 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## ✅ SESSION 2026-07-30 — `bennettvm-0fw7` FIXED: duplicate `CallEnter` args are legal; for-LOOP Dict inserts run
+
+`bennettvm-0fw7` is **CLOSED**. A `for`-loop multi-insert `Dict` died at
+LOWERING on `CallEnter: duplicate arg names`. **The cause was not the loop.**
+`d[i] = i` lowers to `setindex!(d, i, i)` — LLVM CSEs the key and the value
+onto ONE SSA name — so a single call legally passes one value in two argument
+positions; a straight-line `f(x) = g(x, x)` trips it identically, and a loop
+body `d[i] = v` (two names) does not. The `allunique(args)` guard stated the
+pre-Amendment-A MOVE of ADR 0019 §3 ("cannot be moved into a callee twice"),
+but **A.1 had already replaced that MOVE with a COPY**: `_handle_call_dispatch!`
+only READS the caller's args and zips them onto distinct `FunctionEntry.params`.
+The guard was self-inconsistent besides — duplicate CONSTANT args already
+passed, via ingest's per-position `_callconst_*` renaming. **Fix: remove the
+guard** (and the identical one on the superseded `CallInstruction` stub, in
+lockstep). New **ADR 0023**; ADR 0019 carries an amendment banner pointing at
+it. Same relax-don't-duplicate adjudication as ADR 0022 at the φ-edge — the
+fourth time an ISA rule imported from a reversible-BY-CONSTRUCTION source
+language failed to survive contact with irreversible-source LLVM IR.
+
+### State of the world
+
+- **`for i in 1:14; d[i] = i; end` Dicts run and reverse**, at `Int8` AND
+  `Int64`: extract → `lower_vm` → run to the native-oracle value → `unrun!` to
+  empty history + exact initial state, under L2 and L3, including the `rehash!`
+  GROW path. Regression test `test/test_0fw7_dup_call_args.jl` (225
+  assertions), written RED against unmodified `src/` first.
+- **Guard family audited, not blanket-relaxed.** Surviving and pinned by §(4):
+  `allunique(targets)`, the `t in args` overlap check, both callee-shadow
+  checks, and the run-time §6a/§6b/§6f checks. The block-exit `allunique(args)`
+  in `control_instructions.jl` is a DIFFERENT list and is untouched (ingest
+  dedups it upstream); both sites now carry a cross-ref saying so.
+- **Two neighbour test files dead-lettered, not deleted**:
+  `test_call_roundtrip.jl` (e') and `test_call_instruction.jl` asserted the old
+  rejection; both now pin the NEW behaviour with the rationale inline (the same
+  pattern as (c') / ADR 0019 A.2).
+- **Gate:** new file + `test_rnhv_phi_multiuse.jl` (251) +
+  `test_a70z_dict64_roundtrip.jl` (347) + `test_call_instruction.jl` /
+  `test_call_roundtrip.jl` (162 together) all green individually. Full
+  `Pkg.test()` is the orchestrator's gate.
+
+### NEXT — pick one
+
+1. **`bennettvm-p3j2` (P2, bug)** — the `t in args` guard is the SAME family:
+   it still says "cannot be simultaneously moved-out and landed-into", stale
+   under COPY-args + OVERWRITE-targets. `x = g(x)` is routine at `-O0`.
+   Deliberately NOT folded into 0fw7; needs its own diagnosis + red-green.
+2. **`bennettvm-axfr` (P2, Core)** — the deferred SSA-dominance validator
+   (`validate(::VMProgram)`, M2.18). It is the proportionate replacement for
+   the construction-time strictness both 0022 and 0023 gave up.
+3. **`bennettvm-guyl` (P3)** — one arg NAME can now carry TWO widths at one
+   call site (`[64, 8, 8]` in the i8 loop-Dict fixture). Benign today (no VM
+   width masking exists); a future masking pass must key on POSITION, not name.
+
+### Watch out for (carried from this session)
+
+- **`structural_inverse(::CallInstruction)` swaps `targets` ↔ `args`**, so a
+  dup-arg instance inverts to a dup-TARGET one and is (correctly) rejected. A
+  dup-arg call is constructible but not structurally invertible in that class.
+  Dead path today; noted in the docstring so a revival does not do a naive list
+  swap.
+- **A guard that states a model must be deleted WITH the model.** A.1 changed
+  the transfer and the docstrings but not the constructor, and six weeks later
+  the constructor was still teaching readers the MOVE. When superseding a
+  design, grep for the *rationale text*, not only the code.
+
 ## ✅ SESSION 2026-07-24 (part 2) — `bennettvm-rnhv` FIXED: φ-edge is a non-destructive BIND; Dict GROWTH runs
 
 **This is the newer half of 2026-07-24. Part 1 (a70z) is the section below it.**

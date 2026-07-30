@@ -459,6 +459,13 @@ struct UnconditionalExit <: ControlInstruction
     args::Vector{Symbol}
 
     function UnconditionalExit(target::Symbol, args::Vector{Symbol})
+        # RETAINED, behaviour unchanged. This is a BLOCK-EXIT arg list, not a
+        # CALL arg list: `src/ir/ingest.jl` (the const-sharing comment) mints a
+        # FRESH name for every repeated φ-incoming within one edge, so this
+        # never fires on a real lowering, and removing it would perturb pinned
+        # `Define` counts (ADR 0022 §Decision). The sibling `CallEnter` check
+        # WAS removed (ADR 0023 / bead `bennettvm-0fw7`) because calls COPY
+        # their args; relaxing this one is a separate, independent change.
         allunique(args) ||
             error("UnconditionalExit: duplicate arg names in $(args) ",
                   "(SSA single-assignment-within-sender violation — the ",
@@ -819,6 +826,9 @@ struct ConditionalExit <: ControlInstruction
                              target_true::Symbol,
                              target_false::Symbol,
                              args::Vector{Symbol})
+        # RETAINED, behaviour unchanged — same rationale as `UnconditionalExit`
+        # above (block-exit args, not call args; ADR 0022 §Decision). ADR 0023
+        # relaxed only the `CallEnter` sibling.
         allunique(args) ||
             error("ConditionalExit: duplicate arg names in $(args) ",
                   "(SSA single-assignment-within-sender violation — the ",

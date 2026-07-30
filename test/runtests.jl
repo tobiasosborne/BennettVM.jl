@@ -692,6 +692,21 @@ using BennettVM
     # diagnostic. Sits after the a70z gate (its i64-Dict sibling).
     # ~55 s (dominated by three one-time closed-world set extractions).
     include("test_rnhv_phi_multiuse.jl")
+    # bead `bennettvm-0fw7`: ONE call may pass the SAME caller SSA value in two
+    # ARGUMENT POSITIONS. `CallEnter`'s `allunique(args)` guard stated the
+    # pre-Amendment-A MOVE of ADR 0019 §3 and rejected it at LOWERING time,
+    # even though A.1 had already replaced that MOVE with a COPY (the arg list
+    # is READ; the values land under distinct params; nothing is erased) — and
+    # even though duplicate CONSTANT args already passed, via ingest's
+    # per-position `_callconst_*` renaming. ADR 0023 removes it, mirroring
+    # ADR 0022's relax-don't-duplicate adjudication at the φ-edge. Pins: a
+    # hand-built dup-arg witness, straight-line `f(x) = g(x, x)` e2e, and the
+    # for-LOOP 14-insert `Dict{Int8,Int8}` AND `Dict{Int64,Int64}` (the shape
+    # the bead was filed on — `d[i] = i` → `setindex!(d, i, i)`), all against
+    # the native Julia oracle under L2 and L3, plus the surviving-guard set
+    # proving the relaxation was surgical. Sits after its rnhv / a70z Dict
+    # siblings. ~60 s (dominated by three one-time closed-world extractions).
+    include("test_0fw7_dup_call_args.jl")
     # B1 (bd `bennettvm-zr7x`): `run!(...; record=false)` forward-only fast
     # mode — the Track-B framerate baseline
     # (`docs/design/emulator-on-bennettvm.md` §9.2). Fast == normal forward

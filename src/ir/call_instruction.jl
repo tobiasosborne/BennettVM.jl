@@ -106,7 +106,7 @@ Rule 11 calls for.
 
 # Constructor validation (Rule 1)
 
-The constructor rejects five categories of degenerate input at
+The constructor rejects four categories of degenerate input at
 construction time:
 
   1. `direction` not in `(:call, :uncall)` — typo or stale spike-
@@ -117,19 +117,40 @@ construction time:
      single-assignment-within-receiver rule as the M2.9
      `UnconditionalEntry.params` and M2.7 `SwapInstruction.target1/2`
      constraints.
-  3. `args` contains duplicates — the same SSA name destroyed twice;
-     ambiguous order of operations (which destruction "wins"?) and
-     a structural impossibility under SSA. Same rule as M2.9
-     `UnconditionalExit.args`.
-  4. Any symbol appears in BOTH `targets` and `args` — an SSA name
+  3. Any symbol appears in BOTH `targets` and `args` — an SSA name
      cannot be simultaneously created and destroyed by one
      instruction. Same rule as M2.7 `SwapInstruction`'s
      target/source overlap check.
-  5. `callee` appears in `targets` or `args` — the callee label
+  4. `callee` appears in `targets` or `args` — the callee label
      shadows an SSA name; the dispatch would be ambiguous (does the
      `callee` Symbol refer to the label being called, or to the
      local being created / destroyed?). Forbid the shadow at
      construction time.
+
+There used to be a fifth: **`args` contains duplicates**. It is GONE
+(ADR 0023, bead `bennettvm-0fw7`). Its rationale — "the same SSA name
+destroyed twice" — presupposed the MOVE-args discipline of ADR 0019 §3,
+which ADR 0019 Amendment A.1 replaced with a COPY: a call reads its
+args and leaves the caller's bindings intact, so naming one value in
+two argument positions destroys nothing twice. `g(x, x)` and
+`setindex!(d, i, i)` (the lowering of `d[i] = i`) are ordinary,
+verifier-legal LLVM. This class is dead on the lowering path — only
+`BasicBlock.reverse()` (`src/ir/basic_block.jl`) and tests construct it
+— but it is relaxed in LOCKSTEP with the live `CallEnter`
+(`src/ir/call_transitions.jl`) so that a reader cannot find two
+different answers to the same question. See ADR 0023 for the full
+argument.
+
+One asymmetry follows and is deliberate: `structural_inverse` for this
+class swaps `targets` ↔ `args` (`src/ir/basic_block.jl`), so a
+duplicate-arg `CallInstruction` inverts to a duplicate-TARGET one and
+is rejected by check 2 — which is correct, because two returns really
+cannot land on one name. A dup-arg call is therefore constructible but
+not structurally invertible in THIS class. That is harmless today (the
+class is dead on the lowering path and `CallEnter`/`ReturnExit` do not
+use `structural_inverse`); if the class is ever revived, the inverse
+must land the two positions via the callee's params, not by a naive
+list swap.
 
 Empty `targets` / `args` are **legal** — a no-arg / no-return
 subroutine is a well-formed RSSA program (a `void main()` analogue,
@@ -207,7 +228,8 @@ round-trip aligns frames by `pc` alone.
 struct CallInstruction <: Instruction
     targets::Vector{Symbol}    # x,...  — created; receive callee's outputs
     callee::Symbol             # l — subroutine label
-    args::Vector{Symbol}       # y,... — destroyed; passed to callee
+    args::Vector{Symbol}       # y,... — passed to callee (RC3 says "destroyed";
+                               #   the live CallEnter COPIEs — ADR 0019 A.1 / 0023)
     direction::Symbol          # :call | :uncall (source-level direction)
 
     function CallInstruction(targets::Vector{Symbol},
@@ -224,10 +246,11 @@ struct CallInstruction <: Instruction
                   "(SSA single-assignment-within-receiver violation — the ",
                   "same SSA name cannot be created twice on the LHS of ",
                   "`(x,...) := call l(...)`)")
-        allunique(args) ||
-            error("CallInstruction: duplicate arg names in $(args) ",
-                  "(SSA single-assignment-within-sender violation — the ",
-                  "same SSA name cannot be destroyed twice as a call arg)")
+        # NO `allunique(args)` check — mirrors the `CallEnter` relaxation in
+        # `src/ir/call_transitions.jl` (ADR 0023, bead `bennettvm-0fw7`).
+        # Duplicate args are legal under COPY-args (ADR 0019 Amendment A.1);
+        # they were only ill-formed under the superseded MOVE model. Kept in
+        # lockstep with `CallEnter` so the two constructors cannot diverge.
         for t in targets
             if t in args
                 error("CallInstruction: symbol $(t) appears in BOTH ",
