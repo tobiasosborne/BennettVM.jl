@@ -7,6 +7,55 @@
 
 ---
 
+## Session 2026-08-03 — xkl frontier: instance-less closure callees (Bennett-40ys) land cross-repo; ZERO BVM src changes; next wall named (Bennett-7wsz)
+
+Orchestrated (Fable orchestrator; Sonnet scout + hostile reviewer, 2 blind Opus
+proposers + Opus implementer, strictly serial Julia). Target: `bennettvm-xkl`
+(P0, push!-built Vector) via its 2026-07-21 closed-world re-scope.
+
+- **Diagnosis**: every push! shape died at tier-1 EXTRACTION — Julia 1.12.3
+  outlines `_growend!`'s slow path into a NON-SINGLETON closure reached via a
+  real `:invoke` (`argtypes=Tuple{}`; captures ride in the closure struct);
+  Bennett.jl's `_callable_of_key` (`.instance`) crashed with a bare
+  `UndefRefError` in the registration loop, unrescuable by `on_extract_error`.
+  New capability class — the Dict corpus never hit it (rehash!/setindex! do
+  alloc/copy inline via foreigncalls, invisible to the `:invoke`-only walker).
+- **Fix (Bennett.jl side, 3+1, both proposers converged)**: by-SIGNATURE IR
+  emission (`Base._which → specialize_method → typeinf_code →
+  _dump_function_llvm`; `src/extract/sig_llvm.jl`), total callee-key classifier
+  with loud errors (incl. explicit OpaqueClosure rejection), full-specTypes
+  digest (argtypes-only digest PROVABLY collided: Int32-vs-Int64 push! closures
+  got identical keys), `mi.def.name` barenames (`nameof(ClosureType)` is a trap),
+  name-only callee registry for call-site binding.
+- **BVM: ZERO source changes.** `_vm_funcname`/`_vm_dispatch_name` and ADR-0023
+  CallEnter semantics carry closure callees unchanged. New
+  `test/test_40ys_closure_callee_vm.jl` (183 asserts): 1-field AND 2-field
+  functor callees extracted from TYPE alone run to native-oracle values and
+  `unrun!` to exact initial state + empty history, L2 AND L3, per-step inverse.
+  The 2-field fixture is the tripwire for Bennett-ce9t (caller `arg_widths
+  [64,64]` vs callee `ParsedIR.args [128,64]` — inert because CallEnter drops
+  widths, `ingest_multi.jl:153` params are names-only; oracle mixes both fields
+  so a wrong field-crossing changes the answer).
+- **push! now fails LOUD at the named next wall**: ptr-typed sret struct fields
+  (`{ptr,ptr}` MemoryRef) under ptr_cells — filed as **Bennett-7wsz** (P1); the
+  old dv1z bead is closed history, don't reopen it. After 7wsz expect walls
+  INSIDE the closure body (`jl_genericmemory_copy_slice` etc. — scout forecast).
+- **Beads**: Bennett-40ys closed; filed Bennett-wh1p (case-folding, P2),
+  Bennett-9tg3 (`:skip` silently drops the ROOT — confirmed live, pinned as
+  known-gap testset), Bennett-ce9t (width metadata, P3), bare_to_key >1-candidate
+  guard (P3), Bennett-7wsz (P1). `bennettvm-m9i` annotated STALE (pre-ADR-0017
+  framing); `xkl` annotated with diagnosis.
+- **Gates (orchestrator-run)**: BVM full `Pkg.test` **9631/9631** (4m04s;
+  +183 over 9448 baseline; clang still absent so ~2000 asserts self-skip,
+  `bennettvm-5o86`). Bennett.jl full `Pkg.test` green (implementer run) +
+  orchestrator re-gate: see Bennett.jl worklog/097.
+- **Gotcha bank**: `@noinline` in body position is load-bearing for closure
+  fixtures (else inlining empties `transitive_callees`); `string(hash;base=16)`
+  drops leading zeros (`lpad` or p≈2⁻²⁸ BoundsError); a 1-field functor passes
+  width checks by COINCIDENCE (8-byte self) — always test ≥2-field captures.
+
+---
+
 ## 2026-07-30 (part 2) — `Bennett-tl1l`: the two a70z emission shapes the Dict corpus never produces
 
 **Test-only, both repos. No `src/` change, no defect found — this was a coverage

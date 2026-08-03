@@ -679,6 +679,21 @@ using BennettVM
     # `test_cwd4` (iv) gates; sits with the other real-closed-world-set tests.
     # ~45 s (dominated by the one-time set extraction).
     include("test_a70z_dict64_roundtrip.jl")
+    # Bennett.jl bead `Bennett-40ys`, DOWNSTREAM half: an INSTANCE-LESS callee
+    # (a callable TYPE with fields — a closure or a functor — hence no
+    # `.instance`) end-to-end. Upstream moved the closed-world producer from a
+    # VALUE interface to a SIGNATURE interface, because Julia's own codegen
+    # consumes the callable only via `signature_type(f, t)`, which is exactly
+    # the specTypes the call graph already holds. Two of its claims are BVM's to
+    # verify: (1) the call site now carries the BARE canonical name, so
+    # `_vm_dispatch_name` agrees with the table key's `_vm_funcname` — asserted
+    # as a direct equality, plus the '#'-bearing closure-barename shape the real
+    # `push!` corpus will produce once Bennett-dv1z lands; (2) the by-pointer
+    # captured-state ABI — the caller allocas its fields and passes the ADDRESS
+    # as a cell, and the callee reads them back ACROSS the CallEnter boundary.
+    # Fixture is a synthetic `Int64`-only functor: `push!` itself still walls at
+    # Bennett-dv1z (sret-of-pointer), so a real closure cannot yet run.
+    include("test_40ys_closure_callee_vm.jl")
     # Bennett.jl bead `Bennett-tl1l` (residual a70z coverage), DOWNSTREAM half.
     # `_fuse_overflow_extractvalue` has THREE emission shapes; the file above
     # only reaches the TWO-SIDED one, because that is all the real `Dict` corpus
