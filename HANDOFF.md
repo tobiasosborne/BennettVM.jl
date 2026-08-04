@@ -19,15 +19,24 @@ Bennett.jl worklog/097), both with ZERO BVM src changes:
    round-tripping on the VM. BVM full suite **9791/9791** (orchestrator-run).
 
 **The xkl (P0) frontier is now the closure-body wall chain** (clear
-wall-by-wall, xrd6→u2kk→8g7m style). THREE walls cleared this session
+wall-by-wall, xrd6→u2kk→8g7m style). FOUR walls cleared this session
 (40ys closure callees → 7wsz ptr sret fields → 3vf2 dead-use global-load
-drop):
-- NEXT: **`llvm.memmove.p0.p0.i64`** — the `_growend!` grow-copy
-  (Bennett-8bys / Bennett-37mt Phase-1 deferral; already-tracked memmove
-  lowering gap, NOT a new bead). CORRECTED forecast:
-  `jl_alloc_genericmemory_unchecked` extracts CLEAN as an opaque IRCall under
-  mem=:auto ptr_cells — it is not a wall.
-- Then: iwo9 `ptrtoint` of GenericMemory data pointers (Bennett-kvdv).
+drop → vau9 memmove routing):
+- NEXT (Bennett.jl side): **`Bennett-jbko` (wall 5)** — `ptrtoint` of a
+  MemoryRef data pointer feeding an `icmp eq` concurrent-mutation guard in
+  `_growend!` L84; matches neither the iwo9 type-tag nor 583s memdata arms.
+  Needs a new equality-comparison arm with an explicit determinism argument
+  (klgz discipline). CORE 3+1.
+- NEXT (BVM side): **`bennettvm-rxgy` (wall 6, the arc's FIRST BVM src
+  change)** — `IntrinsicMemmoveBytes`, byte-exact sibling of
+  IntrinsicMemsetBytes, for Julia-tier byte-granular programs
+  (`_enforce_julia_heap_tier!` currently rejects cell-granular
+  IntrinsicMemmove there, loudly). NOTE: comments citing "bennettvm-9n3y"
+  for this gap are a DANGLING ID (neither tracker); rxgy is real; sweep bead
+  filed.
+- After jbko: the L93 success path is an 8-byte sret-reassembly memcpy,
+  plausibly already supported post-7wsz — runway to full `_growend!`
+  extraction is plausibly short but unverified.
 - The push! ROOT separately walls at the pgcstack inline-asm read
   (Bennett-5oyt/U15) — a DIFFERENT axis from the closure chain. Wall
   forecasts made with ungated monkey-patches (or non-pipeline IR dumps — the

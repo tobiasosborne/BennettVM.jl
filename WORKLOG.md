@@ -7,6 +7,36 @@
 
 ---
 
+## Session 2026-08-03/04 (part 4) — Bennett-vau9: memmove routes to the VM's IntrinsicMemmove; xkl wall 4 cleared; walls 5 (jbko) + 6 (rxgy) located; ZERO BVM src changes a fourth time
+
+Reduced pass (design settled by the Bennett-8bys memset 3+1; scout verified
+the mirror; hostile review ran a revert-worktree experiment + its own
+adversarial overlap fixtures).
+
+- Bennett.jl now routes `llvm.memmove` under ptr_cells to
+  `IRCall(:memmove,[dst,src,nbytes])` — and BVM needed NOTHING:
+  `IntrinsicMemmove` (intrinsics_bulk.jl) was already overlap-safe BY
+  CONSTRUCTION (`_copy_range!` snapshots the whole src range before writing
+  dest — direction-agnostic, self-move fine) with L2 dest-range delta
+  reversal, and `:memmove` was already in `_HEAP_DISPATCH`.
+- New `test/test_vau9_memmove_vm.jl` (267 + the 21 M8.2-scaffold self-tests
+  it includes): FORWARD- and BACKWARD-overlapping memmoves through the REAL
+  front-end vs hand-computed oracles, disjoint + variable-length, L2+L3,
+  per-step inverse at K ∈ {1,4}. Deliberately malloc/C-TIER — the real
+  Julia-tier grow-copy is blocked by wall 6:
+- **bennettvm-rxgy (wall 6) — the FIRST BVM src change of the arc, filed**:
+  `_enforce_julia_heap_tier!` fails loud on cell-granular IntrinsicMemmove in
+  byte-granular Julia-tier programs; needs IntrinsicMemmoveBytes (sibling of
+  IntrinsicMemsetBytes). NOTE: comments/error messages across both repos cite
+  "bennettvm-9n3y" for this gap — that ID exists in NEITHER tracker (dangling;
+  sweep bead filed). rxgy is the real bead.
+- **Bennett-jbko (wall 5)**: push! extraction now lands at a `ptrtoint` of a
+  MemoryRef data pointer feeding an `icmp eq` concurrent-mutation guard —
+  needs a new equality arm on the Bennett.jl side.
+- Gates (orchestrator-run): BVM full `Pkg.test` **10183/10183** (4m01s; +21
+  over arithmetic attributed exactly to the included M8.2 scaffold
+  self-tests); Bennett.jl 690874/3B.
+
 ## Session 2026-08-03/04 (part 3) — Bennett-3vf2: dead-use global-load drop; xkl wall 3 cleared; frontier is now memmove (Bennett-8bys); ZERO BVM src changes a third time
 
 Third bead, first genuinely DIVERGENT 3+1 of the arc. Bennett.jl gains a

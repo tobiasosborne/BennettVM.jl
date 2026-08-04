@@ -574,6 +574,21 @@ using BennettVM
     # the L2 and L3 history regimes. Sits directly after the utzc sink test
     # whose mechanism it reuses.
     include("test_3vf2_dead_use_global_load.jl")
+    # Bennett-vau9 / CW-D: the E2E half of the upstream MEMMOVE ROUTING (under
+    # `ptr_cells` an `llvm.memmove.p0.p0.i64` now routes to `IRCall(:memmove)`
+    # instead of failing loud). ZERO BVM src changes: `:memmove` was already in
+    # `_HEAP_DISPATCH` and `IntrinsicMemmove` is overlap-safe by construction
+    # (`_copy_range!` snapshots the whole src range before writing dest) and L2
+    # reversible via its dest-range delta. `test_arena_roundtrip.jl` already
+    # pins that at the INSTRUCTION level; this adds the never-executed E2E —
+    # hand-written `.ll` → real Bennett front-end → `lower_vm` → `run!` vs a
+    # hand-computed oracle → `unrun!` exact, for FORWARD-overlapping,
+    # BACKWARD-overlapping, disjoint and VARIABLE-length moves, under L2 and L3
+    # with per-step inverse at K ∈ {1,4}. It also pins the two unit conversions
+    # on the path (`nbytes` stays in BYTES to `IntrinsicMemmove`; a GEP byte
+    # offset becomes a CELL offset upstream) — the overlap cases are exactly
+    # what the Bennett-8bys memset siblings could not cover.
+    include("test_vau9_memmove_vm.jl")
     # CW-C2 chunk C (BVM ADR 0020 D5; Bennett-nd45): a C-track `.ll`-sourced
     # IRCall has a bare `Symbol` callee. The IRCall arm now dispatches via
     # `_callee_sym(inst.callee)` (nameof for Function, identity for Symbol), so
