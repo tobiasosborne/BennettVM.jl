@@ -19,16 +19,20 @@ Bennett.jl worklog/097), both with ZERO BVM src changes:
    round-tripping on the VM. BVM full suite **9791/9791** (orchestrator-run).
 
 **The xkl (P0) frontier is now the closure-body wall chain** (clear
-wall-by-wall, xrd6→u2kk→8g7m style):
-- NEXT: unrecognized JIT global `@jl_diverror_exception` (const-global
-  materialization, bennettvm-416r.13 family) — where the `_growend!` closure
-  walls today.
-- Then (scout forecast): `jl_genericmemory_copy_slice` / alloc inside the
-  closure body; then iwo9 `ptrtoint` (Bennett-kvdv).
+wall-by-wall, xrd6→u2kk→8g7m style). THREE walls cleared this session
+(40ys closure callees → 7wsz ptr sret fields → 3vf2 dead-use global-load
+drop):
+- NEXT: **`llvm.memmove.p0.p0.i64`** — the `_growend!` grow-copy
+  (Bennett-8bys / Bennett-37mt Phase-1 deferral; already-tracked memmove
+  lowering gap, NOT a new bead). CORRECTED forecast:
+  `jl_alloc_genericmemory_unchecked` extracts CLEAN as an opaque IRCall under
+  mem=:auto ptr_cells — it is not a wall.
+- Then: iwo9 `ptrtoint` of GenericMemory data pointers (Bennett-kvdv).
 - The push! ROOT separately walls at the pgcstack inline-asm read
-  (Bennett-5oyt/U15) — clearing the root needs pgcstack handling and is a
-  DIFFERENT axis from the closure chain. Wall forecasts made with ungated
-  monkey-patches are unreliable; measure gated.
+  (Bennett-5oyt/U15) — a DIFFERENT axis from the closure chain. Wall
+  forecasts made with ungated monkey-patches (or non-pipeline IR dumps — the
+  3vf2 addrspacecast artifact) are unreliable; measure gated on the real
+  extraction path.
 
 Watch-outs carried forward: `bennettvm-m9i` bead text is STALE (pre-ADR-0017
 recognizer framing — the closed-world route owns xkl now; re-scope or close it

@@ -562,6 +562,18 @@ using BennettVM
     # `per_step_inverse_check` via a plain `include` of test_per_step_inverse.jl
     # (the same idiom as test_dict_roundtrip.jl / test_call_roundtrip.jl).
     include("test_utzc_unreachable_sink.jl")
+    # Bennett-3vf2 / CW-D: the E2E half of the upstream DEAD-USE DROP (a
+    # `load ptr, ptr @GlobalVariable` all of whose uses lie in utzc dead blocks
+    # is dropped at extraction). ZERO BVM src changes: the effect is purely
+    # SUBTRACTIVE, and the surviving shape is the utzc diamond above. What this
+    # adds is the never-executed E2E claim — a hand-written `.ll` through the
+    # REAL Bennett front-end (`extract_parsed_ir_from_ll`, ptr_cells=true) →
+    # `lower_vm` → `run!` → `unrun!`, with Julia's structurally-constant
+    # literal-divisor guard `and(true, or(true, X))` evaluated for real (it must
+    # always take the live arm and never reach the `:error` sink), under both
+    # the L2 and L3 history regimes. Sits directly after the utzc sink test
+    # whose mechanism it reuses.
+    include("test_3vf2_dead_use_global_load.jl")
     # CW-C2 chunk C (BVM ADR 0020 D5; Bennett-nd45): a C-track `.ll`-sourced
     # IRCall has a bare `Symbol` callee. The IRCall arm now dispatches via
     # `_callee_sym(inst.callee)` (nameof for Function, identity for Symbol), so

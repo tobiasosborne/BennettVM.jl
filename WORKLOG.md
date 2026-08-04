@@ -7,6 +7,30 @@
 
 ---
 
+## Session 2026-08-03/04 (part 3) — Bennett-3vf2: dead-use global-load drop; xkl wall 3 cleared; frontier is now memmove (Bennett-8bys); ZERO BVM src changes a third time
+
+Third bead, first genuinely DIVERGENT 3+1 of the arc. Bennett.jl gains a
+name-agnostic "dead-use drop": a `GlobalVariable` ptr load that would hit the
+UNRECOGNIZED-JIT-global reject is dropped iff EVERY use's parent block is in
+the utzc dead_blocks set (the pruner empties those blocks — nothing emitted
+can reference the def; hostile review found the stronger argument: SSA
+domination alone makes dead-def→live-use structurally impossible). This clears
+`@jl_diverror_exception` in `_growend!` (4 structurally-dead div-guard
+diamonds, load hoisted into the live block). Atomic loads declined (fence ≠
+value semantics); zero-use loads still reject. Correction chain: proposer B's
+"addrspacecast direct use" sighting was a DUMP ARTIFACT — IR claims are only
+valid for the exact pipeline configuration that produced them.
+
+- **BVM: zero src changes.** New `test/test_3vf2_dead_use_global_load.jl`
+  (104): the benign dead-diamond fixture runs through the REAL front-end to
+  `:halted` (never the `:__unreachable__` error sink), `div(n,4)` for 7 values
+  incl. negatives, exact `unrun!` + empty history under L2 AND L3 — proving
+  the drop is invisible at the VM level, which is the point.
+- **xkl frontier is now `llvm.memmove.p0.p0.i64`** (Bennett-8bys / 37mt,
+  already-tracked memmove lowering) — the push! corpus lands there with the
+  callee named. Root separately at pgcstack (Bennett-5oyt/U15).
+- Gates (orchestrator-run): BVM full `Pkg.test` **9895/9895** (4m01s).
+
 ## Session 2026-08-03/04 (part 2) — Bennett-7wsz: ptr-typed sret fields land; xkl closure frontier advances to the 416r.13 JIT-global wall; ZERO BVM src changes again
 
 Second bead of the same orchestrated session (3+1; proposers converged again;
