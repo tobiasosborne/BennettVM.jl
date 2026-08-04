@@ -7,6 +7,29 @@
 
 ---
 
+## Session 2026-08-03/04 (part 5, WIND-UP) — Bennett-jbko: ptr-identity ptrtoint arm lands UNREVIEWED (hostile review = Bennett-a8nw); ZERO BVM src changes a fifth time
+
+⚠️ jbko's implementation is committed with IMPLEMENTER-run full suites green
+(BVM **10379/10379** 4m10.8s; Bennett 690955/3B 30m20s) but the hostile-review
+step was NOT run (user wind-up) — **Bennett-a8nw (P1) tracks it; do not build
+on the arm or close Bennett-jbko until it passes.**
+
+- Bennett.jl admits `ptrtoint` of certified cell-valued pointers when every
+  use is `icmp eq/ne` (the MemoryRef concurrent-mutation guard in
+  `_growend!`). BVM needed nothing: IRICmp on two cells was always fine.
+- New `test/test_jbko_ptr_identity_vm.jl` (175): guard-match runs the ok
+  branch; guard-MISMATCH runs into the ConcurrencyViolationError diamond and
+  HALTS at the `:__unreachable__` sink — and `unrun!` still returns the exact
+  initial state with drained history. **A trapped program is fully
+  reversible** (L1-injective sink); first time pinned anywhere. Allocator
+  injectivity is a runnable assertion (first malloc == ARENA_BASE == the
+  captured cell).
+- Frontier after jbko (both proposers, real gated path): **Bennett-p06b**
+  (wall 6: two live `store {ptr,ptr}` at L93 — extraction side) and
+  **Bennett-foz5** (wall 7: %idxend 583s root extension), plus
+  **bennettvm-rxgy** (BVM byte-tier memmove) before the real grow-copy RUNS.
+  Bennett-kvdv closed stale (583s subsumed it).
+
 ## Session 2026-08-03/04 (part 4) — Bennett-vau9: memmove routes to the VM's IntrinsicMemmove; xkl wall 4 cleared; walls 5 (jbko) + 6 (rxgy) located; ZERO BVM src changes a fourth time
 
 Reduced pass (design settled by the Bennett-8bys memset 3+1; scout verified

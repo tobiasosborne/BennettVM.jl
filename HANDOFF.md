@@ -4,8 +4,27 @@
 
 ## 📌 SESSION CLOSE 2026-08-03/04 (orchestrator) — where to pick up
 
-**Two beads landed cross-repo this session** (WORKLOG top two entries +
-Bennett.jl worklog/097), both with ZERO BVM src changes:
+**FIVE beads landed cross-repo this session** (WORKLOG top five entries +
+Bennett.jl worklog/097+098), ALL with ZERO BVM src changes: 40ys (instance-
+less closure callees), 7wsz (ptr sret fields), 3vf2 (dead-use global-load
+drop), vau9 (memmove routing), jbko (ptr-identity ptrtoint arm).
+
+**⚠️ FIRST TASK FOR THE NEXT AGENT: Bennett-a8nw (P1)** — jbko landed at
+user wind-up WITHOUT its hostile review (implementer-run full suites green:
+Bennett 690955/3B, BVM 10379/10379; gate-count 39/39). Run the review against
+the 8 open risks in the jbko implementer report (Bennett.jl worklog/098);
+do not close Bennett-jbko or build on the arm until it passes.
+
+**The xkl (P0) frontier after this session**: extraction side —
+**Bennett-p06b** (wall 6: two live `store {ptr,ptr}` at `_growend!` L93;
+CORE 3+1) then **Bennett-foz5** (wall 7: %idxend 583s root extension); VM
+side — **bennettvm-rxgy** (IntrinsicMemmoveBytes for the Julia byte tier)
+before the real grow-copy can RUN. The push! ROOT separately walls at
+pgcstack (Bennett-5oyt/U15). Bennett-kvdv closed stale. Wall-marker lesson:
+disjunctions that admit the successor wall stop tracking — only the
+`!occursin` negatives are load-bearing.
+
+--- (superseded pickup notes below retained for history) ---
 
 1. **Bennett-40ys** — instance-less closure/functor callees extract from their
    TYPE alone (the capability class every `push!`-based program needs).

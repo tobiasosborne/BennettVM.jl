@@ -589,6 +589,19 @@ using BennettVM
     # offset becomes a CELL offset upstream) — the overlap cases are exactly
     # what the Bennett-8bys memset siblings could not cover.
     include("test_vau9_memmove_vm.jl")
+    # Bennett-jbko / CW-D: the E2E half of the upstream POINTER-IDENTITY
+    # `ptrtoint` admission (Julia's `MemoryRef` concurrent-mutation guard,
+    # `_growend!` %L84). ZERO BVM src changes: the `:or` cell identity and the
+    # `icmp eq` both ingest to ordinary non-destructive `Define`s. What is new
+    # is the END-TO-END determinism claim — the coerced integer is a VM CELL
+    # handed out by the deterministic, injective bump allocator, so `eq`/`ne`
+    # is a location-identity predicate (a source-level fact), while ordering
+    # and arithmetic on it stay fail-loud upstream. Both branch outcomes are
+    # exercised: guard MATCH takes the ok arm to `:halted` with the oracle,
+    # guard MISMATCH takes the dead throw arm and traps loudly at the
+    # Bennett-utzc `:__unreachable__` sink (`status === :error`) — and BOTH
+    # reverse exactly under L2 and L3, the trapped mid-run state included.
+    include("test_jbko_ptr_identity_vm.jl")
     # CW-C2 chunk C (BVM ADR 0020 D5; Bennett-nd45): a C-track `.ll`-sourced
     # IRCall has a bare `Symbol` callee. The IRCall arm now dispatches via
     # `_callee_sym(inst.callee)` (nameof for Function, identity for Symbol), so
