@@ -7,7 +7,36 @@
 
 ---
 
-## Session 2026-08-03 — xkl frontier: instance-less closure callees (Bennett-40ys) land cross-repo; ZERO BVM src changes; next wall named (Bennett-7wsz)
+## Session 2026-08-03/04 (part 2) — Bennett-7wsz: ptr-typed sret fields land; xkl closure frontier advances to the 416r.13 JIT-global wall; ZERO BVM src changes again
+
+Second bead of the same orchestrated session (3+1; proposers converged again;
+hostile review ACCEPT-WITH-CONDITIONS, zero claims falsified).
+
+- **Capability**: under `ptr_cells=true`, Bennett.jl now admits ptr-typed sret
+  struct fields as 64-bit cells (`{ptr,ptr}` MemoryRef returns et al.). Julia's
+  split-roots ABI finding (both proposers, independently): the callee stores
+  the GC-tracked field into the `return_roots` out-param and a literal `i64 -1`
+  sentinel into the matching sret slot; the jfptr wrapper reassembles. Modeled
+  VERBATIM — **fusing return_roots into the aggregate would be a silent pointer
+  miscompile**; anti-fusion tests + a SEMANTICS block in Bennett.jl sret.jl pin
+  the evidence (incl. a dat+mem-1 arithmetic witness on the VM).
+- **BVM: zero src changes** — guard-5's `ret_width == sum(ret_elem_widths)`
+  (128==128) takes the value-ABI branch (read, not trusted). New
+  `test/test_7wsz_ptr_sret_vm.jl` (160): sret({ptr,i64}) fixture E2E
+  (extract → lower_vm → run == native oracle → unrun! exact, L2+L3, per-step
+  inverse) + a hand-built split-roots `.ll` pair proving the cross-frame
+  return_roots store reverses and IRInsertBits+ConstOperand(-1) lowers.
+- **Frontier walls after 7wsz** (measured, gated): the push! CLOSURE
+  (the xkl chain) lands at unrecognized JIT global `@jl_diverror_exception`
+  (bennettvm-416r.13 family); the push! ROOT lands at the pgcstack inline-asm
+  wall (Bennett-5oyt/U15) — NOT the forecast U114, because clearing the
+  416r.16 PRE-WALK wall exposed the body walk's FIRST instruction. Lesson:
+  "advances to the next wall" is not monotone in program order, and wall
+  forecasts made with ungated monkey-patches lie about gated behavior.
+- **Gates (orchestrator-run)**: BVM full `Pkg.test` **9791/9791** (4m02s);
+  Bennett.jl full suite green (see Bennett.jl worklog/097 session entry).
+
+## Session 2026-08-03 (part 1) — xkl frontier: instance-less closure callees (Bennett-40ys) land cross-repo; ZERO BVM src changes; next wall named (Bennett-7wsz)
 
 Orchestrated (Fable orchestrator; Sonnet scout + hostile reviewer, 2 blind Opus
 proposers + Opus implementer, strictly serial Julia). Target: `bennettvm-xkl`

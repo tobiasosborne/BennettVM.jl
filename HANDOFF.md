@@ -2,32 +2,42 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
-## 📌 SESSION CLOSE 2026-08-03 (orchestrator) — where to pick up
+## 📌 SESSION CLOSE 2026-08-03/04 (orchestrator) — where to pick up
 
-**Bennett-40ys landed cross-repo** (see WORKLOG top entry + Bennett.jl
-worklog/097): the closed-world extractor now handles instance-less
-closure/functor callees from their TYPE alone — the capability class every
-`push!`-based program needs. ZERO BVM src changes; new
-`test/test_40ys_closure_callee_vm.jl` (183) proves 1-field and 2-field functor
-callees run + reverse exactly on the VM (L2/L3, per-step inverse). BVM full
-suite **9631/9631** (orchestrator-run).
+**Two beads landed cross-repo this session** (WORKLOG top two entries +
+Bennett.jl worklog/097), both with ZERO BVM src changes:
 
-**The xkl (P0) frontier is now exactly one named wall: `Bennett-7wsz`** (P1,
-Bennett.jl, CORE 3+1) — ptr-typed sret struct fields under `ptr_cells=true`
-(`_sret_struct_fields`, `src/extract/sret.jl:142-148`): the push! root AND the
-outlined `_growend!` closure both sret a `{ptr,ptr}` MemoryRef. Audit the
-4-param closure form (`sret`, `return_roots`, `#self#`, `.roots.#self#`) while
-there. After 7wsz: expect walls INSIDE the closure body
-(`jl_genericmemory_copy_slice`, alloc — scout forecast 2026-08-03); clear them
-wall-by-wall, xrd6→u2kk→8g7m style.
+1. **Bennett-40ys** — instance-less closure/functor callees extract from their
+   TYPE alone (the capability class every `push!`-based program needs).
+   `test_40ys_closure_callee_vm.jl` (183): 1- and 2-field functor callees run
+   + reverse exactly on the VM (L2/L3, per-step inverse).
+2. **Bennett-7wsz** — ptr-typed sret struct fields admitted as 64-bit cells
+   under `ptr_cells=true` (`{ptr,ptr}` MemoryRef returns). Split-roots ABI
+   modeled VERBATIM (i64 -1 sentinel; NEVER fuse return_roots into the
+   aggregate — silent pointer miscompile; anti-fusion tests pin it).
+   `test_7wsz_ptr_sret_vm.jl` (160) incl. a hand-built split-roots `.ll` pair
+   round-tripping on the VM. BVM full suite **9791/9791** (orchestrator-run).
+
+**The xkl (P0) frontier is now the closure-body wall chain** (clear
+wall-by-wall, xrd6→u2kk→8g7m style):
+- NEXT: unrecognized JIT global `@jl_diverror_exception` (const-global
+  materialization, bennettvm-416r.13 family) — where the `_growend!` closure
+  walls today.
+- Then (scout forecast): `jl_genericmemory_copy_slice` / alloc inside the
+  closure body; then iwo9 `ptrtoint` (Bennett-kvdv).
+- The push! ROOT separately walls at the pgcstack inline-asm read
+  (Bennett-5oyt/U15) — clearing the root needs pgcstack handling and is a
+  DIFFERENT axis from the closure chain. Wall forecasts made with ungated
+  monkey-patches are unreliable; measure gated.
 
 Watch-outs carried forward: `bennettvm-m9i` bead text is STALE (pre-ADR-0017
 recognizer framing — the closed-world route owns xkl now; re-scope or close it
 when xkl lands). `:skip` on a walled ROOT silently returns a rootless set
 (Bennett-9tg3, pinned known-gap). 1-field functors pass width checks by
-coincidence — 2-field fixture is the tripwire (Bennett-ce9t). No clang on this
-box (suite undercounts ~2000, `bennettvm-5o86`). One Julia process at a time;
-gate on a `Pkg.test()` you run yourself.
+coincidence — 2-field fixture is the tripwire (Bennett-ce9t). Wall-marker
+occursin pins use bare numerals (Bennett-0ncn). No clang on this box (suite
+undercounts ~2000, `bennettvm-5o86`). One Julia process at a time; gate on a
+`Pkg.test()` you run yourself.
 
 ## 📌 SESSION CLOSE 2026-07-30 (orchestrator) — where to pick up
 

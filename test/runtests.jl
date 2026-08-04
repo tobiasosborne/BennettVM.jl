@@ -691,9 +691,27 @@ using BennettVM
     # `push!` corpus will produce once Bennett-dv1z lands; (2) the by-pointer
     # captured-state ABI — the caller allocas its fields and passes the ADDRESS
     # as a cell, and the callee reads them back ACROSS the CallEnter boundary.
-    # Fixture is a synthetic `Int64`-only functor: `push!` itself still walls at
-    # Bennett-dv1z (sret-of-pointer), so a real closure cannot yet run.
+    # Fixture is a synthetic `Int64`-only functor: `push!` itself still walls
+    # (at Bennett-dv1z when 40ys landed; since Bennett-7wsz at the unrecognised
+    # JIT global `@jl_diverror_exception`), so a real closure cannot yet run.
     include("test_40ys_closure_callee_vm.jl")
+    # Bennett.jl bead `Bennett-7wsz`, DOWNSTREAM half: a POINTER-TYPED sret
+    # struct FIELD (the `_growend!` closure's `sret({ptr,ptr})` MemoryRef
+    # return) now extracts as two 64-bit VM cells under `ptr_cells=true`.
+    # Three claims are BVM's to verify, and this file is that proof, with ZERO
+    # BVM src changes: (1) guard-5's `IRCall.ret_width == Σ ret_elem_widths`
+    # discriminator lands the multi-key slot family at 128 == 64+64 (the
+    # historical `64 != 72` failure was a MISMATCH, not a width cap) — a
+    # SoftCall degrade would mean it did not; (2) `IRInsertBits` with a
+    # `ConstOperand` value, which Julia's split-roots ABI makes load-bearing
+    # (the `i64 -1` SENTINEL written into the sret slot of a GC-tracked field);
+    # (3) `return_roots` modelled VERBATIM as an ordinary out-pointer — the
+    # CALLEE stores through a caller-provided pointer cell and the CALLER reads
+    # it back after `ReturnExit`, and that must reverse. Fixtures: a Julia pair
+    # whose `Ptr` is a never-dereferenced PARAMETER (constructing one from an
+    # integer would emit `inttoptr` → the Bennett-iwo9 guard), plus a hand-built
+    # split-roots `.ll` pair.
+    include("test_7wsz_ptr_sret_vm.jl")
     # Bennett.jl bead `Bennett-tl1l` (residual a70z coverage), DOWNSTREAM half.
     # `_fuse_overflow_extractvalue` has THREE emission shapes; the file above
     # only reaches the TWO-SIDED one, because that is all the real `Dict` corpus
