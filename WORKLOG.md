@@ -7,6 +7,34 @@
 
 ---
 
+## Session 2026-08-06 (part 2) — Bennett-p06b: aggregate {ptr,ptr} store decomposition (xkl wall 6) — ZERO BVM src changes (sixth in a row); pdqx spec found WRONG by measurement
+
+Upstream landed the p06b arm (CORE 3+1, THREE review rounds: FAIL → FAIL →
+PASS-WITH-CONCERNS; Bennett.jl worklog/099 has the full arc). BVM side:
+
+- **ZERO src changes.** New `test/test_p06b_aggregate_store_vm.jl` (179):
+  decomposed aggregate-store program through the real front end — `:halted`
+  with hand oracle, `unrun!` exact + drained history, L2 AND L3,
+  per_step_inverse_check K∈{1,4}, distinct-cell non-vacuity witness.
+- **bennettvm-pdqx's spec is WRONG and the bead was amended**: a "target
+  cell ∈ live reserved regions" check CANNOT catch the D1 clobber class —
+  every executed repro writes into an ADJACENT LIVE allocation, inside the
+  union of reservations. There is no region table; ownership is three
+  monotone cursors + a flat cell Dict (src/ir/IState.jl:315-398, verified
+  independently by two reviewers). Catching cross-allocation clobbers needs
+  pointer PROVENANCE — plain-Int64 locals can't express it without
+  false-rejecting stack-tier integer arithmetic. pdqx retains narrower
+  merits (wild-address escapes) and is unclaimed.
+- **Bennett-khb2 (upstream)**: the corpus `:load` target's capacity is a
+  disclosed well-formedness assumption, pinned KNOWN-ADMITTED in both
+  repos' test files (flip-don't-delete banners). The BVM E2E header carries
+  the matching KNOWN CLOBBER note.
+- New BVM beads: bennettvm-pdqx (amended, open), bennettvm-p4r4 (IRInsertValue
+  base lacks the agg_dests guard IRExtractValue has → contextless KeyError;
+  the upstream D4 chain-root fix closes the current entry path).
+- Frontier: wall 6 CLEARED; next Bennett-foz5 (wall 7, upstream) and
+  bennettvm-rxgy (IntrinsicMemmoveBytes) on the VM side.
+
 ## Session 2026-08-06 — Bennett-a8nw hostile review RUN → PASS-WITH-CONCERNS; jbko + a8nw CLOSED; ZERO BVM changes (review-only session)
 
 The upstream review debt is paid: the jbko ptrtoint arm survived ~30

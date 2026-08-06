@@ -16,14 +16,20 @@ arm comment and tracked as **Bennett-sku0 (P2)**; **Bennett-vckk (P3)**
 covers argument-source widening. Full report: Bennett-a8nw bead trail +
 Bennett.jl worklog/098 top entry. ZERO BVM changes this session (docs only).
 
-**Frontier is UNBLOCKED. Next work, in order:**
-1. **Bennett-p06b (P1, wall 6, extraction side)** — decompose the two live
-   `store {ptr,ptr}` at `_growend!` L93 into two 64-bit cell stores under
-   ptr_cells (LLVMOffsetOfElement per dv1z/7wsz discipline). CORE 3+1.
-2. **Bennett-foz5 (P1, wall 7)** — %idxend 583s ROOT extension. ⚠️ Read the
+**UPDATE, same day (part 2): Bennett-p06b (wall 6) is DONE** — CORE 3+1,
+three hostile-review rounds (FAIL → FAIL → PASS-WITH-CONCERNS), full arc in
+Bennett.jl worklog/099. ZERO BVM src changes (sixth in a row); new BVM E2E
+test_p06b_aggregate_store_vm.jl (179). ⚠️ bennettvm-pdqx's spec was found
+WRONG by measurement (no region table — three monotone cursors,
+src/ir/IState.jl:315-398; adjacent-allocation clobbers need pointer
+provenance): bead amended, unclaimed. Bennett-khb2 tracks the disclosed
+:load-capacity residual, pinned KNOWN-ADMITTED in both repos.
+
+**Frontier now:**
+1. **Bennett-foz5 (P1, wall 7)** — %idxend 583s ROOT extension. ⚠️ Read the
    a8nw note on the bead first: the jbko arm's `_memdata_root === nothing`
    pin becomes load-bearing the moment 583s gains a fall-through arm.
-3. **bennettvm-rxgy (P1, VM side)** — IntrinsicMemmoveBytes for the Julia
+2. **bennettvm-rxgy (P1, VM side)** — IntrinsicMemmoveBytes for the Julia
    byte tier; gates the real grow-copy RUN.
 
 --- (superseded 2026-08-03/04 close below retained for history) ---

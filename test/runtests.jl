@@ -602,6 +602,22 @@ using BennettVM
     # Bennett-utzc `:__unreachable__` sink (`status === :error`) — and BOTH
     # reverse exactly under L2 and L3, the trapped mid-run state included.
     include("test_jbko_ptr_identity_vm.jl")
+    # Bennett-p06b / CW-D: the E2E half of the upstream WHOLE-AGGREGATE STORE
+    # decomposition (Julia's `MemoryRef` write-back, `_growend!` %L93, xkl wall
+    # 6). ZERO BVM src changes: a `store {ptr,ptr}` now arrives ALREADY
+    # decomposed into per-field IRExtractValue (slot COPY) + IRPtrOffset
+    # (base + cell index) + IRStore (MemoryStore) — every one an existing
+    # ingest arm, and the `agg_dests` membership guard is exactly why upstream
+    # requires the stored aggregate to be an `insertvalue`. What is new is the
+    # END-TO-END CELL-AGREEMENT claim: the cells the decomposition WRITES must
+    # be the cells the untouched ADR 0020 D4 struct-GEP arm READS. The witness
+    # is NON-VACUOUS — both fields must land in DISTINCT cells and each read
+    # back as itself, else last-write-wins would drive the oracle to the
+    # `x + 100` arm. Exercised for x ∈ {0,7,-3} under L2 and L3, with exact
+    # `unrun!` + drained history, per-step inverse at K ∈ {1,4}, and the
+    # self-referential case (target also stored as a field) pinning that store
+    # ORDER is immaterial.
+    include("test_p06b_aggregate_store_vm.jl")
     # CW-C2 chunk C (BVM ADR 0020 D5; Bennett-nd45): a C-track `.ll`-sourced
     # IRCall has a bare `Symbol` callee. The IRCall arm now dispatches via
     # `_callee_sym(inst.callee)` (nameof for Function, identity for Symbol), so
