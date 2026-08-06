@@ -76,6 +76,37 @@ requires anyway:
    language-agnostically (each language's runtime maps onto the same set).
    Everything outside the whitelist fails loud (Rule 1).
 
+### 4a. Confined values: admission without an oracle-match proof (Bennett-foz5, 2026-08-06)
+
+**Context.** The keep-branch dead-block pruner (Decision item 4 / Bennett-utzc) leaves the predecessor's conditional branch into a pruned `unreachable` block intact, so a guard that fires at runtime reaches BennettVM's `:__unreachable__` halt sink — described in `module_walk.jl` as "a faithful reversible throw". That description presumes the guard's condition is computed from values admitted under **oracle match**: every admitted value provably equals what native computes.
+
+Julia's `@boundscheck` cluster under `--check-bounds=yes` computes a pointer difference across the two halves of a **split captured `MemoryRef`** — the `.ptr_or_offset` half read from the closure environment struct, the `.mem` half read from the GC-roots array. The two halves arrive through different function arguments with no SSA edge between them, and the only in-body pairing witness is a dead `insertvalue` that survives solely because extraction runs at `optimize=false`. Oracle match is therefore **not provable extraction-locally**, and never will be. (It is nevertheless expected to *hold* at runtime, because BennettVM's Julia tier is byte-granular (`_byte_cells`) and the closure slot is written by extracted code — but that is a property of the closed world, not a theorem the extractor can check.)
+
+**Decision.** Introduce a *second*, strictly weaker admission contract, applicable **only** to values whose entire influence on the program is a dead-throw branch condition:
+
+> **CONFINED-VALUE CONTRACT.** A value `v` may be admitted without an oracle-match proof iff a syntactic predicate establishes all of:
+> (i) `v`'s source pointer is a **certified cell producer**, and is neither unnamed nor suppressed by the emission walk. "Certified cell producer" is exactly the positive whitelist below. Its depth discipline differs per arm, and is written out here because the guarantee is only as strong as it:
+>   * an `extractvalue` of a StructType pointer field;
+>   * a `load` of a pointer **whose pointer operand is not a `GlobalVariable`** — that shape is intercepted by the singleton-data alias arm, which emits no node at all and aliases the result name to a global symbol, so it is *registered without being materialised*. This arm is **depth-0 with respect to the loaded value's address**: the value a load produces is a fresh cell whatever its address was. A load *through* a WIDTH-0-SENTINEL address is therefore certified here, deliberately — the address question belongs to the load arm, whose node is emitted with or without a following coercion. **Clause (i) consequently does not provide sentinel-freedom for load-sourced values.**
+>   * a `getelementptr` **whose base chain terminates in one of the above**. This arm is recursive precisely so that an interposed GEP cannot launder a PointerType `phi`/`select` — the Bennett-cc0 M2b WIDTH-0 SENTINEL, whose routing lives in `ptr_provenance` at lowering time rather than as a value — into a certified source. Index constness is not required (the corpus GEP has a variable index).
+>
+>   A PointerType `phi`/`select` is thus never certified **as a source, nor as a GEP base**. It may still appear as the *address* of a certified `load`, per the arm above;
+> (ii) `v` has at least one use, and **every** use is a two-operand **i64** `sub` whose sibling operand is itself a `ptrtoint`;
+> (iii) every use of each such `sub` is an `icmp`;
+> (iv) the transitive use-closure of each such `icmp` contains only i1-typed `and`/`or`/`xor` instructions, each with at least one use, and conditional `br` terminators consuming the value as their **condition operand**; and every such `br` has at least one successor in the Decision-item-4 pruned dead-block set.
+>
+> For such `v` the guarantee is: **for every input on which the native program returns a value, the extracted program returns the same value or halts at the `:__unreachable__` sink.**
+
+**What this relaxes, stated exactly.** Decision item 4's "faithful reversible throw" is retained **unchanged for guards admitted under a proof** (Bennett-583s base-cancellation, Bennett-jbko pointer identity, Bennett-8g7m). For a guard whose condition depends on a confined value it is downgraded from *proved faithful* to **unproved**: the throw may be missed, or the halt may be spurious, on inputs where the unprovable premise fails. Neither direction is *authorised* — both are *unbounded by the theorem*.
+
+**Explicitly NOT weakened.**
+(a) **Oracle-match proofs retain first refusal.** Where Bennett-583s's base-cancellation proof applies, it is used; the confined contract is consulted only after it fails (`||` short-circuit). A value with a single non-conforming use stays under oracle match and stays rejected.
+(b) **No guard bit is ever fabricated.** Extraction never substitutes a constant, a zero cell, or any other placeholder for an operand of an unmodellable guard, and never rewrites or elides the compare or the branch: the `sub`, the `icmp`, the i1 algebra and the `br` are all emitted verbatim by the ordinary paths, and the coercion emits the same cell-identity node the base-cancellation proof emits. The bit is therefore *computed*, from operands the extraction has emitted defining nodes for — which is a claim about **provenance, not about correctness**. It is not a claim that those operands equal the native values (that is exactly what the contract declines to prove), nor, per clause (i)'s load arm, that every cell they transitively read was itself materialised. Emitting a placeholder that provably weakens a guard remains **UNSOUND** — the Bennett-lbot ruling is reaffirmed, not narrowed: under BennettVM's arena model there is no region table and three monotone cursors (`bennettvm-pdqx`), so a missed throw is an *undetectable* adjacent-allocation clobber, and ADR 0018 §E defines an unstored load as `0`.
+(c) **Determinism (ADR 0018 §A) is untouched.** The contract neither relies on nondeterminism nor admits any new nondeterministic producer; the Bennett-klgz guard sits at the unrecognised-JIT-global reject and is unreachable from this admission.
+(d) **The circuit tier is untouched.** The admission lives inside the `ptr_cells` gate, which is `false` on the circuit path; `verify_reversibility` and gate counts are byte-identical.
+
+**Disclosed residual.** A confined value that were nondeterministic could make the *halt itself* nondeterministic. This is a reproducibility, not a correctness, degradation, and does not arise under ADR 0018 §A's deterministic arena.
+
 **Corollary (determinism guard re-scope).** With a deterministic virtual
 heap, address-based hashing (`objectid`, `ptrtoint` of heap pointers) is
 deterministic *inside the VM*; the "one genuine in-principle blocker" of

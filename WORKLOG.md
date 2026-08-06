@@ -7,6 +7,32 @@
 
 ---
 
+## Session 2026-08-06 (part 3) — Bennett-foz5 (xkl wall 7): ADR 0017 gains §4a CONFINED-VALUE CONTRACT; ZERO BVM src changes (seventh in a row)
+
+Upstream landed the confined-value admission for _growend!'s @boundscheck
+cluster (full 3+1 after a scout upgrade; adjudicated route A-hardened;
+hostile review PASS-WITH-CONCERNS + prescribed fix cycle; Bennett.jl
+worklog/100 has the arc including the adjudication matrix). BVM side:
+
+- **docs/adr/0017-closed-world-execution.md gains §4a** (+31, doc-only):
+  a second, strictly weaker admission contract for values whose entire
+  influence is a dead-throw branch condition — "on native-returning
+  inputs, exact match or loud halt at :__unreachable__", BOTH violation
+  directions explicitly unproven. Oracle-match proofs keep first refusal;
+  the Bennett-lbot fabrication ruling is REAFFIRMED, not narrowed
+  (rationale cites bennettvm-pdqx: a missed throw is an undetectable
+  adjacent-allocation clobber, so no guard bit is ever fabricated — the
+  bit is computed from emitted operands, a provenance claim, not a
+  correctness claim).
+- **Validation debt, disclosed in three places**: no runtime evidence
+  about either unproven direction is constructible until wall 8
+  (Bennett-bvmd — the ROOT body's gc_alloc_obj byte-granular store)
+  clears; clearing it also discharges this debt.
+- ZERO src changes (seventh consecutive bead). All BVM E2E suites green;
+  full Pkg.test green on the landing tree.
+- Frontier: wall 7 CLEARED; next **Bennett-bvmd** (wall 8, upstream) and
+  **bennettvm-rxgy** (IntrinsicMemmoveBytes) on the VM side.
+
 ## Session 2026-08-06 (part 2) — Bennett-p06b: aggregate {ptr,ptr} store decomposition (xkl wall 6) — ZERO BVM src changes (sixth in a row); pdqx spec found WRONG by measurement
 
 Upstream landed the p06b arm (CORE 3+1, THREE review rounds: FAIL → FAIL →

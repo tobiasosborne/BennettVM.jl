@@ -25,10 +25,21 @@ src/ir/IState.jl:315-398; adjacent-allocation clobbers need pointer
 provenance): bead amended, unclaimed. Bennett-khb2 tracks the disclosed
 :load-capacity residual, pinned KNOWN-ADMITTED in both repos.
 
+**UPDATE, same day (part 3): Bennett-foz5 (wall 7) is DONE** — full 3+1
+(scout upgraded it from a reduced pass), ratified route A-hardened
+(confined-value admission, NOT a 583s root extension — the bead was
+retitled), hostile review + fix cycle, full suites green. ADR 0017 gained
+§4a (CONFINED-VALUE CONTRACT) in THIS repo — read it before touching any
+dead-throw-guard admission. ZERO BVM src changes (seventh in a row).
+_growend! now extracts completely. Validation debt: no runtime evidence
+about §4a's unproven directions until wall 8 clears (Bennett-bvmd).
+
 **Frontier now:**
-1. **Bennett-foz5 (P1, wall 7)** — %idxend 583s ROOT extension. ⚠️ Read the
-   a8nw note on the bead first: the jbko arm's `_memdata_root === nothing`
-   pin becomes load-bearing the moment 583s gains a fall-through arm.
+1. **Bennett-bvmd (P1, wall 8, upstream)** — ROOT body walls at p06b's
+   gc_alloc_obj byte-granular aggregate-store refusal; byte-stamped
+   admission gated on the 416r.13 singleton-header argument. Clearing it
+   also discharges the foz5 §4a validation debt. Marker trap documented
+   on the bead.
 2. **bennettvm-rxgy (P1, VM side)** — IntrinsicMemmoveBytes for the Julia
    byte tier; gates the real grow-copy RUN.
 
