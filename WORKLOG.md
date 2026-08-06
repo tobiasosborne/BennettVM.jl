@@ -7,6 +7,31 @@
 
 ---
 
+## Session 2026-08-06 — Bennett-a8nw hostile review RUN → PASS-WITH-CONCERNS; jbko + a8nw CLOSED; ZERO BVM changes (review-only session)
+
+The upstream review debt is paid: the jbko ptrtoint arm survived ~30
+adversarial probes (report in the Bennett-a8nw bead trail; Bennett.jl
+worklog/098 top entry). BVM-relevant findings:
+
+- **The trapped-program reversal claim in test_jbko_ptr_identity_vm.jl is
+  real and non-vacuous** (reviewer re-derived it independently: mismatch
+  path runs 28 steps, halts at `:__unreachable__` with `status=:error`,
+  state genuinely differs from init, and `unrun!` restores `s.current ==
+  init` with drained history). First independent confirmation of the
+  L1-injective-sink property.
+- **One P1-class residual upstream (filed as Bennett-sku0, P2)**: the arm's
+  icmp-sibling check is SSA-ness, not cell-ness — a pointer-unrelated
+  integer sibling yields an i1 that diverges native-vs-VM. No BVM change
+  needed; in corpus shapes the i1 feeds a throw diamond (loud halt). Watch
+  for it if a jbko-admitted compare ever feeds a VALUE (select) in a future
+  corpus program — the loud-halt mitigation is corpus-shape, not enforced.
+- prop-A R5 (corpus guard's truth value ON THE VM) remains honestly
+  UNTESTED — blocked behind walls 6/7 as the test file header states.
+- Upstream landed a comment/message-only disclosure diff; no BVM src or
+  test changes. Frontier unblocked: Bennett-p06b (wall 6) next on the
+  extraction side; **bennettvm-rxgy** (IntrinsicMemmoveBytes) is the VM-side
+  gate before the real `_growend!` grow-copy can RUN.
+
 ## Session 2026-08-03/04 (part 5, WIND-UP) — Bennett-jbko: ptr-identity ptrtoint arm lands UNREVIEWED (hostile review = Bennett-a8nw); ZERO BVM src changes a fifth time
 
 ⚠️ jbko's implementation is committed with IMPLEMENTER-run full suites green

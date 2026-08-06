@@ -2,7 +2,33 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
-## 📌 SESSION CLOSE 2026-08-03/04 (orchestrator) — where to pick up
+## 📌 SESSION CLOSE 2026-08-06 (orchestrator) — where to pick up
+
+**Bennett-a8nw is DONE: the jbko hostile review RAN → PASS-WITH-CONCERNS →
+disclosure landed upstream → Bennett-jbko and Bennett-a8nw both CLOSED.**
+The arm's gate held under ~30 adversarial probes (ordering-compare
+laundering, phi/select forwarding, vector forms, addrspace, widths — all
+reject loudly); the R4 width-0-sentinel negative was mutation-proven; the
+BVM trapped-program reversal was independently confirmed non-vacuous. The
+one real finding — the icmp-sibling check is SSA-ness, not cell-ness,
+strictly weaker than the φ-image invariance argument — is disclosed in the
+arm comment and tracked as **Bennett-sku0 (P2)**; **Bennett-vckk (P3)**
+covers argument-source widening. Full report: Bennett-a8nw bead trail +
+Bennett.jl worklog/098 top entry. ZERO BVM changes this session (docs only).
+
+**Frontier is UNBLOCKED. Next work, in order:**
+1. **Bennett-p06b (P1, wall 6, extraction side)** — decompose the two live
+   `store {ptr,ptr}` at `_growend!` L93 into two 64-bit cell stores under
+   ptr_cells (LLVMOffsetOfElement per dv1z/7wsz discipline). CORE 3+1.
+2. **Bennett-foz5 (P1, wall 7)** — %idxend 583s ROOT extension. ⚠️ Read the
+   a8nw note on the bead first: the jbko arm's `_memdata_root === nothing`
+   pin becomes load-bearing the moment 583s gains a fall-through arm.
+3. **bennettvm-rxgy (P1, VM side)** — IntrinsicMemmoveBytes for the Julia
+   byte tier; gates the real grow-copy RUN.
+
+--- (superseded 2026-08-03/04 close below retained for history) ---
+
+## SESSION CLOSE 2026-08-03/04 (orchestrator) — where to pick up [SUPERSEDED 2026-08-06]
 
 **FIVE beads landed cross-repo this session** (WORKLOG top five entries +
 Bennett.jl worklog/097+098), ALL with ZERO BVM src changes: 40ys (instance-
