@@ -7,6 +7,38 @@
 
 ---
 
+## Session 2026-08-06/07 (part 4) — Bennett-bvmd (xkl wall 8): root-scale coherence + byte-tier admission; ZERO BVM src changes (eighth in a row); foz5 §4a debt discharged FOR THE MECHANISM
+
+Upstream landed the byte-tier granularity discipline (full 3+1 after scout
+upgrade; hostile review PASS-WITH-CONCERNS + prescribed fixes; arc in
+Bennett.jl worklog/101+102). BVM-relevant:
+
+- **ZERO src changes (eighth consecutive bead).** New
+  test/test_bvmd_byte_tier_vm.jl (96): the six-leg synthetic §4a-debt gate
+  — gc_alloc box + decomposed aggregate store + class-D struct-GEP read +
+  closure-env alloca + confined guard; oracle match, exact unrun!,
+  per-step inverse, :__unreachable__ on OOB. HONEST SCOPE: this
+  discharges the foz5 §4a validation debt for the MECHANISM only — the
+  bead's "full push! corpus runnable" premise was false (walls 9/10/11 +
+  bennettvm-rxgy remain; the OOB probe exists only in the fixture).
+- **Route-(iii) tombstone, a VM-semantics lesson (Bennett-1p2v):** an
+  extraction-side ACCESS re-stamp variant was built, measured, and
+  REVERTED — per-function re-stamping is not closed under call
+  boundaries; a caller wrote word cell +1 while the callee (scale-unknown
+  pointer parameter) read byte cell +8: test_40ys_closure_callee_vm went
+  155/183 with 30 wrong-vs-oracle answers. The shipped design widens
+  RESERVATIONS only (size, never addressing) — no such hazard by
+  construction. Any future access-re-stamp must first solve
+  cross-function scale propagation.
+- **Bennett-4y0d root-caused and FIXED upstream** (address/value
+  conflation in the vbv9 arena-memcpy dst stamp); the K>=2 case
+  independently E2E-verified on the VM (reviewer's own K=3 fixture:
+  oracle 111/222/333, exact unrun!).
+- Frontier: wall 8 CLEARED → wall 9 = Bennett-37mt arena-src memcpy;
+  wall 10 = udiv-exact element-index escape (needs a THIRD contract
+  beyond §4a); wall 11 = Bennett-1zow territory. bennettvm-rxgy still
+  gates _growend! at lower_vm.
+
 ## Session 2026-08-06 (part 3) — Bennett-foz5 (xkl wall 7): ADR 0017 gains §4a CONFINED-VALUE CONTRACT; ZERO BVM src changes (seventh in a row)
 
 Upstream landed the confined-value admission for _growend!'s @boundscheck

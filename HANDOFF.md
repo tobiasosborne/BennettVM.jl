@@ -34,14 +34,25 @@ dead-throw-guard admission. ZERO BVM src changes (seventh in a row).
 _growend! now extracts completely. Validation debt: no runtime evidence
 about §4a's unproven directions until wall 8 clears (Bennett-bvmd).
 
+**UPDATE (part 4, 2026-08-06/07): Bennett-bvmd (wall 8) is DONE** — full
+3+1 (scout upgraded), root-scale coherence + byte-tier admission +
+use-directed reservation normalisation; hostile review PASS-WITH-CONCERNS,
+all blocking fixes landed (incl. the measured REJECTION of an
+access-re-stamp route that produced 30 wrong VM answers across a call
+boundary — Bennett-1p2v is its tombstone). ZERO BVM src changes (eighth).
+The foz5 §4a debt is discharged FOR THE MECHANISM via the synthetic gate
+in test_bvmd_byte_tier_vm.jl — NOT for the corpus (walls 9/10/11 + rxgy
+remain). Bennett-4y0d fixed + independently verified. NOTE: ptr_cells=true
++ lower() on byte-normalised programs is now a LOUD bvmd-named refusal
+(deliberate; Bennett-kq1x is the real fix).
+
 **Frontier now:**
-1. **Bennett-bvmd (P1, wall 8, upstream)** — ROOT body walls at p06b's
-   gc_alloc_obj byte-granular aggregate-store refusal; byte-stamped
-   admission gated on the 416r.13 singleton-header argument. Clearing it
-   also discharges the foz5 §4a validation debt. Marker trap documented
-   on the bead.
+1. **Wall 9 (upstream, needs a bead claim): Bennett-37mt arena-src
+   memcpy** — the push! ROOT's next wall; marker-pinned by the four
+   advanced files. NOTE the wall-10 preview on Bennett-bvmd's notes: the
+   udiv-exact element-index escape needs a THIRD contract beyond §4a.
 2. **bennettvm-rxgy (P1, VM side)** — IntrinsicMemmoveBytes for the Julia
-   byte tier; gates the real grow-copy RUN.
+   byte tier; gates the real grow-copy RUN at lower_vm.
 
 --- (superseded 2026-08-03/04 close below retained for history) ---
 

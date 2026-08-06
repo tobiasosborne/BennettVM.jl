@@ -618,6 +618,22 @@ using BennettVM
     # self-referential case (target also stored as a field) pinning that store
     # ORDER is immaterial.
     include("test_p06b_aggregate_store_vm.jl")
+    # Bennett-bvmd / CW-D4 (xkl wall 8): the BYTE-TIER sibling of the file
+    # above, and the first RUNTIME evidence for Bennett-foz5's ADR 0017 §4a
+    # (INV) premise. ZERO BVM src changes again — the byte tier was always this
+    # repo's model (`_alloc_cells(::IntrinsicGCAlloc) = _byte_cells(nb)`,
+    # `_lower_alloca!` ignoring `elem_width`); only the upstream stamps
+    # disagreed with it. Pins: the decomposition writing BYTE cells 0/8 of a
+    # `julia.gc_alloc_obj` box; a class-A `gep i8 %obj, 8` and a class-D
+    # `gep {ptr,ptr} %obj, 0, 1` resolving to the SAME cell and returning the
+    # SAME pointer (the CW-D4 split, executed); a closure-env `alloca [9 x i64]`
+    # BYTE-NORMALISED to `IRAlloca(:env, 8, 72)` and written/read back at byte
+    # 56 by extracted code, driving a foz5-confined bounds guard; exact
+    # `unrun!`; and an out-of-bounds index halting at `:__unreachable__`.
+    # HONEST SCOPE: this discharges the §4a debt for the MECHANISM, not for the
+    # corpus — walls 9/10/11 and `bennettvm-rxgy` still block push!, and the
+    # OOB probe is constructible only in the fixture.
+    include("test_bvmd_byte_tier_vm.jl")
     # CW-C2 chunk C (BVM ADR 0020 D5; Bennett-nd45): a C-track `.ll`-sourced
     # IRCall has a bare `Symbol` callee. The IRCall arm now dispatches via
     # `_callee_sym(inst.callee)` (nameof for Function, identity for Symbol), so
