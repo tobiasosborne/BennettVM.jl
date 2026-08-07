@@ -7,6 +7,23 @@
 
 ---
 
+## Session 2026-08-07 — bd RESTORE: 35 beads (incl. the ENTIRE emulator DAG) lost by the 2026-07-21 export
+
+A north-star status query ("where does the NES emulator sit?") found
+`bennettvm-v5eb`, `1is3`, and every A/B/T/E emulator bead missing from
+the tracker: the 2026-07-21 "truth-up" export (`4ca1f1f`) DELETED 35
+rows instead of only updating closes — the emulator DAG (open planned
+work AND closed E0/E1/B1 history), the July CW-D landing history
+(416r.14–17, p81t, 5m1t, 9n3y, g501, h6c3), open walls bsng/san3, and
+jb6w/9sqy/6dko/6vp9/bc08. Recovered verbatim from git (`df5b2b9`, the
+pre-loss parent), `bd import`-ed, re-exported (266 issues + 1 memory),
+committed `48cb30b`. Dependency edges survived: `bd ready` again
+surfaces hahl (A1 ROM loader) as the Track-A entry point and 9xla/eqz5
+for Track B. **Lesson (third strike for lossy exports):** after ANY
+`bd export`, diff the id set against the previous jsonl before
+committing — a "truth-up" that shrinks the row count is a deletion,
+not a truth-up.
+
 ## Session 2026-08-07 (part 7, WIND-DOWN) — 5viz (wall 11) landed UNREVIEWED-WIP upstream; session retrospective
 
 User-directed graceful wind-down. Upstream: the wall-11 arm landed
