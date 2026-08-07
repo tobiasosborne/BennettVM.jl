@@ -2,6 +2,34 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## 📌 SESSION CLOSE 2026-08-06/07 (orchestrator wind-down) — READ THIS FIRST
+
+**Six arcs landed in lockstep across both repos this session** — the a8nw
+review debt paid, then FIVE frontier walls cleared (p06b/foz5/bvmd/sy29/
+57hd = walls 6-10; ADR 0017 gained §4a AND §4b; `_growend!` extracts
+completely; TEN consecutive beads with zero BVM src changes). Full
+retrospective: Bennett.jl worklog/106 top entry; per-arc detail in
+worklogs 098-106.
+
+**Priority order for the next agent:**
+1. **bennettvm-ciff + Bennett-hk5i (P0, USER DIRECTIVE 2026-08-07)** —
+   the docs epics (kickass READMEs/tutorials/animations to the
+   almost-idempotent-channels bar). These OUTRANK the frontier.
+2. **Bennett-gcf7 (P1, upstream)** — wall 11 (5viz) landed
+   UNREVIEWED-WIP at wind-down: Bennett-side green (91/91 + all eight
+   markers), but the BVM E2E gate for it was NOT WRITTEN (spec in the
+   5viz bead notes), runtests registration + hostile review + the single
+   full-suite close gate outstanding. Do not build on it until gcf7
+   passes.
+3. **The measured endgame**: walls 12/13/14 (the 5viz scout PROVED the
+   ROOT extracts with NO WALL once the env-memcpy tier question — bvmd
+   family — is resolved), then **bennettvm-rxgy** for the full push!
+   corpus RUN on this VM.
+
+**Binding process rules (user-ratified)**: ONE full Pkg.test per arc,
+positioned AFTER review + fixes on the final tree; reviewers run no full
+suites; scout-with-tripwire before wall arcs.
+
 ## 📌 SESSION CLOSE 2026-08-06 (orchestrator) — where to pick up
 
 **Bennett-a8nw is DONE: the jbko hostile review RAN → PASS-WITH-CONCERNS →
