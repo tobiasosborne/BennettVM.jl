@@ -651,6 +651,21 @@ using BennettVM
     # lives UPSTREAM, because route R1 emits no `IntrinsicMemcpy` and so never
     # reaches `forward(::IntrinsicMemcpy)`'s runtime overlap check.
     include("test_sy29_arena_src_vm.jl")
+    # bead `Bennett-57hd` (xkl frontier wall 10), the downstream half, and
+    # ADR 0017 §4b — the VALUE-IDENTITY contract, the THIRD admission contract
+    # and the STRONGEST of the three: the two coerced pointers are PROVED to be
+    # copies of ONE value (related through an aggregate store and a same-slot
+    # reload rather than one SSA name), so the difference is IDENTICALLY ZERO
+    # under ANY map from addresses to cell values and may ESCAPE freely. ZERO
+    # BennettVM src changes — `sub`/`udiv` were already first-class and the
+    # `udiv exact` costs HISTORY, not capability; gate (2) asserts the lowered
+    # kind SET so a future reach for a new node turns red. The runtime leg is
+    # STRONGER than bvmd's: the claim under test (`d == 0`) is directly
+    # OBSERVED, and gate (4) is the MANDATORY non-vacuity assertion — the
+    # theorem's own failure mode is degenerate agreement (`0 − 0 = 0`, and ADR
+    # 0018 §E reads a never-written cell as 0), so both coerced cells must be
+    # shown NON-ZERO, EQUAL, and equal to the address the aggregate store wrote.
+    include("test_57hd_value_identity_vm.jl")
     # CW-C2 chunk C (BVM ADR 0020 D5; Bennett-nd45): a C-track `.ll`-sourced
     # IRCall has a bare `Symbol` callee. The IRCall arm now dispatches via
     # `_callee_sym(inst.callee)` (nameof for Function, identity for Symbol), so

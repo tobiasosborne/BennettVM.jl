@@ -7,6 +7,39 @@
 
 ---
 
+## Session 2026-08-07 (part 6) — Bennett-57hd (xkl wall 10): ADR 0017 gains §4b VALUE-IDENTITY CONTRACT — the strongest of the three; ZERO BVM src changes (tenth in a row)
+
+Upstream landed the third admission contract (full 3+1: scout upgrade →
+two blind proposers CONVERGED on the α family → adjudication merged
+their correct halves + added clause (iv) → hostile review FAIL (an
+EXECUTED counterexample: a self-store escape made the admitted sub
+evaluate to 64 where the contract guarantees 0) → prescribed fix cycle →
+green. Arc: Bennett.jl worklogs 104-106 + docs/design/57hd*.) BVM side:
+
+- **docs/adr/0017 gains §4b** (+42/−1, doc-only): oracle-match admission
+  for a ptrtoint whose every use is a sub of two PROVABLY IDENTICAL
+  pointers (single-block canonicalisation; attribute-checked effect
+  analysis, fail-closed incl. operand bundles and negative lengths;
+  clause (iv) p06b-certified forwarded stores). φ(p)−φ(p)=0 under ANY
+  address map — no arena premise, both failure columns bounded, §4a's
+  conditioning clause SATISFIED not voided. The §4a proved-guards
+  parenthetical now lists 57hd.
+- New test_57hd_value_identity_vm.jl (107): the difference EXECUTED and
+  == 0 on the VM, escape exercised into an IntrinsicGCAlloc size and a
+  VarGEP address, non-vacuity mandatory (coerced cells non-zero, equal,
+  and equal to the stored address), L2+L3, exact unrun!, per-step
+  inverse. ZERO src changes — streak at ten.
+- **F1 lesson (recorded upstream)**: the scout's coverage framing never
+  evaluated foz5 on %L21/%L43 — they were ALREADY §4a-admitted. Measure
+  the shipped predicates on every cluster before designing coverage.
+- Frontier: wall 10 CLEARED → wall 11 = Bennett-8bys territory (corpus
+  site #4 memcpy; reject text IDENTICAL to wall 9's — operand-name
+  discriminator, see the 8bys bead note); wall 12 = p06b alloca
+  {ptr,ptr} silent-skip (Bennett-1zow; its message does NOT contain the
+  bead tag); wall 13 = second 8bys memcpy; wall 14 = bvmd
+  SCALE-COHERENCE on the 9×i64 closure alloca. bennettvm-rxgy still
+  gates _growend! at lower_vm.
+
 ## Session 2026-08-07 (part 5) — Bennett-sy29 (xkl wall 9): arena-src memcpy decomposition; ZERO BVM src changes (ninth in a row)
 
 Upstream landed the const-N arena-src memcpy capability (RATIFIED reduced

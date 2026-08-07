@@ -53,13 +53,22 @@ prescribed fixes landed incl. Predicate 6d (in-object range certification,
 corpus-flush mutation-verified). ZERO BVM src changes (ninth). Both full
 suites green on the landing tree (Bennett 691832/0F; BVM 10835/10835).
 
+**UPDATE (part 6, 2026-08-07): wall 10 (Bennett-57hd) is DONE** — full
+3+1, ADR 0017 §4b VALUE-IDENTITY CONTRACT ratified and landed (oracle
+match, the strongest of the three contracts). Hostile review found an
+EXECUTED counterexample (self-store escape → admitted sub == 64) fixed
+in the final cycle with four fail-close hardenings. ZERO BVM src changes
+(tenth). Both full suites green on the landing tree (Bennett 691958/3B;
+BVM 10963).
+
 **Frontier now:**
-1. **Bennett-57hd (P1, wall 10, upstream)** — the ptrtoint→sub→udiv-exact
-   cluster: the base-cancelling difference escapes as a LIVE ELEMENT
-   INDEX (not a halting-branch condition), so foz5 §4a clause (iii)
-   fails and a THIRD admission contract is needed. Scout-with-tripwire;
-   expect an ADR-level ratification checkpoint. Full use-graph captured
-   in the sy29 scout §9 / bead notes.
+1. **Wall 11 (upstream, Bennett-8bys territory — needs a capability
+   bead)**: corpus site #4 memcpy (env+40 ← new::Array.ref.mem). ⚠️ Its
+   reject text is IDENTICAL to wall 9's — only the operand NAME
+   discriminates; the seven marker files carry the discriminator blocks,
+   do not simplify them. Walls 12/13/14 measured: 1zow silent-skip
+   (message lacks the bead tag), second 8bys memcpy, bvmd
+   SCALE-COHERENCE on the closure alloca.
 2. **bennettvm-rxgy (P1, VM side)** — IntrinsicMemmoveBytes for the Julia
    byte tier; gates the real grow-copy RUN at lower_vm.
 
