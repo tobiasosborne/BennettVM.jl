@@ -7,6 +7,34 @@
 
 ---
 
+## Session 2026-08-07 (part 5) — Bennett-sy29 (xkl wall 9): arena-src memcpy decomposition; ZERO BVM src changes (ninth in a row)
+
+Upstream landed the const-N arena-src memcpy capability (RATIFIED reduced
+pass — scout with tripwire, all four upgrade triggers measured non-firing,
+vau9 precedent; hostile review FAILED it once, prescribed fixes landed;
+arc in Bennett.jl worklog/103). BVM side:
+
+- **ZERO src changes (ninth consecutive).** New test_sy29_arena_src_vm.jl
+  (118): K=2 arena↔alloca round-trips BOTH directions + arena→arena,
+  oracle match, exact unrun!, per-step inverse, L2+L3, and a
+  lowered-kinds-as-a-set gate (⊆ {Define, IntrinsicGCAlloc, MemoryLoad,
+  MemoryStore, StackAlloca}) that goes red if upstream ever reaches for a
+  new node kind.
+- **The review's executed miscompile matters to the VM contract**: the
+  upstream overlap guard REPLACES the VM's runtime overlap check for
+  decomposed memcpys, and its "distinct roots ⇒ disjoint" claim was a
+  FALSE THEOREM (a GEP leaving its own object reached the next
+  allocation: s=222 vs oracle 333, executed). Fixed upstream by
+  Predicate 6d (in-object range certification via _root_byte_offset);
+  the corpus is exactly FLUSH on both sides, so the <=/< boundary is
+  corpus-mutation-verified. bennettvm-9uds documents the related
+  IntrinsicMemcpy byte-tier landmine (fenced today).
+- Frontier: wall 9 CLEARED → **Bennett-57hd** (wall 10): the
+  base-cancelling difference ESCAPES as a live element index via
+  udiv exact — foz5 §4a clause (iii) fails; needs a THIRD admission
+  contract; scout-with-tripwire recommended. bennettvm-rxgy still gates
+  _growend! at lower_vm.
+
 ## Session 2026-08-06/07 (part 4) — Bennett-bvmd (xkl wall 8): root-scale coherence + byte-tier admission; ZERO BVM src changes (eighth in a row); foz5 §4a debt discharged FOR THE MECHANISM
 
 Upstream landed the byte-tier granularity discipline (full 3+1 after scout

@@ -631,9 +631,26 @@ using BennettVM
     # 56 by extracted code, driving a foz5-confined bounds guard; exact
     # `unrun!`; and an out-of-bounds index halting at `:__unreachable__`.
     # HONEST SCOPE: this discharges the §4a debt for the MECHANISM, not for the
-    # corpus — walls 9/10/11 and `bennettvm-rxgy` still block push!, and the
-    # OOB probe is constructible only in the fixture.
+    # corpus — walls 10/11 and `bennettvm-rxgy` still block push! (wall 9 was
+    # cleared by `Bennett-sy29`, below), and the OOB probe is constructible only
+    # in the fixture.
     include("test_bvmd_byte_tier_vm.jl")
+    # bead `Bennett-sy29` (xkl frontier wall 9), the downstream half. Upstream's
+    # const-size `llvm.memcpy` arm now admits a `julia.gc_alloc_obj` ARENA root
+    # on EITHER SIDE under `ptr_cells`, stamping each side's addresses from its
+    # OWN allocation scale (byte tier 8, word tier 64) while both `IRLoad` and
+    # `IRStore` keep the 64-bit VALUE width — a MIXED-TIER pairing in one
+    # instruction. ZERO BennettVM src changes: the decomposition emits only
+    # `Define` / `MemoryLoad` / `MemoryStore` / `IntrinsicGCAlloc` /
+    # `StackAlloca`, and gate (2) asserts that as a SET. Pins: per-side stamps at
+    # K = 2 (where a collapsed single stamp is visible — at K = 1 offset 0 is
+    # cell 0 under every stamp, the trap that hid the pre-4y0d vbv9 defect);
+    # oracle for BOTH directions (arena→alloca and its alloca→arena mirror,
+    # including a DESTRUCTIVE overwrite of a live arena cell) under L2 and L3;
+    # exact `unrun!`; per-step inverse; and that the same-root overlap refusal
+    # lives UPSTREAM, because route R1 emits no `IntrinsicMemcpy` and so never
+    # reaches `forward(::IntrinsicMemcpy)`'s runtime overlap check.
+    include("test_sy29_arena_src_vm.jl")
     # CW-C2 chunk C (BVM ADR 0020 D5; Bennett-nd45): a C-track `.ll`-sourced
     # IRCall has a bare `Symbol` callee. The IRCall arm now dispatches via
     # `_callee_sym(inst.callee)` (nameof for Function, identity for Symbol), so

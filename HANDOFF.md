@@ -46,11 +46,20 @@ remain). Bennett-4y0d fixed + independently verified. NOTE: ptr_cells=true
 + lower() on byte-normalised programs is now a LOUD bvmd-named refusal
 (deliberate; Bennett-kq1x is the real fix).
 
+**UPDATE (part 5, 2026-08-07): wall 9 (Bennett-sy29) is DONE** — ratified
+reduced pass; hostile review FAILED it once (executed cross-allocation
+miscompile: the overlap guard's disjointness claim was a false theorem),
+prescribed fixes landed incl. Predicate 6d (in-object range certification,
+corpus-flush mutation-verified). ZERO BVM src changes (ninth). Both full
+suites green on the landing tree (Bennett 691832/0F; BVM 10835/10835).
+
 **Frontier now:**
-1. **Wall 9 (upstream, needs a bead claim): Bennett-37mt arena-src
-   memcpy** — the push! ROOT's next wall; marker-pinned by the four
-   advanced files. NOTE the wall-10 preview on Bennett-bvmd's notes: the
-   udiv-exact element-index escape needs a THIRD contract beyond §4a.
+1. **Bennett-57hd (P1, wall 10, upstream)** — the ptrtoint→sub→udiv-exact
+   cluster: the base-cancelling difference escapes as a LIVE ELEMENT
+   INDEX (not a halting-branch condition), so foz5 §4a clause (iii)
+   fails and a THIRD admission contract is needed. Scout-with-tripwire;
+   expect an ADR-level ratification checkpoint. Full use-graph captured
+   in the sy29 scout §9 / bead notes.
 2. **bennettvm-rxgy (P1, VM side)** — IntrinsicMemmoveBytes for the Julia
    byte tier; gates the real grow-copy RUN at lower_vm.
 
