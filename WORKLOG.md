@@ -7,6 +7,23 @@
 
 ---
 
+## Session 2026-09-24 — upstream hsm3: jl_global literals were silently miscompiled on this VM (fixed upstream, ADR 0021 Amendment B)
+
+Driven from a Bennett.jl cloud session (worklog/108 there). The 5viz hostile review
+(Bennett-gcf7) executed `const R = Ref(S2(3,4)); h1(x)=R[].a+x` through the closed-world
+producer: it extracted, **ran and reversed on this VM returning x** (oracle 3+x).
+Root: Bennett trusted the NAME `jl_global#N` as "empty GenericMemory singleton" and
+seeded a zero blob; Julia names every heap literal that way. Lesson for this repo: **a
+clean reversal proves nothing about correctness** — every E2E gate must assert values
+against an oracle, and hand-written fixtures that bake a fake `inttoptr` address never
+exercise the certification question. Fixed upstream by live-session membership
+certification (the address is a lookup key, never dereferenced: codegen's temp roots
+are gone once `code_llvm` returns). BVM src unchanged; ADR 0021 Amendment B + E2E test
+`test_hsm3_literal_certification_vm.jl` added; the certified header's data-pointer cell
+is now the non-null trap-band sentinel `2^48+2^47` (a null pointer would have silently
+read `memory[0]`). Orchestrator review of 44ecee9: ACCEPTED (Bennett-hsm3 3+1). Full
+suite 13386/13386 against Bennett.jl `f904d0d` (cloud box; clang+rustc present).
+
 ## Session 2026-08-07 — bd RESTORE: 35 beads (incl. the ENTIRE emulator DAG) lost by the 2026-07-21 export
 
 A north-star status query ("where does the NES emulator sit?") found
