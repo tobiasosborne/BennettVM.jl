@@ -2,6 +2,33 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## 📌 SESSION CLOSE 2026-09-24 (Bennett.jl correctness sweep, cloud session) — READ THIS FIRST
+
+**Upstream (Bennett.jl `main` = `f904d0d`) changed under this repo; BVM src untouched.**
+Full detail + priority list: Bennett.jl `worklog/108` top entry.
+
+- **Bennett-hsm3 — a SILENT MISCOMPILE on this VM is fixed.** ptr_cells extraction
+  used to trust the NAME `jl_global#N` as "empty GenericMemory singleton"; Julia
+  names every heap literal that way, so `const RI = Ref(42); RI[]+x` (and const
+  struct/tuple Refs, non-empty `Memory` literals) extracted, RAN and REVERSED here
+  returning wrong values. Now: certified by live-session membership (never
+  dereferenced) or refused loud at first use. **ADR 0021 Amendment B** records the
+  rule; `test/test_hsm3_literal_certification_vm.jl` is the E2E gate (h1/h3/m3 fail
+  loud at extraction; the empty-Memory positive runs and reverses; the new
+  data-pointer sentinel `2^48+2^47` traps on load).
+- **Bennett-gcf7** — the 5viz (wall 11) hostile review ran and FAILED the landing
+  (the hsm3 hole, widened); the fix cycle landed. **The 5viz BVM E2E gate is still
+  unwritten → Bennett-23ml; Bennett-5viz stays open until it lands. Do not build
+  walls 12–14 before.**
+- Also upstream: extraction is now host-CPU-independent (Bennett-t9rh: optimize=true
+  IR under a pinned `x86-64-v3` TargetMachine), `add=:cuccaro` is sound (stwr), and
+  silent optimize=false loop miscompiles (multi-preheader loop headers) are fixed (c6ex).
+- Validation: BVM `Pkg.test` 13386/13386 against `f904d0d` (see BENNETT_JL_PIN.md).
+
+**Priority order for the next agent:** (1) Bennett-23ml → close Bennett-5viz;
+(2) the docs epics from the 2026-08-07 entry below if still open (bennettvm-ciff /
+Bennett-hk5i is closed upstream); (3) walls 12/13/14 → bennettvm-rxgy.
+
 ## 📌 SESSION CLOSE 2026-08-06/07 (orchestrator wind-down) — READ THIS FIRST
 
 **Six arcs landed in lockstep across both repos this session** — the a8nw

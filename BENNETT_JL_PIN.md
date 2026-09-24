@@ -16,11 +16,25 @@ Keeping `../Bennett.jl` at (or additively ahead of) the recorded commit is a
 convention, not a lockfile guarantee — the Manifest imposes no revision
 constraint.
 
-**Last validated against:** `13ce767` (Bennett-klgz: determinism classifier at the JIT-global reject)
-**Validated date:** 2026-07-24 (previously `13ce767` of 2026-07-12; `e7454fd`/`fd4afea` same day; before that `31b63a6` of 2026-06-05)
+**Last validated against:** `f904d0d` (Bennett.jl `main` after the 2026-09-24 correctness-sweep session: stwr, t9rh, c6ex, hsm3, q9pi)
+**Validated date:** 2026-09-24 (previously `13ce767` of 2026-07-24; `13ce767` of 2026-07-12; `e7454fd`/`fd4afea` same day; before that `31b63a6` of 2026-06-05)
 **Bennett.jl HEAD commit summary at validation:**
-`Bennett-a70z: exact constant-operand overflow bit — Dict{Int64,Int64} extracts and runs`
-**Validation evidence:** BennettVM full `Pkg.test` **7820/7820** against this
+`worklog 108: session close + handoff; bd: close hsm3, fnxh, gcf7; CLAUDE.md test-count line`
+**Validation evidence (2026-09-24):** BennettVM full `Pkg.test` **13386/13386**
+(6m14s) on this repo's `claude/loving-ptolemy-8a914n` branch (= master + ADR 0021
+Amendment B + `test_hsm3_literal_certification_vm.jl`), against Bennett.jl
+`f904d0d`, in a CLOUD container (Julia 1.12.7, AVX-512 Xeon, 16 GB, **clang and rustc present** — the clang/rustc-gated e2e blocks RAN, part of
+why the count exceeds 2026-07-24's clang-less 7820; compare counts only across boxes
+with the same toolchain). Bennett.jl suite on the same tree: run as 9
+chunked `runtests.jl` processes (a single `Pkg.test` process OOMs at ~12 GB RSS on
+16 GB) — ~1.53M assertions, 0 real failures (one test_g27k source-window false red
+fixed before validation; Aqua green under `Pkg.test`). **Semantic change downstream:** under
+`ptr_cells=true`, `jl_global#N` literals are now admitted ONLY when certified (in the
+producing session) to be the empty GenericMemory singleton; every other literal
+fails loud (`Bennett-hsm3`). The certified header's data-pointer cell is now the
+non-null sentinel `2^48 + 2^47` (was 0), inside the globals trap band.
+
+**Previous entry (2026-07-24):** **Validation evidence:** BennettVM full `Pkg.test` **7820/7820** against this
 exact Bennett.jl tree (2026-07-24, 3m33s); Bennett.jl suite **690398 Pass /
 3 Broken** (all pre-existing — `@test_broken` counts byte-identical to the
 pre-merge `main`), 28m37s, **heavy tests ON** (a strictly stronger gate than
