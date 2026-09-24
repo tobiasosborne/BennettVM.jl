@@ -769,6 +769,14 @@ using BennettVM
     # PAST Dict construction (the jl_global wall cleared). Sits after the const-
     # global fixture (its upstream GlobalROM machinery).
     include("test_jlglobal_singleton.jl")
+    # Bennett.jl bead `Bennett-hsm3` (+ gcf7 D1-D3; ADR 0021 Amendment B): the
+    # END-TO-END gate for SEMANTIC certification of `jl_global#N` literals.
+    # Non-singleton literals (const Ref, non-empty Memory) throw `Bennett-hsm3`
+    # at extraction (no wrong answer reaches the VM — pre-hsm3 they ran and
+    # REVERSED CLEANLY with wrong results); the user-held empty singleton runs
+    # == oracle and reverses; the certified header's non-null data-pointer
+    # sentinel lies in the globals trap band and a MemoryLoad at it traps.
+    include("test_hsm3_literal_certification_vm.jl")
     # Bennett.jl bead `Bennett-a70z`, DOWNSTREAM half: `Dict{Int64,Int64}`
     # end-to-end. Upstream replaced the lbot overflow-bit prover with the exact
     # constant-operand no-overflow interval, so `rehash!`'s
