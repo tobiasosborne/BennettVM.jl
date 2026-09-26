@@ -2,6 +2,31 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## 📌 2026-09-26 — Astra review campaign: 24 BennettVM beads filed, all executed — READ THIS FIRST
+
+Two gpt-6-astra xhigh reviewers (VM-core, VM-ingest) swept this repo; every S0/S1 finding
+was independently re-executed by a second agent before a bead was filed. Maps:
+`reviews/2026-09-26-astra/VM-core.triage.md` and `VM-ingest.triage.md` (finding → bead);
+reports and verification files sit beside them. Local epic **bennettvm-b1e5**; label
+`astra-2026-09-26`. **No BVM src changes this session.**
+
+**Silent-miscompile class (S0, round-trip passes, forward result wrong):** mixed-width memory
+accesses accepted (bennettvm-aul4); bulk memcpy/memmove from a global ROM source copies zeros
+(gn6o); callee static alloca clobbers caller dynamic allocation (hyi6 → P1, now EXECUTED);
+unchecked allocation arithmetic wraps cursors / calloc overflow returns a pointer (av72);
+a user function named like an intrinsic (`U.malloc`) is silently replaced by the intrinsic —
+REAL JULIA (wtda); shared globals duplicated per function in multi-IR ingest (190z); narrow
+negative GEP index read as positive (zkhl). **Checker soundness:** the injectivity trait
+certifies destructive phi-edge overwrites (6xy0); the random-program property gate has no
+independent forward oracle and accepted a wrong result (tghl); the determinism checker is
+types-only (jpb). **Corrections to existing beads:** pdqx's "region table" wording is wrong
+(IState has three cursors); 347o's "sound under L3" claim is refuted (loop-executed static
+allocas alias).
+
+**Priority for the next BVM agent:** wtda / aul4 / gn6o / hyi6 / av72 first (all P1, all
+executed), then 6xy0 + tghl (the verifier holes — fix these before trusting any new green).
+Upstream Bennett.jl landed five fixes the same day (see its worklog/108 top entry).
+
 ## 📌 SESSION CLOSE 2026-09-24 (Bennett.jl correctness sweep, cloud session) — READ THIS FIRST
 
 **Upstream (Bennett.jl `main` = `f904d0d`) changed under this repo; BVM src untouched.**
