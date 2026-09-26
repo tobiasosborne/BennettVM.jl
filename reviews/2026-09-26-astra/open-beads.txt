@@ -1,0 +1,111 @@
+○ bennettvm-ciff ● P0 [epic] P0 DOCS: kickass README + tutorials + docs with cutting-edge animations/visualisations — the almost-idempotent-channels bar
+○ bennettvm-x49 ● P0 OPCODE-COVERAGE epic: full LLVM-opcode coverage for the Bennett.jl→BennettVM pipeline
+○ bennettvm-01w ● P1 M_FP.3 Wire frem LLVM-opcode dispatch in BennettVM ingest
+○ bennettvm-02g ● P1 M9.1: Uniform-bound analysis pass — reject programs without static loop bound
+○ bennettvm-0tg ● P1 M9.6: Emit compute/uncompute VMProgram transformation
+○ bennettvm-22m ● P1 M9.4: Linear-chain pebble scheduler using F(n,S)
+○ bennettvm-6ox ● P1 M10.3: result(s) returns OutputRef-typed output
+○ bennettvm-6r6 ● P1 M1.1: bench/m1-history-cost.jl benchmark harness
+○ bennettvm-9s2 ● P1 M9.2: Knill 1995 F(n,S) memoized recursion
+○ bennettvm-agm ● P1 M10.5: OutputRef and non-aliasing tests
+○ bennettvm-d3l ● P1 M1.5: docs/measurements/m1-history-cost.md results and K recommendation
+○ bennettvm-e7c ● P1 M10.2: Non-aliasing analysis pass (port of RC3 AliasingAnalysisPass)
+○ bennettvm-g0a ● P1 M9.3: Knill table oracle at test/reference/knill_table.jl
+○ bennettvm-m6c ● P1 M10.1: Define OutputRef nominal type
+○ bennettvm-m9i ● P1 M_DYN.7: mem=:vm Memory recognizer — Julia GenericMemory skeleton → IRAlloca(dyn)+IRVarGEP+IRStore/IRLoad
+○ bennettvm-p44 ● P1 M1.2: full-snapshot history baseline benchmark
+○ bennettvm-pjb ● P1 M9.5: Meuli 2019 SAT encoding for pebble-game DAG case (Z3.jl)
+○ bennettvm-rlx ● P1 M10.4: run_oracle!(prog, input, ::OutputRef) API
+○ bennettvm-rxgy ● P1 IntrinsicMemmoveBytes: byte-exact memmove for Julia-tier (gc_alloc_obj byte-granular) programs — the _growend! grow-copy blocker at lower_vm
+○ bennettvm-vez ● P1 M1.3: delta-history sketch benchmark
+○ bennettvm-xf3 ● P1 M1.4: periodic-checkpoint sketch benchmark (K=64 default)
+○ bennettvm-zlq ● P1 M9.7: ISCAS benchmark — 52.77% qubit reduction at 2.68x step overhead
+○ bennettvm-0xj ● P2 M12.1: Lean Theorem 4 — OutputRef non-aliasing (OutputRef perpendicular IState)
+○ bennettvm-1az ● P2 M11.4: Lean Theorem 1 — trace simulation (abstract step agrees with reference)
+○ bennettvm-278 ● P2 PRD + ADR 0013 factual patch: Dict reuse-map row + ADR 0013 D-3 'recognizes' tense + Mogensen 2015
+○ bennettvm-37d ● P2 ingest: two phi-params taking SAME SSAOperand from one predecessor -> duplicate exit arg (latent)
+○ bennettvm-4dn ● P2 OPCODE G7b: FP completeness — fdim + uitofp edge cases (beyond frem/01w)
+○ bennettvm-5ii ● P2 M11.1: Lean toolchain bootstrap — lakefile.lean + BennettVM.lean skeleton
+○ bennettvm-6sma ● P2 A2: PPU background rendering (nametable/pattern/palette), scanline-based
+○ bennettvm-7y2 ● P2 Rule 10: split src/interpreter/Interpreter.jl (at ~200 code-LOC ceiling after ekc)
+○ bennettvm-7zl ● P2 M12.3: lake build verification script — 0 sorry, 0 axiom enforced across Formalisation/
+○ bennettvm-8e7t ● P2 FunctionEntry.returns is void-flag-only (first-IRRet name; not authoritative for multi-exit functions) — make Bool or fix population
+○ bennettvm-ack ● P2 M6 follow-up: broaden is_injective(ArithmeticAssignment) to :add/:sub
+○ bennettvm-axfr ● P2 SSA-dominance validator: validate(::VMProgram) — make unbound-operand a build-time error (M2.18)
+○ bennettvm-bk7 ● P2 M12.2: Lean Theorem 5 — pebble-game correctness (Knill F(n,S) produces valid pebbling)
+○ bennettvm-bk9 ● P2 PRD patch: give frtN a body in §3.6.2 + fix stale Bennett.jl pin (5731cec) in Part IV l.938
+○ bennettvm-bsng ● P2 CW-D5a: elsize>1 GenericMemory — smul overflow-bit prover only handles elsize 1 (Dict{Int64,Int64} extract wall)
+○ bennettvm-c0e ● P2 M6 follow-up: MemoryAssignment value-level is_injective discrimination
+○ bennettvm-cc8 ● P2 M11.5: Lean Theorem 2 — round-trip (unstep(step s instr) = s for all instruction kinds)
+○ bennettvm-cw4g ● P2 Void-return callee via single-function ParsedIR (CW-C2)
+○ bennettvm-dzd ● P2 memory-floor v2 reach: C aggregate arrays (int a[N]) emit 2-index GEP rejected by Bennett.jl (U16)
+○ bennettvm-hahl ● P2 A1: iNES/.nes ROM loader + NROM (mapper-0) — PRG/CHR split, header, ROM as VM memory
+○ bennettvm-hyi6 ● P2 guard: cross-function mixed static+DynAlloca segment overlap (stack_top vs heap_top cursors)
+○ bennettvm-ikow ● P2 T2: per-frame framebuffer-hash golden harness vs FCEUX (the PPU oracle)
+○ bennettvm-jb6w ● P2 [bug] C-tier literal {i64,ptr} GEP mis-stamp: clang SysV register-coercion spill defeats the literalness discriminator (silent-miscompile mechanism, untriggered)
+○ bennettvm-jm77 ● P2 A5: controller input port ($4016/$4017) wired to InputRef tape
+○ bennettvm-kuq ● P2 Replay.jl search-loop uses isa CheckpointEntry; truncation uses _entry_step — make consistent at M6/M7
+○ bennettvm-n52 ● P2 Reconcile CLAUDE.md/AGENTS.md drift or amend the identical header
+○ bennettvm-nxpa ● P2 T1: .fm2 (FCEUX) movie parser -> InputRef adapter (per-NMI latch)
+○ bennettvm-pdqx ● P2 [bug] bounds-check MemoryStore/MemoryLoad against live reserved regions (standing hole — p06b hostile review D1 would have been a crash, not a silent clobber)
+○ bennettvm-pkv ● P2 M11.3: Lean abstract VM semantics — IState, RState, step, unstep
+○ bennettvm-pldf ● P2 A4: PPU scrolling + NMI/vblank timing + CPU<->PPU interleave (frame loop)
+○ bennettvm-r5c0 ● P2 O1 track: ingest hashtable.O1.ll (switch x6, phi x98, select, runtime-length llvm.memset, tail-call, internal fastcc helper)
+○ bennettvm-san3 ● P2 CW-D5b: Dict growth (rehash-grow copy loop) — undefined SSA :__v96 at run (14-insert fdict)
+○ bennettvm-tsjq ● P2 A3: PPU sprites + sprite-0 hit + OAM/OAMDMA
+○ bennettvm-tug ● P2 M11.6: Lean Theorem 3 — RAM-primitive equivalences (Exchange is an Equiv on memory)
+○ bennettvm-uom ● P2 Memory L1 Exchange lowering (PRD 3.7) — optimize L3 memory ops to zero-history MemoryInterchange
+○ bennettvm-v5em ● P2 references: sync mogensen-2016-rssa.pdf + mogensen-ril.pdf from acquisition machine (Springer-paywalled)
+○ bennettvm-w0a0 ● P2 CW-C3 perf: hashtable e2e reverse dominated by L3 replay (n=1000 ~33-55s/driver)
+○ bennettvm-x3t0 ● P2 Multi-key aggregate IRRet return (sret path)
+○ bennettvm-yc2 ● P2 M11.2: Lean feasibility probe — unstep_step for SwapInstruction (ADR 0004)
+○ bennettvm-ztz7 ● P2 A7: SMB integration — boots to title, plays 1-1 under a TAS, framebuffer golden vs FCEUX
+○ bennettvm-zuem ● P2 test: recursive callee WITH static allocas (stack_top frame isolation under recursion)
+○ bennettvm-1is3 ● P3 [epic] Faster reversible execution (framerate north star): port VM to C, then native codegen
+○ bennettvm-2k1k ● P3 Unify benign-intrinsic prefix allowlist (julia_set.jl ↔ instructions.jl)
+○ bennettvm-2lgo ● P3 ingest _phi_ssa_dup: multi-edge unconsumed-dup leak (latent)
+○ bennettvm-347o ● P3 ingest: fail loud if IRAlloca appears in a non-entry block
+○ bennettvm-3ah ● P3 lower_vm hardening: _phi_const_name collision + entry-as-loop-header (DEF-3/DEF-2 from c39 review)
+○ bennettvm-3b70 ● P3 B5: real-time 60.0988 Hz frame scheduler + display/audio sink
+○ bennettvm-4iet ● P3 _callconst_<callee>_<n> Defines minted per constant occurrence linger in caller frame and callee ReturnExit residual
+○ bennettvm-4t1 ● P3 PRD v4 SC6 anchors at Part IX M5 but RC3 pre-read lives at M0
+○ bennettvm-5js9 ● P3 ingest _lower_bool_operand: document i1-mask limitation (xor/and/or only, not sub i1)
+○ bennettvm-5o86 ● P3 clang absent on this machine — BVM suite silently runs ~2000 fewer assertions than the pinned validation
+○ bennettvm-6vp9 ● P3 E1 follow-up: clang-gate + suite-register a fast CPU-core smoke subset (test_cpu6502.jl)
+○ bennettvm-87sk ● P3 A6: APU (audio) — pulse/triangle/noise/DMC channels + samples to OutputRef
+○ bennettvm-9sqy ● P3 Tighten the TLS-tier silent-zero band in MemoryLoad's read-window trap
+○ bennettvm-9uds ● P3 [bug] IntrinsicMemcpy is word-tier-only — 8x misaddress for byte-tier K>=2 sources; currently unreachable behind _enforce_julia_heap_tier! (sy29 scout landmine)
+○ bennettvm-9v84 ● P3 In-loop / back-edge dynamic alloca (same dest re-executed): remove DynAlloca.forward haskey guard + LIFO heap_top retract
+○ bennettvm-9xla ● P3 B2: interpreter hot-loop profiling + Julia-side optimization (register file dict->array, dispatch)
+○ bennettvm-b5g ● P3 memory-floor polish: resolve_ptr descriptive Rule-1 error (haskey guard) instead of raw KeyError
+○ bennettvm-efl2 ● P3 ingest.jl driver still ~10 LOC over Rule-10 ceiling: extract _lower_insertvalue!/_lower_extractvalue! helpers
+○ bennettvm-eqz5 ● P3 B3: port the BennettVM interpreter to C (lead speed approach) — C run!/unrun! over a serialized VMProgram
+○ bennettvm-gqd ● P3 ConditionalEntry predecessor labels not validated vs LabelTable — latent landmine for backward-dispatch (M2.15/pebble)
+○ bennettvm-guyl ● P3 Call-site width contract: one arg NAME can carry two widths at one call (0fw7 fixture: [64,8,8] with dup name) — future masking pass must key on position, not name
+○ bennettvm-h4q4 ● P3 liveness tier: shrink COPY-arg/residual call overhead (degrade COPY back toward MOVE where args provably dead; drop dead residuals)
+○ bennettvm-j0ph ● P3 Reconcile dangling bennettvm-9n3y doc-references with filed bennettvm-rxgy (both repos)
+○ bennettvm-jpb ● P3 M8.4 follow-up: harden random_program generator (validator + loop-K floor)
+○ bennettvm-kmpg ● P3 Document/expose narrow-width result() carrier (low-w-bit i32 return) post-bgc
+○ bennettvm-lwhz ● P3 test_per_step_inverse.jl: add @isdefined include-guard around scaffold function defs (method-overwrite warnings; scaffold testsets run 2x in suite)
+○ bennettvm-o1y ● P3 Route (a) Dict recognition (IRMap*/RevMap) as a quantum-circuit-lowering optimization — deferred (needs pebble tier)
+○ bennettvm-p4r4 ● P3 [bug] agg_dests membership guard missing on IRInsertValue base (asymmetric with IRExtractValue) — contextless KeyError instead of named lower-time error
+○ bennettvm-r8nc ● P3 ingest: >=3-pred UnconditionalEntry loses predecessor-set info for future per-instruction backward dispatch
+○ bennettvm-s3xr ● P3 Static alloca after a dynamic alloca (mixed static/dynamic layout): advance the compile-time cursor past a runtime-sized region
+○ bennettvm-tkj ● P3 round-trip tests pin Bennett.jl-version-sensitive SSA result keys (collatz/matrix_sum/matrix_tri)
+○ bennettvm-us6l ● P3 CW-C3 follow-on: liveness-shrink the COPY-arg dead-after-call locals (call ABI optimization)
+○ bennettvm-v5eb ● P3 [epic] Emulator-on-VM north-star (NES/6502): run an emulator reversibly
+○ bennettvm-vspu ● P3 B4: bounded rewind horizon / sliding-window history eviction
+○ bennettvm-xl1q ● P3 [bug] Stale/forward-versioned .ll reference fixtures no longer parse under current LLVM: fdict_O0.ll (undefined-value '@+Core.AssertionError#153') — ingest_call.jl docstring witness unverifiable
+○ bennettvm-xo2v ● P3 Remove superseded CallInstruction source (ADR 0019)
+○ bennettvm-xtb ● P3 M6 follow-up: _handle_backward_cross_block_dispatch! for direct-inverse unstep! path
+○ bennettvm-xyew ● P3 CallEnter direct-inverse backward dispatch (xtb)
+○ bennettvm-y7vb ● P3 CW-C3 follow-on: O1 hashtable.O1.ll ingest (switch, phi/select, llvm.memset runtime-len, tail call)
+○ bennettvm-ylg ● P3 DynAlloca inverse O(n) region delete on huge sparse n (perf, not correctness)
+○ bennettvm-3h9u ● P4 B6 (stretch): native codegen of VMProgram -> LLVM/native + rr-style delta instrumentation
+○ bennettvm-6dko ● P4 InputRef: reversible input tape (TAS-movie model) for nondeterministic guest input
+○ bennettvm-bc08 ● P4 E2: run nestest.nes headless on the VM, reversible (mapper-0 CPU conformance)
+
+--------------------------------------------------------------------------------
+Total: 106 issues (106 open, 0 in progress)
+
+Status: ○ open  ◐ in_progress  ● blocked  ✓ closed  ❄ deferred

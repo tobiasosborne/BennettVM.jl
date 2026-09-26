@@ -5,6 +5,18 @@
 > future agent or human would wish it knew, that's not derivable from
 > `git log` or the retrospective.
 
+## Session log — 2026-09-26 — sync + Astra review campaign (upstream Bennett-yjd5)
+
+`master` fast-forwarded 3 commits (2026-09-24 hsm3 review entry); `bd import` →
+266 issues + 1 memory. `origin/claude/loving-ptolemy-8a914n` == master (merged).
+Two gpt-6-astra xhigh `codex exec` reviewers target this repo — **VM-core**
+(interpreter, history/, RState/IState, memory floor, alloca, revmap, liveness) and
+**VM-ingest** (ingest*, call*, control, intrinsics, softcall, tests, ADR drift).
+Briefs: `reviews/2026-09-26-astra/prompts/`; reports land beside them as
+`<scope>.md` (+ `.final.md`). Reviewers may write ONLY their report file and run
+single test files, never `bd`, never the full suite. Crash-safe event logs live in
+`../astra-review-2026-09-26/logs/`. Findings are triaged upstream-side into beads.
+
 ---
 
 ## Session 2026-09-24 — upstream hsm3: jl_global literals were silently miscompiled on this VM (fixed upstream, ADR 0021 Amendment B)
