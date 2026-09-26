@@ -23,6 +23,13 @@ types-only (jpb). **Corrections to existing beads:** pdqx's "region table" wordi
 (IState has three cursors); 347o's "sound under L3" claim is refuted (loop-executed static
 allocas alias).
 
+**Verdict (orchestrator, same day, Bennett.jl `worklog/109`):** both repos survive the review as
+"sound core, unsound perimeter" — no wrong answer from the construction or integer arithmetic;
+the defects are silent ACCEPTANCE at the boundaries plus checkers that certify nothing. For this
+repo the sharpest class is the second one: `tghl` (property gate has no forward oracle) and
+`6xy0` (injectivity trait certifies destructive overwrites) mean today's green suite proves less
+than it looks. Fix those two before trusting any new green; then the executed P1 miscompiles.
+
 **Priority for the next BVM agent:** wtda / aul4 / gn6o / hyi6 / av72 first (all P1, all
 executed), then 6xy0 + tghl (the verifier holes — fix these before trusting any new green).
 Upstream Bennett.jl landed five fixes the same day (see its worklog/108 top entry).
