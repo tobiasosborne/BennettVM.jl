@@ -2,6 +2,39 @@
 
 > What the next session needs to know. Read top to bottom; do not skim.
 
+## 📌 2026-09-27 — bennettvm-tghl landed: the property gate now has an independent forward oracle — READ THIS FIRST
+
+**Rule change (maintainer, 2026-09-27, stated for Bennett.jl):** the 3+1 protocol is retired —
+single implementer plus semiregular code review. This repo's CLAUDE.md still describes 3+1;
+whether to rewrite it here is an open question for the maintainer.
+
+**tghl (test tree only, NO `src/` change).** `test/generators/semantic_model.jl` is a plain-Julia
+evaluator for generated program descriptions that shares no code with the VM's `forward`,
+`step!`, `_apply_binop` or `_resolve`. `test_property_roundtrip.jl` now compares the VM's
+declared returns AND every memory cell either side touched against the model BEFORE reversing.
+New gates: `test/test_tghl_forward_oracle.jl` (model op table vs native Julia Int8, all 65,536
+pairs per op; mutation testsets) and `test/test_jpb_generator_hardening.jl`.
+- Proved by mutation: a wrong forward binop passes the pre-change gate and fails the new one.
+- The oracle found NO real VM bug on the 100 seeded programs (54 touch memory).
+- Oracle limits, stated: it compares declared returns + touched cells, not the whole register
+  file (ADR 0022 lets dead names survive a rename), so a wrong value under a NON-declared name
+  is not caught. Shift amounts are taken unsigned (LLVM semantics, not Julia's); div-by-zero and
+  typemin ÷ -1 are excluded by an exact counted pin.
+- **bennettvm-jpb is only PARTLY done** — `_structural_eq` now compares fields, and the
+  predicate/arity invariants are enforced; the unroll-K floor (item 2) is NOT done because it
+  perturbs the seeded program stream the M8.4/M8.5 counts are pinned against. jpb stays open.
+- Found, not fixed: the in-process mutation harness cannot restore a same-signature method
+  (Julia replaces the method-table slot, so the set-diff "restore" would delete the only
+  method). `test_property_roundtrip.jl`'s existing `inverse(::ArithmeticAssignment, …)` mutation
+  has that shape and passes only because the overload is never called post-restore. Bead bennettvm-zbog.
+- Validation: BVM `Pkg.test` **11479/11479** against Bennett.jl `main` = `93a8d1d`.
+- Worker tooling note: unattended `pi -p` runs in plain text mode stalled silently four times
+  today; `--mode json` runs all worked. Recipe in Bennett.jl `worklog/109`.
+
+**Priority for the next BVM agent:** 6xy0 (the other checker hole), then wtda / aul4 / gn6o /
+hyi6 / av72. aul4 and zkhl say "dropped at ingest" — check whether the fix belongs upstream in
+Bennett.jl before starting.
+
 ## 📌 2026-09-26 — Astra review campaign: 24 BennettVM beads filed, all executed — READ THIS FIRST
 
 Two gpt-6-astra xhigh reviewers (VM-core, VM-ingest) swept this repo; every S0/S1 finding

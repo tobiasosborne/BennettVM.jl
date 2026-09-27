@@ -74,6 +74,41 @@
 # of magnitude below `unrun!`'s `max_unsteps=10_000` default, so the
 # default guard never fires spuriously.
 #
+# # Why the gate checks FORWARD SEMANTICS first (`bennettvm-tghl`)
+#
+# Everything below the drivers used to be a REVERSIBILITY gate: run,
+# unrun, compare, plus a per-step inverse walk. None of it asked
+# whether the run was CORRECT. A VM whose forward step computes a
+# deterministic wrong answer satisfies all of it, because the wrong
+# answer reverses just as faithfully as a right one. Astra VM-ingest F16
+# demonstrated that by execution: a program whose oracle is 11 and
+# whose VM result is 2 was accepted by `_full_roundtrip!` verbatim
+# (`reviews/2026-09-26-astra/VM-ingest.verification.md` §F16).
+#
+# So every generated program now arrives with a `SemDesc` — a
+# source-level description of what it means — and `_full_roundtrip!`
+# runs the independent model (`test/generators/semantic_model.jl`, which
+# shares no code with the VM) on the same inputs and compares BEFORE it
+# un-runs anything. A forward bug cannot cancel out: it is compared
+# while the wrong value is still on screen, and only then reversed.
+#
+# The comparison is deliberately narrow — the program's declared return
+# values and the memory cells it touched — because those are the two
+# things the program's MEANING pins. The register file's shape is an
+# interpreter representation detail (ADR 0022 keeps dead names alive
+# across a cross-block rename), so pinning it would be pinning an
+# implementation choice instead of a semantic fact.
+#
+# # Why `_declared_returns` reads the VM program's own End marker
+#
+# The observable set is taken from the `EndInstruction.returns` the
+# generator emitted, not from the description's `output` field. That
+# makes the two independent constructions cross-check each other: if
+# the generator wired the End to a name the description never produces,
+# `sem_check` says so instead of quietly comparing one field with
+# itself. This reads construction-time metadata; it is not a second
+# path to the forward result.
+#
 # # Mutation-proof (Rule 5, port-and-verify): why ArithmeticAssignment,
 # # and why the eval+delete_method+invokelatest discipline
 #
@@ -129,6 +164,11 @@
 #     invariant.
 #   * `src/analysis/liveness.jl:163` — `compute_must_cache` (the L2
 #     selector).
+#   * `test/generators/semantic_model.jl` (`bennettvm-tghl`) — the
+#     independent forward oracle: `SemDesc`, `sem_eval`, `sem_check`.
+#     `test/test_tghl_forward_oracle.jl` mutation-proves it (a wrong
+#     `_apply_binop` turns the gate below RED) and checks the model's
+#     own binop table against native Julia `Int8` exhaustively.
 #   * `bd bennettvm-tnp` (M8.5) — this milestone, the M8 capstone.
 #   * CLAUDE.md Rule 1 (fail loud on restoration failure), Rule 4
 #     (every test pins a known-correct value — round-trip equality,
@@ -150,6 +190,8 @@ isdefined(@__MODULE__, :per_step_inverse_check) ||
     include(joinpath(@__DIR__, "test_per_step_inverse.jl"))
 isdefined(@__MODULE__, :random_program) ||
     include(joinpath(@__DIR__, "generators", "random_program.jl"))
+isdefined(@__MODULE__, :sem_eval) ||
+    include(joinpath(@__DIR__, "generators", "semantic_model.jl"))
 
 # ---------------------------------------------------------------------
 # Knobs (pinned in the docstring above)
@@ -164,22 +206,53 @@ const _L3_K       = 4               # small checkpoint interval → L3 path
 # ---------------------------------------------------------------------
 
 """
-    _full_roundtrip!(vm, inputs) -> Nothing
+    _declared_returns(vm::VMProgram) -> Vector{Symbol}
+
+The names the program declares it returns: the `returns` list of the
+unique `EndInstruction` block marker. Raises if the program has zero or
+several such blocks — a program that does not say what it returns has
+no observable for the forward oracle to check (Rule 1).
+"""
+function _declared_returns(vm::VMProgram)
+    ends = filter(bb -> bb.exit isa BennettVM.EndInstruction, vm.blocks)
+    length(ends) == 1 ||
+        error("property-roundtrip: expected exactly one EndInstruction ",
+              "block, found $(length(ends)) — the forward oracle needs a ",
+              "single declared output set to compare against")
+    return ends[1].exit.returns
+end
+
+"""
+    _full_roundtrip!(vm, inputs, desc) -> Nothing
 
 Build `initial_state(vm, inputs)`, snapshot the initial IState, `run!`
-to halt (asserting `is_halted`), then `unrun!` and assert the canonical
-"fully reversed" predicate: `rs.current == captured_initial`,
+to halt (asserting `is_halted`), compare the forward result against the
+INDEPENDENT semantic model, and only then `unrun!` and assert the
+canonical "fully reversed" predicate: `rs.current == captured_initial`,
 `rs.current == rs.initial`, AND `isempty(rs.history)` (PRD v4 §3.13;
 the M4.4 / M6.4 / M7.7 round-trip style). Raises on any violation so a
 non-`@testset` caller (the determinism re-run, the mutation sweep) sees
 the same fail-loud behavior. Returns `nothing` on success.
 """
-function _full_roundtrip!(vm::VMProgram, inputs::Dict{Symbol,Int64})
+function _full_roundtrip!(vm::VMProgram, inputs::Dict{Symbol,Int64},
+                          desc::SemDesc)
     rs = initial_state(vm, inputs)
     captured_initial = deepcopy(rs.current)
     Base.invokelatest(run!, rs, vm; max_steps=10_000)
     is_halted(rs) || error("property-roundtrip: program did not halt ",
         "(step_count=$(rs.step_count), status=$(rs.current.status))")
+    # FORWARD ORACLE (`bennettvm-tghl`). Runs while the (possibly
+    # wrong) result is still in hand: `sem_check` raises with the
+    # mismatching register / cell named, and nothing below can mask it,
+    # because the un-run that follows never looks at the result again.
+    outcome = sem_eval(desc, inputs)
+    returns = _declared_returns(vm)
+    desc.output in returns ||
+        error("property-roundtrip: the description's output :",
+              desc.output, " is not among the program's declared returns ",
+              returns)
+    sem_check(outcome, returns, result(rs), rs.current.memory;
+              label="property-roundtrip forward oracle")
     Base.invokelatest(unrun!, rs, vm)
     rs.current == captured_initial || error("property-roundtrip: ",
         "post-unrun! rs.current != captured initial. ",
@@ -194,18 +267,19 @@ function _full_roundtrip!(vm::VMProgram, inputs::Dict{Symbol,Int64})
 end
 
 """
-    _sweep_one!(vm, inputs, idx) -> Nothing
+    _sweep_one!(vm, inputs, desc, idx) -> Nothing
 
 Drive ONE generated program through all three M8.5 gates: full
-round-trip, per-step inverse at L3, per-step inverse at L2. The `idx`
-is woven into the scaffold `label` so any RED names the offending
-program. Raises on any failure; returns `nothing` on success. The
-`Base.invokelatest` wrappers make this driver mutation-visible (M8.3
-world-age discipline) so the mutation sweep observes a perturbed
-`inverse()`.
+round-trip (forward oracle included), per-step inverse at L3, per-step
+inverse at L2. The `idx` is woven into the scaffold `label` so any RED
+names the offending program. Raises on any failure; returns `nothing`
+on success. The `Base.invokelatest` wrappers make this driver
+mutation-visible (M8.3 world-age discipline) so the mutation sweep
+observes a perturbed `inverse()`.
 """
-function _sweep_one!(vm::VMProgram, inputs::Dict{Symbol,Int64}, idx::Int)
-    _full_roundtrip!(vm, inputs)
+function _sweep_one!(vm::VMProgram, inputs::Dict{Symbol,Int64},
+                     desc::SemDesc, idx::Int)
+    _full_roundtrip!(vm, inputs, desc)
     # L3 regime: small K, empty must_cache_set (checkpoint-replay path).
     Base.invokelatest(per_step_inverse_check, vm, inputs;
         checkpoint_interval=_L3_K,
@@ -226,19 +300,28 @@ end
 
 @testset "M8.5 — 100 random programs round-trip (L3 + L2)" begin
     # Walk a SINGLE seeded RNG 100 times. For each program assert the
-    # full round-trip AND per-step inverse at both history regimes.
-    # Per-shape counts are accumulated so the gate also pins shape
-    # variety (a generator regression that dropped a shape would erode
-    # M8.5 coverage silently — Rule 4).
+    # full round-trip (forward oracle included, `bennettvm-tghl`) AND
+    # per-step inverse at both history regimes. Per-shape counts are
+    # accumulated so the gate also pins shape variety (a generator
+    # regression that dropped a shape would erode M8.5 coverage
+    # silently — Rule 4).
     rng = default_rng()
     counts = Dict(:linear => 0, :conditional => 0, :looping => 0)
     n_l2_driven = 0
+    n_forward_checked = 0
     for i in 1:_N_PROGRAMS
-        (vm, inputs) = random_program(rng; size_hint=_SIZE_HINT)
+        (vm, inputs, desc) = random_program(rng; size_hint=_SIZE_HINT)
         counts[_classify_shape(vm)] += 1
         isempty(BennettVM.compute_must_cache(vm)) || (n_l2_driven += 1)
-        @test _sweep_one!(vm, inputs, i) === nothing
+        @test _sweep_one!(vm, inputs, desc, i) === nothing
+        n_forward_checked += 1
     end
+    # The forward-oracle leg must have run on EVERY program — a
+    # generator regression that stopped emitting a usable description
+    # would otherwise leave this gate silently testing reversal only,
+    # which is the F16 failure mode. This is the assertion that keeps
+    # the new leg load-bearing rather than incidental.
+    @test n_forward_checked == _N_PROGRAMS
     # Shape variety: every shape must appear (3-way coin over 100 trials;
     # ≥5 each is comfortable headroom against RNG variance while still
     # catching a shape dropped entirely).
@@ -268,18 +351,21 @@ end
     rng_a = default_rng()
     rng_b = default_rng()
     for i in 1:_N_PROGRAMS
-        (vm_a, in_a) = random_program(rng_a; size_hint=_SIZE_HINT)
-        (vm_b, in_b) = random_program(rng_b; size_hint=_SIZE_HINT)
+        (vm_a, in_a, d_a) = random_program(rng_a; size_hint=_SIZE_HINT)
+        (vm_b, in_b, d_b) = random_program(rng_b; size_hint=_SIZE_HINT)
         @test _structural_eq(vm_a, vm_b)
         @test in_a == in_b
+        # The description is part of the determinism contract too: an
+        # oracle that drifts between runs is not an oracle (`jpb`).
+        @test _sem_desc_eq(d_a, d_b)
         # Outcome determinism: both sides round-trip identically. Drive
         # only the (cheaper) full round-trip here — the L3/L2 per-step
         # coverage is already pinned by the gate above; re-running it
         # 100× a second time would double the suite cost for no new
         # invariant. The round-trip is the load-bearing reproducibility
         # claim.
-        @test _full_roundtrip!(vm_a, in_a) === nothing
-        @test _full_roundtrip!(vm_b, in_b) === nothing
+        @test _full_roundtrip!(vm_a, in_a, d_a) === nothing
+        @test _full_roundtrip!(vm_b, in_b, d_b) === nothing
     end
 end
 
@@ -334,7 +420,7 @@ end
 function _l2_sweep_first_red()
     rng = default_rng()
     for i in 1:_N_PROGRAMS
-        (vm, inputs) = random_program(rng; size_hint=_SIZE_HINT)
+        (vm, inputs, _) = random_program(rng; size_hint=_SIZE_HINT)
         set = BennettVM.compute_must_cache(vm)
         isempty(set) && continue       # no L2 step → cannot exercise inverse()
         try
@@ -377,9 +463,9 @@ end
         # restored canonical method.
         let rng = default_rng()
             for i in 1:_N_PROGRAMS
-                (vm, inputs) = random_program(rng; size_hint=_SIZE_HINT)
+                (vm, inputs, desc) = random_program(rng; size_hint=_SIZE_HINT)
                 isempty(BennettVM.compute_must_cache(vm)) && continue
-                Base.invokelatest(_sweep_one!, vm, inputs, i)
+                Base.invokelatest(_sweep_one!, vm, inputs, desc, i)
                 break    # one clean L2-reachable program is enough proof
             end
         end

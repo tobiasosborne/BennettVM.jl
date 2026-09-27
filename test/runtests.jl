@@ -468,7 +468,34 @@ using BennettVM
     # single seeded RNG 100× asserting full round-trip + per-step
     # inverse at both L3 and L2 regimes, determinism, and a mutation-
     # proof RED-then-GREEN on `inverse(::ArithmeticAssignment)`.
+    # Since `bennettvm-tghl` it also compares each program's FORWARD
+    # result against the independent semantic model before reversing it.
     include("test_property_roundtrip.jl")
+    # bennettvm-tghl — the independent forward-semantics oracle the M8
+    # property gate was missing (Astra VM-ingest F16: the gate checked
+    # that the VM reverses what it computed, never that it computed the
+    # right thing). Pins the oracle itself — `sem_binop`'s whole op
+    # table against native Julia `Int8` on all 65 536 operand pairs per
+    # op, `sem_eval`'s memory / exchange / arm-selection semantics
+    # against hand-computed values, and `sem_check`'s diagnostic
+    # contract — then re-walks the same 100 seeded programs and
+    # mutation-proves the gate twice (a hand-built wrong-forward program
+    # and a one-opcode flip in every generated program), asserting the
+    # pre-tghl round-trip-only check stays GREEN on both while the gate
+    # goes RED. Sits after `test_property_roundtrip.jl` because it
+    # re-uses the seeded sweep and the generator's descriptions.
+    include("test_tghl_forward_oracle.jl")
+    # bennettvm-jpb — generator hardening (s9c hostile review + Astra
+    # VM-ingest F17): the determinism comparator now compares every
+    # FIELD (it compared types only, so `1` vs `999` and `add` vs `mul`
+    # compared equal), and `_assert_vm_invariants` now checks cross-edge
+    # arity alignment and predicate liveness / isolation instead of
+    # label resolution alone. The testset keeps the pre-bead checks
+    # verbatim beside the new ones and asserts the split, and uses the
+    # tghl model as the independent adjudicator for the semantic-field
+    # perturbations. Sits last in the M8 group: it needs the generator
+    # and its descriptions in scope.
+    include("test_jpb_generator_hardening.jl")
     # M_OPCODE.3 — the executable coverage matrix (bead `bennettvm-d7t`).
     # Turns every row of `docs/coverage-matrix.md` into an `@test`: for each
     # of the 16 concrete Bennett.jl `IRInst` subtypes, asserts the matrix's
